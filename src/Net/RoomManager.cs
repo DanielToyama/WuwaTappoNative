@@ -408,6 +408,25 @@ public sealed class RoomManager : IDisposable
             _ = _socket?.EmitAsync("rd", new JsonObject { ["r"] = RoomNo }, 3000);
             return;
         }
+        // 形态二：{a:"id1|id2|..."} 是服务端批量动作包。官方 1.0.3 会按 | 拆分，
+        // 对每个成员各触发一次挥手；旧实现只解析单个数字 ID，批量包会被整包丢掉。
+        if (o["a"] is JsonValue actionValue && actionValue.TryGetValue<string>(out var actionIds))
+        {
+            foreach (long actionId in ParseActionIds(actionIds))
+                ApplyRemoteAction(actionId);
+            return;
+        }
+        if (o["a"] is JsonArray actionArray)
+        {
+            foreach (var item in actionArray)
+                if (item != null)
+                {
+                    long actionId = ParseId(item);
+                    if (actionId > 0) ApplyRemoteAction(actionId);
+                }
+            return;
+        }
+
         // 形态三：装扮广播 {a,n,b,c,d}。只有 a 的包表示“该成员按了一次键”，用来驱动远端手部动画。
         long id = ParseId(o["a"]);
         if (id > 0 && id != SelfId)
@@ -432,6 +451,28 @@ public sealed class RoomManager : IDisposable
         }
     }
 
+    static IEnumerable<long> ParseActionIds(string raw)
+    {
+        var seen = new HashSet<long>();
+        foreach (var part in raw.Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (!long.TryParse(part, out long id) || id <= 0 || !seen.Add(id)) continue;
+            yield return id;
+        }
+    }
+
+    void ApplyRemoteAction(long id)
+    {
+        if (id <= 0 || id == SelfId) return;
+        if (!Members.TryGetValue(id, out var m)) return;
+        bool wasOffline = !m.Online;
+        m.Online = true;
+        m.HandLeft = !m.HandLeft;
+        m.Action = m.HandLeft ? "left" : "right";
+        if (wasOffline) MemberUpdated?.Invoke(id);
+        else MemberAction?.Invoke(id, m.Action);
+    }
+
     /// <summary>只在字段实际存在时更新外观，避免动作包把 b/c 清空。</summary>
     static void ApplyAppearance(RoomMember m, JsonObject o)
     {
@@ -441,16 +482,10 @@ public sealed class RoomManager : IDisposable
         if (o.ContainsKey("d")) m.Action = ApiClient.ReadString(o["d"]);
     }
 
-    long _lastActionSentTicks;
-
-    /// <summary>本地按键/点击时通知房间：原版发无载荷 rc，服务端转成 rc {"a":id} 广播给其他成员。</summary>
+    /// <summary>本地每次按键/点击都发一次无载荷 rc，和官方客户端保持同样频率，不做丢包节流。</summary>
     public void NotifyLocalAction()
     {
         if (_socket?.Connected != true) return;
-        long now = Environment.TickCount64;
-        long last = Interlocked.Read(ref _lastActionSentTicks);
-        if (now - last < 40) return; // 连发保护，避免高刷新率按键刷屏
-        Interlocked.Exchange(ref _lastActionSentTicks, now);
         _ = _socket.EmitNoAckAsync("rc");
     }
 

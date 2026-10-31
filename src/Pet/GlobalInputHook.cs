@@ -8,22 +8,27 @@ using WuwatappoNative.Core;
 namespace WuwatappoNative.Pet;
 
 /// <summary>
-/// 全局键盘监听：用 Raw Input（RIDEV_INPUTSINK）被动读取按键，不安装键盘钩子、不拦截按键，
+/// 全局键盘/鼠标监听：用 Raw Input（RIDEV_INPUTSINK）被动读取输入，不安装钩子、不拦截按键，
 /// 因此不会吞掉任何软件的输入，也不在输入路径上增加延迟。
 /// 按下/抬起分别通知，用于“按下一只手落下、抬起手抬起”的双手机制；
 /// 全局快捷键也在这条事件流里匹配，效果与直接监听相同但不会独占按键。
-/// 自身面板输入框聚焦时不计数、不触发快捷键（避免打字误触和录入快捷键时自触发）。
+/// 自身面板输入框聚焦时不计数、不触发快捷键（避免打字误触和录入快捷键时自触发），
+/// 但面板本身处于前台时仍然统计，不能因为打开设置就停掉计数。
+/// 点击本程序自己的窗口（面板、桌宠、成员桌宠）不重复计数：桌宠点击由窗口自己记账。
 /// </summary>
 public sealed class GlobalInputHook : IDisposable
 {
     const int WM_INPUT = 0x00FF;
     const uint RID_INPUT = 0x10000003;
     const uint RIM_TYPEKEYBOARD = 1;
+    const uint RIM_TYPEMOUSE = 0;
     const uint RIDEV_INPUTSINK = 0x00000100;
     const ushort HID_USAGE_PAGE_GENERIC = 0x01;
     const ushort HID_USAGE_GENERIC_KEYBOARD = 0x06;
-    const int WM_KEYDOWN = 0x0100;
-    const int WM_SYSKEYDOWN = 0x0104;
+    const ushort HID_USAGE_GENERIC_MOUSE = 0x02;
+
+    const int VK_LBUTTON = 0x01;
+    const int VK_RBUTTON = 0x02;
 
     readonly object _gate = new();
     Thread _thread;
@@ -32,6 +37,9 @@ public sealed class GlobalInputHook : IDisposable
     IntPtr _buffer;
     int _pid = Environment.ProcessId;
     readonly HashSet<int> _pressed = new();
+    // 只有真正计入统计的鼠标按下，才在松开时补发抬起事件；
+    // 否则“在面板上按下、拖到桌面上松开”会让手一直抬着。
+    readonly HashSet<int> _countedMouseButtons = new();
 
     public event Action<int> KeyDown;
     public event Action<int> KeyUp;
@@ -62,14 +70,21 @@ public sealed class GlobalInputHook : IDisposable
             _buffer = Marshal.AllocHGlobal(128);
             window.Wnd = OnWindowMessage;
 
-            var device = new RAWINPUTDEVICE
+            var keyboard = new RAWINPUTDEVICE
             {
                 UsagePage = HID_USAGE_PAGE_GENERIC,
                 Usage = HID_USAGE_GENERIC_KEYBOARD,
                 Flags = RIDEV_INPUTSINK,
                 Target = _hwnd,
             };
-            if (!RegisterRawInputDevices(new[] { device }, 1, (uint)Marshal.SizeOf<RAWINPUTDEVICE>()))
+            var mouse = new RAWINPUTDEVICE
+            {
+                UsagePage = HID_USAGE_PAGE_GENERIC,
+                Usage = HID_USAGE_GENERIC_MOUSE,
+                Flags = RIDEV_INPUTSINK,
+                Target = _hwnd,
+            };
+            if (!RegisterRawInputDevices(new[] { keyboard, mouse }, 2, (uint)Marshal.SizeOf<RAWINPUTDEVICE>()))
                 Log.Write("Raw Input 注册失败 " + Marshal.GetLastWin32Error());
 
             while (_running && GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
@@ -102,15 +117,21 @@ public sealed class GlobalInputHook : IDisposable
         if (got == unchecked((uint)-1) || got < headerSize) return;
 
         var header = Marshal.PtrToStructure<RAWINPUTHEADER>(_buffer);
-        if (header.Type != RIM_TYPEKEYBOARD) return;
+        IntPtr payload = IntPtr.Add(_buffer, (int)headerSize);
+        if (header.Type == RIM_TYPEKEYBOARD) HandleKeyboard(payload);
+        else if (header.Type == RIM_TYPEMOUSE) HandleMouse(payload);
+    }
 
-        var kb = Marshal.PtrToStructure<RAWKEYBOARD>(IntPtr.Add(_buffer, (int)headerSize));
+    void HandleKeyboard(IntPtr payload)
+    {
+        var kb = Marshal.PtrToStructure<RAWKEYBOARD>(payload);
         int vk = kb.VKey;
         if (vk == 0 || vk == 0xFF) return; // 无虚拟键的媒体键等
         bool down = (kb.Flags & 1) == 0;   // RI_KEY_BREAK = 1
 
-        bool ownForeground = IsOwnProcessForeground();
-        bool blocked = ownForeground || App.UiInputFocused;
+        // 面板打开不再等于停止统计：只有正在输入文字时才屏蔽计数/快捷键，
+        // 否则“打开设置就收不到点击”会表现得像监听失效。
+        bool blocked = App.UiInputFocused;
 
         if (down)
         {
@@ -144,18 +165,64 @@ public sealed class GlobalInputHook : IDisposable
         }
     }
 
+    void HandleMouse(IntPtr payload)
+    {
+        var mouse = Marshal.PtrToStructure<RAWMOUSE>(payload);
+        ushort buttons = mouse.ButtonFlags;
+        if ((buttons & 0x0001) != 0) HandleMouseButton(VK_LBUTTON, true);
+        if ((buttons & 0x0002) != 0) HandleMouseButton(VK_LBUTTON, false);
+        if ((buttons & 0x0004) != 0) HandleMouseButton(VK_RBUTTON, true);
+        if ((buttons & 0x0008) != 0) HandleMouseButton(VK_RBUTTON, false);
+    }
+
+    void HandleMouseButton(int vk, bool down)
+    {
+        if (down)
+        {
+            // 点本程序自己的界面（设置面板、桌宠本身等）不计入全局统计；
+            // 桌宠窗口的点击由 PetWindow 自己记一次，避免重复。
+            bool skip = IsCursorOverOwnWindow();
+            bool first, counted = false;
+            lock (_gate)
+            {
+                first = _pressed.Add(vk);
+                if (first && !skip) counted = _countedMouseButtons.Add(vk);
+            }
+            if (!first || !counted) return;
+            Safe(() => KeyEdge?.Invoke(vk, true));
+            Safe(() => KeyDown?.Invoke(vk));
+        }
+        else
+        {
+            bool was, counted;
+            lock (_gate)
+            {
+                was = _pressed.Remove(vk);
+                counted = _countedMouseButtons.Remove(vk);
+            }
+            if (!was || !counted) return;
+            Safe(() => KeyEdge?.Invoke(vk, false));
+            Safe(() => KeyUp?.Invoke(vk));
+        }
+    }
+
     static void Safe(Action a)
     {
         try { a(); } catch { }
     }
 
-    bool IsOwnProcessForeground()
+    bool IsCursorOverOwnWindow()
     {
         try
         {
-            IntPtr h = GetForegroundWindow();
+            if (!GetCursorPos(out var p)) return false;
+            IntPtr h = WindowFromPoint(p);
             if (h == IntPtr.Zero) return false;
-            GetWindowThreadProcessId(h, out int pid);
+            // WebView2 的可见内容属于 msedgewebview2.exe，直接看命中窗口的 PID 会把
+            // 整个设置面板误判成外部程序。取顶层祖先后，面板/桌宠都会回到本进程。
+            IntPtr root = GetAncestor(h, 2 /*GA_ROOT*/);
+            if (root == IntPtr.Zero) root = h;
+            GetWindowThreadProcessId(root, out int pid);
             return pid == _pid;
         }
         catch { return false; }
@@ -233,6 +300,23 @@ public sealed class GlobalInputHook : IDisposable
         public uint ExtraInformation;
     }
 
+    // RAWMOUSE 里的按钮标志位于 ULONG 联合体的低 16 位；联合体按 4 字节对齐，
+    // 因此 ButtonFlags 的偏移是 4 而不是 2。
+    [StructLayout(LayoutKind.Explicit, Size = 24)]
+    struct RAWMOUSE
+    {
+        [FieldOffset(0)] public ushort Flags;
+        [FieldOffset(4)] public ushort ButtonFlags;
+        [FieldOffset(6)] public ushort ButtonData;
+        [FieldOffset(8)] public uint RawButtons;
+        [FieldOffset(12)] public int LastX;
+        [FieldOffset(16)] public int LastY;
+        [FieldOffset(20)] public uint ExtraInformation;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct POINT { public int X, Y; }
+
     [StructLayout(LayoutKind.Sequential)]
     struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam; public IntPtr lParam; public uint time; public int ptX; public int ptY; }
 
@@ -242,6 +326,8 @@ public sealed class GlobalInputHook : IDisposable
     [DllImport("user32.dll")] static extern bool TranslateMessage(ref MSG lpMsg);
     [DllImport("user32.dll")] static extern IntPtr DispatchMessage(ref MSG lpMsg);
     [DllImport("user32.dll")] static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
-    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
+    [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT p);
+    [DllImport("user32.dll")] static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out int pid);
 }

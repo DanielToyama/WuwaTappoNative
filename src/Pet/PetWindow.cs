@@ -34,7 +34,7 @@ public sealed class PetWindow : Form
     Point _dragCursor, _dragOrigin;
     readonly EmoteBubbleLayer _bubbles = new();
     readonly EmoteWheelLayer _wheel = new();
-    System.Windows.Forms.Timer _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer;
+    System.Windows.Forms.Timer _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _hoverFadeTimer;
     long _lastSkin = -1, _lastAcc = -1;
     Image _chestBtnArt, _chestBgArt;
     ContextMenuStrip _menu;
@@ -176,22 +176,30 @@ public sealed class PetWindow : Form
         // 高频重绘（每次按键、每次计数变化）复用同一张后缓冲。
         var surface = _surface.Begin(Size.Width, Size.Height);
         PetComposer.ComposeInto(surface, _frames, _bodyFrame, _headFrame, info,
-            _cfg.HoverFade && _hovering ? 0.4 : Math.Clamp(_cfg.Opacity, 0.1, 1.0));
+            _cfg.HoverFade && _hoverFadeOn ? 0.4 : Math.Clamp(_cfg.Opacity, 0.1, 1.0));
         _surface.Apply(this);
     }
 
-    bool _hovering;
+    bool _hovering, _hoverFadeOn;
 
     protected override void OnMouseEnter(EventArgs e)
     {
         base.OnMouseEnter(e);
         _hovering = true;
+        if (_cfg.HoverFade)
+        {
+            // 停留 500ms 才淡出：只是划过桌宠时不应该闪一下透明度。
+            _hoverFadeTimer.Stop();
+            _hoverFadeTimer.Start();
+        }
         Compose();
     }
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
         _hovering = false;
+        _hoverFadeTimer.Stop();
+        _hoverFadeOn = false;
         Compose();
         _wheelCloseTimer.Start();
     }
@@ -233,6 +241,14 @@ public sealed class PetWindow : Form
                 Compose();
                 _wheelCloseTimer.Stop();
             }
+        };
+        _hoverFadeTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        _hoverFadeTimer.Tick += (s, e) =>
+        {
+            _hoverFadeTimer.Stop();
+            if (!_hovering || !_cfg.HoverFade || _hoverFadeOn) return;
+            _hoverFadeOn = true;
+            Compose();
         };
         MouseEnter += (s, e) => ShowWheel();
         _blink.Start();
@@ -430,6 +446,11 @@ public sealed class PetWindow : Form
 
     public void ApplySettings()
     {
+        if (!_cfg.HoverFade)
+        {
+            _hoverFadeTimer?.Stop();
+            _hoverFadeOn = false;
+        }
         Size = WindowSize();
         ApplyWindowStyles();
         Compose();
@@ -571,7 +592,7 @@ public sealed class PetWindow : Form
         if (action == "reload")
         {
             RefreshRequested?.Invoke();
-            Notify("已刷新界面");
+            NotifyHotkey("已刷新界面");
         }
         else if (action == "game")
         {
@@ -579,7 +600,7 @@ public sealed class PetWindow : Form
             _cfg.ClickThrough = !_cfg.ClickThrough;
             Save();
             ApplySettings();
-            Notify(_cfg.ClickThrough ? "已开启游戏模式（鼠标穿透）" : "已关闭游戏模式（鼠标穿透）");
+            NotifyHotkey(_cfg.ClickThrough ? "已开启游戏模式（鼠标穿透）" : "已关闭游戏模式（鼠标穿透）");
             NotifySettingsChanged();
         }
         else if (action == "monitor")
@@ -692,6 +713,12 @@ public sealed class PetWindow : Form
 
     void Save() => ConfigStore.Save(_cfg);
 
+    /// <summary>快捷键动作的托盘通知可关闭；不传按键本身的输入，只报告动作结果。</summary>
+    void NotifyHotkey(string text)
+    {
+        if (_cfg.NotifyHotkeys) Notify(text);
+    }
+
     void NotifySettingsChanged() => SettingsChanged?.Invoke();
 
     void BuildTray()
@@ -781,39 +808,59 @@ public sealed class PetWindow : Form
     {
         if (!_cfg.MemberPositions.TryGetValue(CatKey(id), out var a) || a == null || a.Length < 2) return null;
         var p = new Point(a[0], a[1]);
-        var wa = Screen.FromPoint(p).WorkingArea;
         float s = DpiScale * (float)_cfg.Scale;
         int w = (int)Math.Round(RemoteCatWindow.W * s);
-        int h = (int)Math.Round(RemoteCatWindow.H * s);
-        int x = Math.Clamp(p.X, wa.Left, Math.Max(wa.Left, wa.Right - w));
-        int y = Math.Clamp(p.Y, wa.Top, Math.Max(wa.Top, wa.Bottom - h));
-        return new Point(x, y);
+        int head = (int)Math.Round(RemoteCatWindow.Headroom * s);
+        int catH = (int)Math.Round(RemoteCatWindow.CatH * s);
+        // 窗口上方 130px 是透明的气泡净空。靠近屏幕顶部时窗口 Y 本来就可以是负数，
+        // 以前按整个 341px 窗口夹紧会把猫向下推 130px，看起来像坐标记错了。
+        // 只要实际可见的猫/昵称条和任一屏幕工作区有交集，就原样恢复。
+        var visible = new Rectangle(p.X, p.Y + head, w, catH);
+        if (Screen.AllScreens.Any(sc => sc.WorkingArea.IntersectsWith(visible))) return p;
+
+        // 屏幕布局变了或位置完全丢到屏幕外时才夹紧；夹的是可见区域，不是透明净空。
+        var wa = Screen.FromPoint(new Point(visible.Left + visible.Width / 2, visible.Top + visible.Height / 2)).WorkingArea;
+        int x = Math.Clamp(visible.Left, wa.Left, Math.Max(wa.Left, wa.Right - w));
+        int y = Math.Clamp(visible.Top, wa.Top, Math.Max(wa.Top, wa.Bottom - catH));
+        return new Point(x, y - head);
     }
 
     /// <summary>
-    /// 新成员默认摆在角色左侧；一排放不下就往上换行。人多时不能全往左挤，
-    /// 否则除了最左边几个，其余都会叠在屏幕边缘。
+    /// 新成员默认从当前屏幕的右下角开始摆放，向右下角对齐：占位就向左挪，
+    /// 一行排满后向上换行。碰撞按桌宠实际可见区域判断，透明的气泡净空不占位置；
+    /// 本机桌宠也视为已占位，避免新成员直接叠在自己身上。
     /// </summary>
     Point DefaultCatPoint()
     {
         float s = DpiScale * (float)_cfg.Scale;
         int w = (int)Math.Round(RemoteCatWindow.W * s);
         int h = (int)Math.Round(RemoteCatWindow.H * s);
-        int stepX = Math.Max(24, (int)Math.Round((RemoteCatWindow.CatW + 10) * s));
-        int stepY = Math.Max(24, (int)Math.Round((RemoteCatWindow.CatH + 10) * s));
+        int head = (int)Math.Round(RemoteCatWindow.Headroom * s);
+        int catH = (int)Math.Round(RemoteCatWindow.CatH * s);
+        int gap = Math.Max(4, (int)Math.Round(8 * s));
+        int margin = Math.Max(4, (int)Math.Round(10 * s));
+        int stepX = Math.Max(1, w + gap);
+        int stepY = Math.Max(1, catH + gap);
         var wa = Screen.FromControl(this).WorkingArea;
-        var taken = _cats.Values.Select(c => c.Bounds).ToList();
-        int baseY = Top - (int)Math.Round(10 * s);
-        for (int row = 0; row < 8; row++)
+
+        var taken = new List<Rectangle>();
+        foreach (var cat in _cats.Values)
         {
-            int y = baseY - row * stepY;
+            if (!cat.Visible) continue;
+            taken.Add(new Rectangle(cat.Left, cat.Top + head, w, catH));
+        }
+        if (Visible && !_hiddenByHotkey) taken.Add(Bounds);
+
+        int startX = Math.Max(wa.Left, wa.Right - w - margin);
+        int startY = Math.Max(wa.Top, wa.Bottom - h - margin);
+        for (int row = 0; row < 32; row++)
+        {
+            int y = startY - row * stepY;
             if (y < wa.Top) break;
-            for (int col = 0; col < 24; col++)
+            for (int x = startX; x >= wa.Left; x -= stepX)
             {
-                int x = Left - (col + 1) * stepX;
-                if (x < wa.Left) break;
-                var r = new Rectangle(x, y, w, h);
-                if (!taken.Any(t => t.IntersectsWith(r))) return new Point(x, y);
+                var slot = new Rectangle(x, y + head, w, catH);
+                if (!taken.Any(t => t.IntersectsWith(slot))) return new Point(x, y);
             }
         }
         return new Point(wa.Left, wa.Top);
@@ -874,7 +921,7 @@ public sealed class PetWindow : Form
 
     protected override void OnClosed(EventArgs e)
     {
-        foreach (var t in new[] { _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _composeTimer }) { try { t?.Stop(); t?.Dispose(); } catch { } }
+        foreach (var t in new[] { _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _hoverFadeTimer, _composeTimer }) { try { t?.Stop(); t?.Dispose(); } catch { } }
         foreach (var c in _cats.Values.ToList()) { try { c.Close(); c.Dispose(); } catch { } }
         _cats.Clear();
         _surface.Dispose();

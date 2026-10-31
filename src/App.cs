@@ -92,7 +92,7 @@ public sealed class App : ApplicationContext
         };
         Log.Write("桌宠窗口已创建");
 
-        if (Array.IndexOf(Environment.GetCommandLineArgs(), "--panel") >= 0)
+        if (Array.IndexOf(Environment.GetCommandLineArgs(), "--panel") >= 0 || !Cfg.DisclaimerShown)
             Pet.BeginInvoke(new Action(OpenPanel));
 
         _ = BootAsync();
@@ -289,7 +289,7 @@ public sealed class App : ApplicationContext
                 {
                     string label = place == "left" ? "左" : "右";
                     Toast("自动领取了" + label + "侧宝箱");
-                    Pet.Notify("自动领取了" + label + "侧宝箱");
+                    if (Cfg.NotifyChestClaimed) Pet.Notify("自动领取了" + label + "侧宝箱");
                 }
             }
             catch (Exception ex) { Log.Write("宝箱提示失败 " + ex.Message); }
@@ -356,9 +356,26 @@ public sealed class App : ApplicationContext
             Panel = new PanelWindow(this);
             Panel.FormClosed += (s, e) => Panel = null;
         }
-        Panel.Show();
-        Panel.BringToFront();
-        Panel.Activate();
+        Panel.ShowAndFocus();
+    }
+
+    /// <summary>另一个进程再次启动时，由单实例事件线程转回 UI 线程打开面板。</summary>
+    public void RequestPanelFromOtherInstance()
+    {
+        try { Pet.BeginInvoke(new Action(OpenPanel)); } catch { }
+    }
+
+    /// <summary>提权重启时先让当前进程把设置响应送回面板，再退出，避免两个实例长时间并存。</summary>
+    public void ScheduleRestartExit()
+    {
+        var timer = new System.Windows.Forms.Timer { Interval = 900 };
+        timer.Tick += (s, e) =>
+        {
+            timer.Stop();
+            timer.Dispose();
+            try { Pet.Close(); } catch { }
+        };
+        timer.Start();
     }
 
     public void ApplyKeyboardMode()

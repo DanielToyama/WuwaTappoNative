@@ -33,12 +33,14 @@ img { -webkit-user-drag: none; }
   width: 214px; flex: 0 0 214px; background: var(--cream-2);
   border-right: 2px solid rgba(231, 183, 124, .45);
   display: flex; flex-direction: column; padding: 14px 10px 12px;
+  min-height: 0;
 }
-.brand { padding: 2px 8px 12px; }
+.brand { padding: 2px 8px 12px; flex: 0 0 auto; }
 .brand-name { font-size: 20px; font-weight: 800; color: var(--ink-strong); letter-spacing: .5px; }
 .brand-sub { font-size: 12px; color: var(--ink-dim); letter-spacing: 2px; }
 
-.tabs { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+/* 竖向空间不足时只让页签滚动，底部用户栏始终可见。 */
+.tabs { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .tab {
   position: relative; height: 62px; border-radius: 12px; padding: 0 12px;
   display: flex; align-items: center; gap: 12px; color: var(--ink);
@@ -235,7 +237,7 @@ img { -webkit-user-drag: none; }
 
 /* 登录 */
 .login-wrap { flex: 1; display: flex; align-items: center; justify-content: center; }
-.login-card { width: 420px; background: var(--cream-2); border: 2px solid var(--border); border-radius: 20px; padding: 26px; display: flex; flex-direction: column; gap: 14px; box-shadow: 0 10px 30px rgba(142, 94, 67, .12); }
+.login-card { width: 420px; max-width: calc(100vw - 32px); background: var(--cream-2); border: 2px solid var(--border); border-radius: 20px; padding: 26px; display: flex; flex-direction: column; gap: 14px; box-shadow: 0 10px 30px rgba(142, 94, 67, .12); }
 .login-card h2 { margin: 0; font-size: 24px; color: var(--ink-strong); }
 .login-card .hint { font-size: 13px; color: var(--ink-dim); line-height: 1.7; }
 
@@ -246,7 +248,7 @@ img { -webkit-user-drag: none; }
 @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
 .modal-host { position: fixed; inset: 0; background: rgba(40, 26, 18, .35); display: flex; align-items: center; justify-content: center; z-index: 60; }
-.modal { width: 420px; background: var(--cream-2); border: 2px solid var(--border); border-radius: 20px; padding: 22px; box-shadow: 0 18px 50px rgba(0, 0, 0, .25); animation: pop .22s cubic-bezier(.2, 1.2, .4, 1); }
+.modal { width: 420px; max-width: calc(100vw - 32px); max-height: calc(100vh - 32px); overflow-y: auto; background: var(--cream-2); border: 2px solid var(--border); border-radius: 20px; padding: 22px; box-shadow: 0 18px 50px rgba(0, 0, 0, .25); animation: pop .22s cubic-bezier(.2, 1.2, .4, 1); }
 @keyframes pop { from { transform: scale(.8); opacity: 0; } to { transform: scale(1); opacity: 1; } }
 .reward { position: relative; display: flex; flex-direction: column; align-items: center; gap: 10px; }
 .reward .rays {
@@ -303,3 +305,51 @@ img { -webkit-user-drag: none; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: rgba(231, 183, 124, .6); border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------------- 小屏幕 / 高缩放桌面 ---------------- */
+/* WebView2 的视口按 DIP 计算；窗口在 125%/150% 缩放或 1366×768 下会变窄。 */
+@media (max-width: 1050px) {
+  .sidebar { width: 184px; flex-basis: 184px; padding: 12px 8px 10px; }
+  .brand { padding-bottom: 8px; }
+  .brand-name { font-size: 18px; }
+  .tab { height: 54px; padding: 0 10px; gap: 9px; font-size: 16px; }
+  .tab svg { width: 24px; height: 24px; flex-basis: 24px; }
+  .page-host { padding: 14px 16px 16px; }
+  .detail-panel { width: 260px; flex-basis: 260px; }
+  .room-left { width: 300px; flex-basis: 300px; }
+  .hotkey-label { flex-basis: 120px; }
+  .setting-item { gap: 10px; padding: 8px 14px; }
+}
+
+@media (max-width: 850px) {
+  .sidebar { width: 150px; flex-basis: 150px; }
+  .brand-name { font-size: 17px; }
+  .brand-sub { display: none; }
+  .tab { height: 48px; gap: 8px; font-size: 14px; }
+  .tab svg { width: 21px; height: 21px; flex-basis: 21px; }
+  .page-host { padding: 10px 12px 12px; }
+  .detail-panel { width: 220px; flex-basis: 220px; }
+  .room-left { width: 260px; flex-basis: 260px; }
+  .bag-layout { flex-direction: column; overflow-y: auto; }
+  .detail-panel { width: 100%; flex: 0 0 auto; }
+  .detail-preview { height: 140px; }
+  .room-layout { flex-direction: column; overflow-y: auto; }
+  .room-left { width: 100%; flex: 0 0 auto; }
+  .room-right { flex: 0 0 auto; }
+  .setting-item { flex-wrap: wrap; align-items: flex-start; }
+  .setting-content { flex-wrap: wrap; justify-content: flex-end; }
+  .hotkey-row { flex-wrap: wrap; }
+  .hotkey-label { flex-basis: 100%; }
+  .seg-tabs { width: 100%; }
+  .seg-tab { flex: 1 1 auto; padding: 0 10px; }
+}
+
+@media (max-height: 620px) {
+  .titlebar { height: 44px; flex-basis: 44px; padding: 0 16px; }
+  .page-title { font-size: 19px; }
+  .page-host { padding-top: 10px; padding-bottom: 10px; }
+  .sidebar { padding-top: 8px; }
+  .brand { padding-bottom: 6px; }
+  .tab { height: 46px; }
+  .tab .badge { display: none; }
+}

@@ -1,7 +1,8 @@
 import os, uuid
 
 import sys
-root = 'publish/app-' + (sys.argv[1] if len(sys.argv) > 1 else '0.0.3')
+version = sys.argv[1] if len(sys.argv) > 1 else '0.0.9'
+root = 'publish/app-' + version
 tree = {'files': [], 'dirs': {}}
 
 
@@ -50,7 +51,7 @@ body = emit(tree, '', 4)
 
 lines = ['<?xml version="1.0" encoding="utf-8"?>',
          '<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">',
-         '  <Package Name="Wuwatappo Native" Manufacturer="Wuwatappo Native" Version="0.0.1" UpgradeCode="A7C3F6D2-5B1E-4E8A-9C2D-8F4B6A1D3E57" Scope="perUser" Language="2052" Codepage="936">',
+         '  <Package Name="Wuwatappo Native" Manufacturer="Wuwatappo Native" Version="' + version + '" UpgradeCode="A7C3F6D2-5B1E-4E8A-9C2D-8F4B6A1D3E57" Scope="perUser" Language="2052" Codepage="936">',
          '    <MajorUpgrade DowngradeErrorMessage="已安装更新版本，请先卸载。" />',
          '    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />',
          '    <StandardDirectory Id="LocalAppDataFolder"><Directory Id="ProgramsFolder" Name="Programs"><Directory Id="INSTALLFOLDER" Name="Wuwatappo Native" /></Directory></StandardDirectory>',

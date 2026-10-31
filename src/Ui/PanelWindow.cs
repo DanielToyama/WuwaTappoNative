@@ -24,15 +24,17 @@ public sealed class PanelWindow : Form
     readonly App _app;
     WebView2 _web;
     bool _ready;
+    bool _fitting;
 
     public PanelWindow(App app)
     {
         _app = app;
         Text = "Wuwatappo";
         FormBorderStyle = FormBorderStyle.None;
-        StartPosition = FormStartPosition.CenterScreen;
+        // 面板尺寸由下面自己按“桌宠所在屏幕”的 DPI/工作区计算，避免 WinForms 再缩放一次。
+        AutoScaleMode = AutoScaleMode.None;
+        StartPosition = FormStartPosition.Manual;
         Size = new Size(1120, 780);
-        MinimumSize = new Size(900, 640);
         BackColor = Color.FromArgb(251, 237, 213);
         ShowInTaskbar = true;
         DoubleBuffered = true;
@@ -45,6 +47,94 @@ public sealed class PanelWindow : Form
         app.Room.MemberRemoved += _ => QueuePushRoom();
         app.Room.RosterChanged += QueuePushRoom;
         app.Auth.Changed += () => SafePushAuth();
+    }
+
+    /// <summary>
+    /// 按桌面工作区适配面板。以 1120×780 DIP 为设计尺寸，乘当前显示器 DPI 后
+    /// 再夹到工作区；小屏幕/高缩放下不会比屏幕还大。宽高上限与间距使用 DIP，
+    /// 保证 1366×768、1920×1080@150% 等环境仍能完整看到标题栏和内容。
+    /// </summary>
+    void FitToWorkingArea(Screen screen = null, int? dpi = null, bool center = true)
+    {
+        if (!IsHandleCreated || _fitting) return;
+        _fitting = true;
+        try
+        {
+            screen ??= _app?.Pet != null ? Screen.FromControl(_app.Pet) : Screen.FromControl(this);
+            int targetDpi = dpi ?? _app?.Pet?.DeviceDpi ?? DeviceDpi;
+            float scale = Math.Clamp(targetDpi / 96f, 0.75f, 3f);
+            var wa = screen.WorkingArea;
+            int margin = Math.Max(8, (int)Math.Round(24 * scale));
+            int availW = Math.Max(1, wa.Width - margin * 2);
+            int availH = Math.Max(1, wa.Height - margin * 2);
+            int targetW = Math.Min((int)Math.Round(1120 * scale), availW);
+            int targetH = Math.Min((int)Math.Round(780 * scale), availH);
+            // 保留一个能正常操作的下限，但不得超出当前屏幕。
+            targetW = Math.Max(targetW, Math.Min(availW, (int)Math.Round(640 * scale)));
+            targetH = Math.Max(targetH, Math.Min(availH, (int)Math.Round(480 * scale)));
+            targetW = Math.Min(targetW, availW);
+            targetH = Math.Min(targetH, availH);
+
+            var target = new Size(targetW, targetH);
+            if (Size != target) Size = target;
+
+            int x, y;
+            if (center)
+            {
+                x = wa.Left + Math.Max(0, (wa.Width - targetW) / 2);
+                y = wa.Top + Math.Max(0, (wa.Height - targetH) / 2);
+            }
+            else
+            {
+                int cx = Left + Width / 2, cy = Top + Height / 2;
+                x = Math.Clamp(cx - targetW / 2, wa.Left, Math.Max(wa.Left, wa.Right - targetW));
+                y = Math.Clamp(cy - targetH / 2, wa.Top, Math.Max(wa.Top, wa.Bottom - targetH));
+            }
+            Location = new Point(x, y);
+            ApplyRegion();
+        }
+        finally { _fitting = false; }
+    }
+
+    /// <summary>
+    /// 打开面板并真正拿到前台焦点。桌宠窗口是 WS_EX_NOACTIVATE，从托盘/桌宠点开时
+    /// 当前进程并不持有前台窗口，单纯 Show()+Activate() 会被 Windows 的前台锁定规则忽略。
+    /// 这里把自己的输入队列临时附到当前前台线程，再 SetForegroundWindow/SetFocus。
+    /// </summary>
+    public void ShowAndFocus()
+    {
+        if (IsDisposed) return;
+        if (!Visible) Show();
+        if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+        ForceForeground();
+        try { _web?.Focus(); } catch { }
+        // WebView2 初始化/布局可能晚一拍，下一轮消息循环再补一次焦点。
+        BeginInvoke(new Action(() =>
+        {
+            if (IsDisposed) return;
+            ForceForeground();
+            try { _web?.Focus(); } catch { }
+            try { _web?.CoreWebView2?.ExecuteScriptAsync("window.focus()"); } catch { }
+        }));
+    }
+
+    void ForceForeground()
+    {
+        if (!IsHandleCreated) return;
+        IntPtr fg = GetForegroundWindow();
+        uint fgThread = fg == IntPtr.Zero ? 0 : GetWindowThreadProcessId(fg, out _);
+        uint ownThread = GetWindowThreadProcessId(Handle, out _);
+        bool attached = fgThread != 0 && fgThread != ownThread && AttachThreadInput(fgThread, ownThread, true);
+        try
+        {
+            BringWindowToTop(Handle);
+            SetForegroundWindow(Handle);
+            SetFocus(Handle);
+        }
+        finally
+        {
+            if (attached) AttachThreadInput(fgThread, ownThread, false);
+        }
     }
 
     bool _pushRoomQueued;
@@ -172,7 +262,11 @@ public sealed class PanelWindow : Form
             hideOtherPets = _app.Cfg.HideOtherPets,
             alwaysShowChest = _app.Cfg.AlwaysShowChest,
             autoChest = _app.Cfg.AutoChest,
+            notifyChestClaimed = _app.Cfg.NotifyChestClaimed,
+            notifyHotkeys = _app.Cfg.NotifyHotkeys,
             launchAtLogin = AutoStart.IsEnabled,
+            runAsAdmin = _app.Cfg.RunAsAdmin,
+            isElevated = Elevation.IsElevated,
             roomNo = _app.Cfg.RoomNo,
             lastRoom = _app.Cfg.LastRoom,
             hotkeys = Hotkeys.FromSettings(_app.Cfg.Hotkeys),
@@ -496,9 +590,34 @@ public sealed class PanelWindow : Form
                             break;
                         case "alwaysShowChest": cfg.AlwaysShowChest = ApiClient.ReadBool(kv.Value); break;
                         case "autoChest": cfg.AutoChest = ApiClient.ReadBool(kv.Value); break;
+                        case "notifyChestClaimed": cfg.NotifyChestClaimed = ApiClient.ReadBool(kv.Value); break;
+                        case "notifyHotkeys": cfg.NotifyHotkeys = ApiClient.ReadBool(kv.Value); break;
                         case "launchAtLogin":
                             cfg.LaunchAtLogin = AutoStart.Apply(ApiClient.ReadBool(kv.Value));
                             break;
+                        case "runAsAdmin":
+                        {
+                            bool enable = ApiClient.ReadBool(kv.Value);
+                            if (enable && !Elevation.IsElevated)
+                            {
+                                // 先释放单实例锁，否则提权后的新进程会把自己当成第二个实例直接退出。
+                                SingleInstance.ReleaseForRelaunch();
+                                // UAC 取消时保持普通权限，并把开关改回关闭，避免设置与实际权限不一致。
+                                if (!Elevation.TryRestartElevated(reopenPanel: true))
+                                {
+                                    cfg.RunAsAdmin = false;
+                                    if (SingleInstance.Acquire())
+                                        SingleInstance.SetActivationHandler(() => _app.RequestPanelFromOtherInstance());
+                                    break;
+                                }
+                                cfg.RunAsAdmin = true;
+                                ConfigStore.Save(cfg);
+                                _app.ScheduleRestartExit();
+                                return BootPayload();
+                            }
+                            cfg.RunAsAdmin = enable;
+                            break;
+                        }
                     }
                 }
                 cfg.Opacity = Math.Clamp(cfg.Opacity, 0.2, 1.0);
@@ -685,10 +804,45 @@ public sealed class PanelWindow : Form
         return i >= 0 && i + 1 < args.Length ? args[i + 1] : null;
     }
 
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        FitToWorkingArea(center: true);
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+        FitToWorkingArea(Screen.FromControl(this), e.DeviceDpiNew, center: false);
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == 0x007E) // WM_DISPLAYCHANGE：分辨率/缩放布局改变后重新夹紧
+        {
+            try { BeginInvoke(new Action(() => FitToWorkingArea(Screen.FromControl(this), DeviceDpi, center: false))); } catch { }
+        }
+        base.WndProc(ref m);
+    }
+
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
         ApplyRegion();
+    }
+
+    // 面板隐藏/失焦时必须清掉“正在输入”的标记：否则在输入框里关掉面板后，
+    // 原生层会一直以为用户在打字，导致全局按键统计像是失效了。
+    protected override void OnDeactivate(EventArgs e)
+    {
+        base.OnDeactivate(e);
+        App.UiInputFocused = false;
+    }
+
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        if (!Visible) App.UiInputFocused = false;
     }
 
     protected override void OnResize(EventArgs e)
@@ -717,4 +871,10 @@ public sealed class PanelWindow : Form
 
     [DllImport("user32.dll")] static extern bool ReleaseCapture();
     [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hWnd, int msg, int wParam, int lParam);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint pid);
+    [DllImport("user32.dll")] static extern bool AttachThreadInput(uint idAttach, uint idAttachTo, bool attach);
+    [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] static extern IntPtr SetFocus(IntPtr hWnd);
 }

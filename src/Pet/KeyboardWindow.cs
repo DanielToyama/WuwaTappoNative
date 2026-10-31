@@ -185,33 +185,11 @@ public sealed class KeyboardWindow : Form
         if (resized || !_painted) Render();
     }
 
-    bool IsDown(string key)
-    {
-        int vk = key switch
-        {
-            "SPACE" => 0x20,
-            "MOUSE_L" => 0x01,
-            "MOUSE_R" => 0x02,
-            _ => key.Length == 1 ? (int)char.ToUpperInvariant(key[0]) : 0
-        };
-        return vk != 0 && (GetAsyncKeyState(vk) & 0x8000) != 0;
-    }
-
     void Poll()
     {
         // 手柄始终轮询：即使键盘界面没展开，按手柄也要驱动主角挥手和点击数。
+        // 键盘和鼠标按钮都由 Raw Input 边沿驱动（OnKeyEdge），16ms 轮询会漏掉快速点击。
         PollPad(_mode == Mode.Controller);
-        if (_mode == Mode.Controller || _mode == Mode.Hidden) return;
-        // 键盘按键由 Raw Input 边沿驱动（OnKeyEdge），这里只补鼠标左右键。
-        bool changed = false;
-        foreach (var key in new[] { "MOUSE_L", "MOUSE_R" })
-        {
-            if (!_keys.ContainsKey(key)) continue;
-            bool down = IsDown(key);
-            if (down && _down.Add(key)) { Pulse(key); changed = true; }
-            else if (!down && _down.Remove(key)) { Pulse(key); changed = true; }
-        }
-        if (changed) RequestRender();
     }
 
     /// <summary>
@@ -229,6 +207,8 @@ public sealed class KeyboardWindow : Form
         if (_mode != Mode.Letters && _mode != Mode.Wuwa) return;
         string key = vk switch
         {
+            0x01 => "MOUSE_L",
+            0x02 => "MOUSE_R",
             0x20 => "SPACE",
             >= 0x30 and <= 0x5A => ((char)vk).ToString(),
             _ => null
@@ -634,7 +614,6 @@ public sealed class KeyboardWindow : Form
         base.OnClosed(e);
     }
 
-    [DllImport("user32.dll")] static extern short GetAsyncKeyState(int vKey);
     [DllImport("xinput1_4.dll")] static extern uint XInputGetState(uint dwUserIndex, ref XINPUT_STATE pState);
 
     [StructLayout(LayoutKind.Sequential)]

@@ -24,7 +24,7 @@ public sealed class RemoteCatWindow : Form
 
     PetFrames _frames;
     readonly EmoteBubbleLayer _bubbles = new();
-    System.Windows.Forms.Timer _emoteTimer, _handReset;
+    System.Windows.Forms.Timer _emoteTimer, _handReset, _hoverFadeTimer;
     int _bodyFrame = 1;
     string _lastAction = "";
     long _lastSkin = -1, _lastPart = -1;
@@ -57,13 +57,21 @@ public sealed class RemoteCatWindow : Form
         };
         _handReset = new System.Windows.Forms.Timer { Interval = 220 };
         _handReset.Tick += (s, e) => { _handReset.Stop(); SetBody(1); };
+        _hoverFadeTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        _hoverFadeTimer.Tick += (s, e) =>
+        {
+            _hoverFadeTimer.Stop();
+            if (!_hovered || !_hoverFade || _hoverFadeOn) return;
+            _hoverFadeOn = true;
+            UpdateHoverOpacity();
+        };
         Reload();
     }
 
     public long MemberId => _member.Id;
 
     double _opacity = 1.0, _opacityBase = 1.0;
-    bool _clickThrough, _hoverFade, _hovered, _topmost = true;
+    bool _clickThrough, _hoverFade, _hovered, _hoverFadeOn, _topmost = true;
 
     /// <summary>
     /// 与主桌宠保持一致的窗口选项：不透明度 / 悬停淡出 / 鼠标穿透 / 置顶。
@@ -72,30 +80,58 @@ public sealed class RemoteCatWindow : Form
     public void SetWindowOptions(double opacity, bool hoverFade, bool clickThrough, bool topmost)
     {
         _opacityBase = Math.Clamp(opacity, 0.1, 1.0);
+        bool fadeWasOn = _hoverFade;
         _hoverFade = hoverFade;
-        double next = EffectiveOpacity(_opacityBase, _hoverFade, _hovered);
-        bool opacityChanged = Math.Abs(next - _opacity) > 0.001;
+        if (!_hoverFade)
+        {
+            _hoverFadeTimer?.Stop();
+            _hoverFadeOn = false;
+        }
+        else if (!fadeWasOn && _hovered && !_hoverFadeOn)
+        {
+            // 刚打开“悬停半透明”时也遵守 500ms 停留时间。
+            _hoverFadeTimer.Stop();
+            _hoverFadeTimer.Start();
+        }
         bool stylesChanged = clickThrough != _clickThrough || topmost != _topmost;
-        _opacity = next;
         _clickThrough = clickThrough;
         _topmost = topmost;
         if (stylesChanged && IsHandleCreated) ApplyWindowStyles();
-        if (opacityChanged) Compose();
+        UpdateHoverOpacity();
     }
 
-    /// <summary>主桌宠被悬停时，其他成员一起淡出（原版是整个桌面桌宠的联动效果）。</summary>
+    /// <summary>鼠标进入/离开：停留 500ms 后才淡出，离开立即恢复。</summary>
     public void SetHovered(bool hovered)
     {
-        if (!_hoverFade || hovered == _hovered) return;
+        if (hovered == _hovered) return;
         _hovered = hovered;
-        double next = EffectiveOpacity(_opacityBase, _hoverFade, hovered);
+        _hoverFadeTimer?.Stop();
+        if (!_hoverFade)
+        {
+            _hoverFadeOn = false;
+            UpdateHoverOpacity();
+            return;
+        }
+        if (hovered)
+        {
+            _hoverFadeOn = false;
+            _hoverFadeTimer.Start();
+            return;
+        }
+        _hoverFadeOn = false;
+        UpdateHoverOpacity();
+    }
+
+    void UpdateHoverOpacity()
+    {
+        double next = EffectiveOpacity(_opacityBase, _hoverFadeOn);
         if (Math.Abs(next - _opacity) < 0.001) return;
         _opacity = next;
         Compose();
     }
 
-    static double EffectiveOpacity(double baseOpacity, bool hoverFade, bool hovered)
-        => Math.Clamp(hoverFade && hovered ? baseOpacity * 0.4 : baseOpacity, 0.1, 1.0);
+    static double EffectiveOpacity(double baseOpacity, bool hovered)
+        => Math.Clamp(hovered ? baseOpacity * 0.4 : baseOpacity, 0.1, 1.0);
 
     void ApplyWindowStyles()
     {
@@ -265,6 +301,19 @@ public sealed class RemoteCatWindow : Form
                 using (var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter })
                     g.DrawString(string.IsNullOrEmpty(_member.Nickname) ? "漂泊者" : _member.Nickname, font, brush, pill, fmt);
 
+                // 手/手臂要压住昵称条；角色头部和身体其余部分仍在 UI 后面。
+                if (body != null)
+                {
+                    var state = g.Save();
+                    try
+                    {
+                        using var clip = PetComposer.Rounded(pill, 16 * s);
+                        g.SetClip(clip, CombineMode.Intersect);
+                        g.DrawImage(body, 0, top, cat, cat);
+                    }
+                    finally { g.Restore(state); }
+                }
+
                 _bubbles.Draw(g, s, 100 * s, (Headroom + 100) * s);
             }
             // 与主桌宠一致：不透明度通过整体 alpha 矩阵应用，避免每个绘制分支各写一遍。
@@ -350,6 +399,7 @@ public sealed class RemoteCatWindow : Form
         if (_frames != null) _frames.Changed -= OnFramesChanged;
         _emoteTimer.Dispose();
         _handReset.Dispose();
+        _hoverFadeTimer.Dispose();
         _surface.Dispose();
         base.OnClosed(e);
     }
@@ -439,10 +489,15 @@ public sealed class LayeredSurface : IDisposable
 /// </summary>
 static class CatPainter
 {
-    const int PerTick = 6;
+    // 原来每 16ms 只画 6 个；40 人房间、10Hz 按键时产能不足，动作会排队 1~2 秒。
+    // 现在用时间预算+单帧即时绘制：稀疏房间零排队，人多时把一帧内能画完的都画掉。
+    const int PerTick = 64;
+    const int BudgetMs = 10;
+    const long ImmediateGapMs = 8;
     static readonly List<RemoteCatWindow> Queue = new();
     static readonly HashSet<RemoteCatWindow> Pending = new();
     static readonly System.Windows.Forms.Timer Timer = new() { Interval = 16 };
+    static long _lastPaintMs;
 
     static CatPainter()
     {
@@ -452,6 +507,21 @@ static class CatPainter
     public static void Request(RemoteCatWindow window)
     {
         if (window.IsDisposed || !window.IsHandleCreated) return;
+        if (window.InvokeRequired)
+        {
+            try { window.BeginInvoke(new Action<RemoteCatWindow>(Request), window); } catch { }
+            return;
+        }
+
+        // 低负载时当前动作立即上屏，不再固定等下一帧。
+        long now = Environment.TickCount64;
+        if (Queue.Count == 0 && now - _lastPaintMs >= ImmediateGapMs)
+        {
+            _lastPaintMs = now;
+            window.PaintNow();
+            return;
+        }
+
         if (!Pending.Add(window)) return;
         Queue.Add(window);
         if (!Timer.Enabled) Timer.Start();
@@ -459,13 +529,19 @@ static class CatPainter
 
     static void Pump()
     {
+        long start = Environment.TickCount64;
         int budget = PerTick;
         while (budget-- > 0 && Queue.Count > 0)
         {
             var w = Queue[0];
             Queue.RemoveAt(0);
             Pending.Remove(w);
-            if (!w.IsDisposed) w.PaintNow();
+            if (!w.IsDisposed)
+            {
+                _lastPaintMs = Environment.TickCount64;
+                w.PaintNow();
+            }
+            if (Environment.TickCount64 - start >= BudgetMs) break;
         }
         if (Queue.Count == 0) Timer.Stop();
     }

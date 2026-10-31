@@ -221,6 +221,8 @@ public static class PetComposer
         info.Wheel?.Draw(g, s, CatX, CatY);
 
         DrawStrip(g, s, info);
+        // 手/手臂单独盖在计数条和工具栏上：角色本体在 UI 后面，但拍桌的手要压住 UI。
+        DrawHandsOverStrip(g, s, body, cat);
         if (opacity < 0.999)
         {
             using var attrs = new ImageAttributes();
@@ -277,6 +279,25 @@ public static class PetComposer
     }
 
     static string FormatClicks(long n) => n.ToString();
+
+    /// <summary>只把角色手部帧重新画在计数条/工具栏范围内，避免整只角色压到 HUD 上。</summary>
+    static void DrawHandsOverStrip(Graphics g, float s, Image body, Rectangle cat)
+    {
+        if (body == null) return;
+        var counter = Scaled(CounterRect, s);
+        var toolbar = new Rectangle((int)Math.Round(ToolbarX * s), (int)Math.Round(InfoY * s),
+            (int)Math.Round(ToolbarW * s), (int)Math.Round(CounterH * s));
+        var state = g.Save();
+        try
+        {
+            using var clip = new GraphicsPath();
+            using (var a = Rounded(counter, 16 * s)) clip.AddPath(a, false);
+            using (var b = Rounded(toolbar, 16 * s)) clip.AddPath(b, false);
+            g.SetClip(clip, CombineMode.Intersect);
+            g.DrawImage(body, cat);
+        }
+        finally { g.Restore(state); }
+    }
 
     /// <summary>猫右侧两个宝箱锚点：剩余时间气泡 + 进度条，可点击领取。</summary>
     static void DrawChests(Graphics g, float s, Info info)

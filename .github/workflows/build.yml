@@ -46,8 +46,30 @@ jobs:
           path: publish/portable
           if-no-files-found: error
 
+      - name: Publish token extractor (self-contained single file)
+        run: >-
+          dotnet publish token-extractor/WuwatappoTokenExtractor.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true
+          -p:EnableCompressionInSingleFile=true
+          -p:DebugType=none -p:DebugSymbols=false
+          -o publish/token-extractor
+
+      - name: Add token extractor usage guide
+        shell: pwsh
+        run: |
+          $readme = Get-Content token-extractor/README.md -Raw
+          [IO.File]::WriteAllText("publish/token-extractor/README.txt", $readme, [Text.UTF8Encoding]::new($true))
+
+      - name: Upload token extractor
+        uses: actions/upload-artifact@v4
+        with:
+          name: WuwatappoTokenExtractor-portable
+          path: publish/token-extractor
+          if-no-files-found: error
+
   package:
-    name: MSI + portable ZIP
+    name: Installers + companion tools
     if: startsWith(github.ref, 'refs/tags/v')
     needs: build
     runs-on: windows-latest
@@ -70,7 +92,7 @@ jobs:
       - name: Install WiX
         run: dotnet tool install --tool-path .wix wix --version 5.0.2
 
-      - name: Package MSI + ZIP
+      - name: Package MSI + ZIPs
         shell: pwsh
         run: ./installer/build.ps1 -Version ${{ steps.ver.outputs.version }}
 

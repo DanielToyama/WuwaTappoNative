@@ -13,10 +13,10 @@
     <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
     <!-- 图标来自本机提取的角色素材，不属于本仓库；本地存在时才嵌入，缺失时用系统默认图标。 -->
     <ApplicationIcon Condition="Exists('assets\app.ico')">assets\app.ico</ApplicationIcon>
-    <Version>0.0.3</Version>
-    <AssemblyVersion>0.0.3.0</AssemblyVersion>
-    <FileVersion>0.0.3.0</FileVersion>
-    <InformationalVersion>0.0.3</InformationalVersion>
+    <Version>0.0.9</Version>
+    <AssemblyVersion>0.0.9.0</AssemblyVersion>
+    <FileVersion>0.0.9.0</FileVersion>
+    <InformationalVersion>0.0.9</InformationalVersion>
     <Product>Wuwatappo Native</Product>
     <Company>Wuwatappo Native</Company>
     <Description>WuwaTappo 1.0.2 的原生 Windows 复刻（桌宠 + 背包/图鉴/合成/联机）</Description>
@@ -31,6 +31,13 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3351.48" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- token-extractor 是独立项目，不能把它的源码/obj 生成文件编进主程序。 -->
+    <Compile Remove="token-extractor\**\*.cs" />
+    <EmbeddedResource Remove="token-extractor\**\*" />
+    <None Remove="token-extractor\**\*" />
   </ItemGroup>
 
   <ItemGroup>

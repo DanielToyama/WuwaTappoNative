@@ -1,6 +1,6 @@
 param(
   [string]$Configuration = "Release",
-  [string]$Version = "0.0.3"
+  [string]$Version = "0.0.9"
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -31,6 +31,9 @@ Write-Host "== portable zip =="
 $zip = "$distDir/WuwatappoNative-$Version-portable.zip"
 Remove-Item -Force $zip -ErrorAction SilentlyContinue
 Compress-Archive -Path "$publishDir/*" -DestinationPath $zip
+
+Write-Host "== token extractor =="
+& (Join-Path $root 'token-extractor\build.ps1')
 
 Write-Host "== done =="
 Get-ChildItem $distDir | Select-Object Name, Length | Format-Table

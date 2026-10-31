@@ -33,8 +33,14 @@ public sealed class Settings
     public bool HideOtherPets { get; set; }
     public bool AlwaysShowChest { get; set; }
     public bool AutoChest { get; set; }
+    /// <summary>自动领取宝箱成功后是否发 Windows 托盘通知。</summary>
+    public bool NotifyChestClaimed { get; set; } = true;
+    /// <summary>快捷键触发动作后是否发 Windows 托盘通知。</summary>
+    public bool NotifyHotkeys { get; set; } = true;
     /// <summary>开机自动启动（写 HKCU Run 项，启动时会与注册表对齐）。</summary>
     public bool LaunchAtLogin { get; set; }
+    /// <summary>以管理员权限启动：管理员前台窗口下 Raw Input 才不会被 UIPI 拦截。</summary>
+    public bool RunAsAdmin { get; set; }
 
     public int PetX { get; set; } = -1;
     public int PetY { get; set; } = -1;

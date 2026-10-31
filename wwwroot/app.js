@@ -148,14 +148,21 @@
       if (e.target.closest('button')) return;
       call('win.drag');
     });
-    // 输入框聚焦时通知原生层：不要计点击数、不要驱动桌宠手部动画
+    // 输入框聚焦时通知原生层：不要计点击数、不要驱动桌宠手部动画。
+    // 窗口失焦/重新聚焦也要同步一次，避免“在输入框里关掉面板后统计一直停着”。
     const isTextTarget = t => t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
+    const sendInputFocus = focused => {
+      try { window.chrome.webview.postMessage({ id: 0, cmd: 'ui.inputFocus', data: { focused } }); } catch { }
+    };
+    const syncInputFocus = () => sendInputFocus(isTextTarget(document.activeElement));
     document.addEventListener('focusin', e => {
-      if (isTextTarget(e.target)) window.chrome.webview.postMessage({ id: 0, cmd: 'ui.inputFocus', data: { focused: true } });
+      if (isTextTarget(e.target)) sendInputFocus(true);
     });
     document.addEventListener('focusout', e => {
-      if (isTextTarget(e.target)) window.chrome.webview.postMessage({ id: 0, cmd: 'ui.inputFocus', data: { focused: false } });
+      if (isTextTarget(e.target)) sendInputFocus(false);
     });
+    window.addEventListener('focus', syncInputFocus);
+    window.addEventListener('blur', () => sendInputFocus(false));
     navigate(state.page);
     setInterval(updateChestStatus, 1000);
   }
@@ -1507,6 +1514,18 @@
         </div>
 
         <div class="section">
+          <div class="section-title">通知</div>
+          <div class="setting-item">
+            <div><div class="setting-title">宝箱领取通知</div><div class="setting-sub">自动领取成功后发送 Windows 通知</div></div>
+            <div class="switch ${s.notifyChestClaimed !== false ? 'on' : ''}" data-switch="notifyChestClaimed"></div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">快捷键操作通知</div><div class="setting-sub">触发刷新、游戏模式等快捷键时发送 Windows 通知</div></div>
+            <div class="switch ${s.notifyHotkeys !== false ? 'on' : ''}" data-switch="notifyHotkeys"></div>
+          </div>
+        </div>
+
+        <div class="section">
           <div class="section-title">兑换</div>
           <div class="panel-box" style="display:flex;gap:10px">
             <input class="input" id="redeemCode" placeholder="输入兑换码" style="flex:1" />
@@ -1519,6 +1538,10 @@
           <div class="setting-item">
             <div><div class="setting-title">开机自动启动</div><div class="setting-sub">登录 Windows 后自动运行桌宠（仅当前用户，不写系统级启动项）</div></div>
             <div class="switch ${s.launchAtLogin ? 'on' : ''}" data-switch="launchAtLogin"></div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">以管理员权限启动</div><div class="setting-sub">${s.isElevated ? '当前已是管理员权限' : '当前为普通权限'}；用于统计以管理员权限运行的游戏/程序中的按键。开启会请求 UAC 并重启（开机启动时也会请求）</div></div>
+            <div class="switch ${s.runAsAdmin ? 'on' : ''}" data-switch="runAsAdmin"></div>
           </div>
           <div class="setting-item">
             <div><div class="setting-title">日志与数据</div><div class="setting-sub">%LOCALAPPDATA%\\WuwatappoNative</div></div>
@@ -1635,7 +1658,19 @@
       const key = el.dataset.switch;
       const next = !el.classList.contains('on');
       el.classList.toggle('on', next);
-      try { await tryCall('settings.set', { [key]: next }); await syncBoot(); } catch { }
+      if (key === 'runAsAdmin' && next) toast('正在请求管理员权限…');
+      try {
+        await tryCall('settings.set', { [key]: next });
+        await syncBoot();
+        if (key === 'runAsAdmin') {
+          const saved = !!state.boot?.settings?.runAsAdmin;
+          const elevated = !!state.boot?.settings?.isElevated;
+          renderSettings();
+          if (next && !saved) toast('已取消管理员授权，继续使用普通权限', 'err');
+          else if (!next && elevated) toast('已关闭，重启后以普通权限运行');
+          else if (next && elevated) toast('已启用管理员权限启动');
+        }
+      } catch { el.classList.toggle('on', !next); }
     });
     document.querySelectorAll('[data-kb]').forEach(el => el.onclick = async () => {
       try { await tryCall('settings.set', { keyboardMode: el.dataset.kb }); await syncBoot(); renderSettings(); } catch { }
