@@ -96,6 +96,8 @@ public sealed class PetWindow : Form
             if (!_dragging) HandDown();
         });
         _hook.KeyUp += vk => Safe(() => { if (!_dragging) HandUp(); });
+        _hook.HotkeyKeyDown += OnHotkeyKeyDown;
+        RebuildHotkeyMap();
         _hook.Start();
     }
 
@@ -497,82 +499,42 @@ public sealed class PetWindow : Form
     }
 
     // ---------- 全局快捷键 ----------
+    //
+    // 不用 RegisterHotKey：那会独占按键，其他程序收不到 F5/F7/F8/F9，
+    // 而且注册失败还会留下“按了没反应”的半残状态。
+    // 改成在 Raw Input 的被动事件流里匹配：按键照常传给前台程序，只额外触发我们的动作。
 
-    const int WM_HOTKEY = 0x0312;
-    const uint MOD_NOREPEAT = 0x4000;
-    bool _hotkeysRegistered;
-    readonly Dictionary<int, string> _hotkeyActions = new();
+    // Raw Input 线程会并发读取：重建时整体替换引用，避免字典写入时读线程抛异常。
+    volatile Dictionary<(uint Mods, uint Vk), string> _hotkeyMap = new();
 
     /// <summary>
     /// 键位默认与原版 Helper 一致（F5/F7/F8/F9、Ctrl+Alt+1~6），
     /// 但全部取自配置，设置页改键后调用 RebindHotkeys 立即生效。
     /// </summary>
-    void RegisterHotkeys()
+    void RebuildHotkeyMap()
     {
-        if (_hotkeysRegistered) return;
-        _hotkeysRegistered = true;
-        _hotkeyHandle = Handle;
-        _hotkeyActions.Clear();
-        int id = 0x9100;
+        var map = new Dictionary<(uint, uint), string>();
         var bound = new List<string>();
         foreach (var pair in Hotkeys.FromSettings(_cfg.Hotkeys))
         {
-            if (!Hotkeys.TryParse(pair.Value, out uint mods, out uint vk)) continue;
-            int atom = id++;
-            if (RegisterHotKey(_hotkeyHandle, atom, mods | MOD_NOREPEAT, vk))
-            {
-                _hotkeyActions[atom] = pair.Key;
-                bound.Add($"{pair.Key}={pair.Value}");
-            }
-            else
-                Log.Write($"快捷键注册失败 {pair.Value}（{pair.Key}）");
+            if (!Hotkeys.TryParse(pair.Value, out uint mods, out uint vk) || vk == 0) continue;
+            map[(mods, vk)] = pair.Key;
+            bound.Add($"{pair.Key}={pair.Value}");
         }
-        if (bound.Count > 0) Log.Write("快捷键已注册 " + string.Join(" ", bound));
+        _hotkeyMap = map;
+        if (bound.Count > 0) Log.Write("快捷键已启用（被动监听） " + string.Join(" ", bound));
     }
 
-    IntPtr _hotkeyHandle;
+    /// <summary>设置页改键后重建匹配表。</summary>
+    public void RebindHotkeys() => RebuildHotkeyMap();
 
-    void UnregisterHotkeys()
+    /// <summary>Raw Input 线程回调：按键照常下发给前台程序，这里只做匹配。</summary>
+    void OnHotkeyKeyDown(int vk, bool ctrl, bool alt, bool shift)
     {
-        if (!_hotkeysRegistered) return;
-        _hotkeysRegistered = false;
-        try
-        {
-            if (_hotkeyHandle != IntPtr.Zero)
-                foreach (var atom in _hotkeyActions.Keys) UnregisterHotKey(_hotkeyHandle, atom);
-        }
-        catch { }
-        _hotkeyActions.Clear();
-        _hotkeyHandle = IntPtr.Zero;
-    }
-
-    /// <summary>设置页改键后重新注册。</summary>
-    public void RebindHotkeys()
-    {
-        UnregisterHotkeys();
-        RegisterHotkeys();
-    }
-
-    protected override void OnHandleCreated(EventArgs e)
-    {
-        base.OnHandleCreated(e);
-        RegisterHotkeys();
-    }
-
-    protected override void OnHandleDestroyed(EventArgs e)
-    {
-        UnregisterHotkeys();
-        base.OnHandleDestroyed(e);
-    }
-
-    protected override void WndProc(ref Message m)
-    {
-        if (m.Msg == WM_HOTKEY)
-        {
-            if (_hotkeyActions.TryGetValue(m.WParam.ToInt32(), out string action)) HandleHotkey(action);
-            return;
-        }
-        base.WndProc(ref m);
+        uint mods = (ctrl ? Hotkeys.ModControl : 0) | (alt ? Hotkeys.ModAlt : 0) | (shift ? Hotkeys.ModShift : 0);
+        var map = _hotkeyMap;
+        if (map.TryGetValue((mods, (uint)vk), out string action))
+            Safe(() => HandleHotkey(action));
     }
 
     void HandleHotkey(string action)
@@ -620,8 +582,6 @@ public sealed class PetWindow : Form
         }
     }
 
-    [DllImport("user32.dll")] static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
-    [DllImport("user32.dll")] static extern bool UnregisterHotKey(IntPtr hWnd, int id);
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")] static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
     [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint flags);

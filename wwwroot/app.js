@@ -1475,7 +1475,7 @@
 
         <div class="section">
           <div class="section-title">快捷键</div>
-          <div class="hint muted" style="font-size:12px;margin:-4px 0 10px">点击输入框后按下新组合键；Esc 取消，退格清除（禁用该快捷键）。支持 Ctrl / Alt / Shift + 普通按键。</div>
+          <div class="hint muted" style="font-size:12px;margin:-4px 0 10px">点击输入框后按下新组合键；Esc 取消，退格清除（禁用该快捷键）。支持 Ctrl / Alt / Shift + 普通按键。快捷键为被动监听，不会拦截其他程序的按键，也不影响按键延迟。</div>
           <div class="hotkey-list" id="hotkeyList">
             ${HOTKEY_ACTIONS.map(a => `
               <div class="hotkey-row">
