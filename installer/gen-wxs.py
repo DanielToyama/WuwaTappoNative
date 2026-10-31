@@ -1,7 +1,7 @@
 import os, uuid
 
 import sys
-root = 'publish/app-' + (sys.argv[1] if len(sys.argv) > 1 else '0.0.2')
+root = 'publish/app-' + (sys.argv[1] if len(sys.argv) > 1 else '0.0.3')
 tree = {'files': [], 'dirs': {}}
 
 

@@ -1517,6 +1517,10 @@
         <div class="section">
           <div class="section-title">其他</div>
           <div class="setting-item">
+            <div><div class="setting-title">开机自动启动</div><div class="setting-sub">登录 Windows 后自动运行桌宠（仅当前用户，不写系统级启动项）</div></div>
+            <div class="switch ${s.launchAtLogin ? 'on' : ''}" data-switch="launchAtLogin"></div>
+          </div>
+          <div class="setting-item">
             <div><div class="setting-title">日志与数据</div><div class="setting-sub">%LOCALAPPDATA%\\WuwatappoNative</div></div>
             <div class="setting-content"><button class="btn ghost" id="openLog">打开日志目录</button></div>
           </div>

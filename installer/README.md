@@ -1,10 +1,10 @@
-# 打包说明（v0.0.2）
+# 打包说明（v0.0.3）
 
 ## 产物
 
-- `dist/WuwatappoNative-0.0.2-x64.msi`：Per-User 安装包（无需管理员），安装到
-  `%LOCALAPPDATA%\Programs\Wuwatappo Native`，创建开始菜单与桌面快捷方式，版本 0.0.2。
-- `dist/WuwatappoNative-0.0.2-portable.zip`：解压即用，运行 `WuwatappoNative.exe`。
+- `dist/WuwatappoNative-0.0.3-x64.msi`：Per-User 安装包（无需管理员），安装到
+  `%LOCALAPPDATA%\Programs\Wuwatappo Native`，创建开始菜单与桌面快捷方式，版本 0.0.3。
+- `dist/WuwatappoNative-0.0.3-portable.zip`：解压即用，运行 `WuwatappoNative.exe`。
 
 ## 依赖
 
@@ -18,7 +18,7 @@
 cd tappoNativeGit
 # 首次需要 WiX（已放在 .wix/）
 dotnet tool install --tool-path .wix wix --version 5.0.2
-pwsh -File installer/build.ps1 -Version 0.0.2
+pwsh -File installer/build.ps1 -Version 0.0.3
 ```
 
 脚本会：publish 自包含 → 生成 WiX 源（280 个组件）→ 编译 MSI → 打便携 ZIP。
@@ -27,7 +27,7 @@ MSI 为 Per-User 安装，升级由 `MajorUpgrade` 处理。
 ## 已做的验证
 
 - MSI 静默安装退出码 0，安装目录包含 `assets/default`、`assets/ui`、`data`、`wwwroot` 完整子目录。
-- 安装后的 exe `FileVersion=0.0.2.0`、`ProductVersion=0.0.2`。
+- 安装后的 exe `FileVersion=0.0.3.0`、`ProductVersion=0.0.3`。
 - 开始菜单与桌面快捷方式均生成。
 - 安装版可直接启动并加载本地资源。
 

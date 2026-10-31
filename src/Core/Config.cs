@@ -33,6 +33,8 @@ public sealed class Settings
     public bool HideOtherPets { get; set; }
     public bool AlwaysShowChest { get; set; }
     public bool AutoChest { get; set; }
+    /// <summary>开机自动启动（写 HKCU Run 项，启动时会与注册表对齐）。</summary>
+    public bool LaunchAtLogin { get; set; }
 
     public int PetX { get; set; } = -1;
     public int PetY { get; set; } = -1;

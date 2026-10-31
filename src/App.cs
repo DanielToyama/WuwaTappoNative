@@ -30,6 +30,8 @@ public sealed class App : ApplicationContext
     public App()
     {
         Cfg = ConfigStore.Load();
+        // 配置与注册表对齐：用户手动删了 Run 项、或换过安装目录，都在启动时修正。
+        Cfg.LaunchAtLogin = AutoStart.Sync(Cfg.LaunchAtLogin);
         Auth = new AuthService(Cfg);
         Room = new RoomManager(Auth, Cfg);
         Pet = new PetWindow(Cfg, Auth, Catalog, Store, Room);

@@ -172,6 +172,7 @@ public sealed class PanelWindow : Form
             hideOtherPets = _app.Cfg.HideOtherPets,
             alwaysShowChest = _app.Cfg.AlwaysShowChest,
             autoChest = _app.Cfg.AutoChest,
+            launchAtLogin = AutoStart.IsEnabled,
             roomNo = _app.Cfg.RoomNo,
             lastRoom = _app.Cfg.LastRoom,
             hotkeys = Hotkeys.FromSettings(_app.Cfg.Hotkeys),
@@ -495,6 +496,9 @@ public sealed class PanelWindow : Form
                             break;
                         case "alwaysShowChest": cfg.AlwaysShowChest = ApiClient.ReadBool(kv.Value); break;
                         case "autoChest": cfg.AutoChest = ApiClient.ReadBool(kv.Value); break;
+                        case "launchAtLogin":
+                            cfg.LaunchAtLogin = AutoStart.Apply(ApiClient.ReadBool(kv.Value));
+                            break;
                     }
                 }
                 cfg.Opacity = Math.Clamp(cfg.Opacity, 0.2, 1.0);
