@@ -1,0 +1,95 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+    tags: [ 'v*' ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build & publish
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build -c Release --no-restore
+
+      - name: Publish (self-contained win-x64)
+        run: >-
+          dotnet publish -c Release -r win-x64 --self-contained true
+          -p:DebugType=none -p:DebugSymbols=false
+          -o publish/portable
+
+      - name: Upload portable
+        uses: actions/upload-artifact@v4
+        with:
+          name: WuwatappoNative-portable
+          path: publish/portable
+          if-no-files-found: error
+
+  package:
+    name: MSI + portable ZIP
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Resolve version
+        id: ver
+        shell: pwsh
+        run: |
+          $v = '${{ github.ref_name }}'.TrimStart('v')
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Install WiX
+        run: dotnet tool install --tool-path .wix wix --version 5.0.2
+
+      - name: Package MSI + ZIP
+        shell: pwsh
+        run: ./installer/build.ps1 -Version ${{ steps.ver.outputs.version }}
+
+      - name: Upload installers
+        uses: actions/upload-artifact@v4
+        with:
+          name: WuwatappoNative-installers
+          path: |
+            dist/*.msi
+            dist/*.zip
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $files = @()
+          $files += Get-ChildItem dist/*.msi | ForEach-Object { $_.FullName }
+          $files += Get-ChildItem dist/*.zip | ForEach-Object { $_.FullName }
+          gh release create $tag --title $tag --generate-notes @files

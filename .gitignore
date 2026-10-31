@@ -1,0 +1,16 @@
+# 忽略构建产物与本地配置（素材随仓库分发，见 NOTICE.md）
+
+bin/
+obj/
+publish/
+dist/
+.wix/
+installer/product.wxs
+*.user
+*.suo
+.vs/
+
+# 本地配置/日志
+config.json
+log.txt
+*.log

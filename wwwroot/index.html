@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Wuwatappo</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-name">Wuwa Tappo</div>
+        <div class="brand-sub">Native</div>
+      </div>
+      <nav class="tabs" id="tabs"></nav>
+      <div class="sidebar-foot">
+        <div class="user-chip" id="userChip">未登录</div>
+        <button class="close-btn" id="closeBtn" title="关闭面板">×</button>
+      </div>
+    </aside>
+
+    <main class="content">
+      <header class="titlebar" id="titlebar">
+        <div class="page-title" id="pageTitle">我的背包</div>
+        <div class="title-actions">
+          <button class="icon-btn" id="minBtn" title="最小化">—</button>
+        </div>
+      </header>
+      <section class="page-host" id="pageHost"></section>
+    </main>
+  </div>
+
+  <div class="toast-host" id="toastHost"></div>
+  <div class="modal-host hidden" id="modalHost"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
