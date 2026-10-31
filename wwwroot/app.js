@@ -265,22 +265,24 @@
     // 自动领宝箱发生在后台，面板收到后同步背包与「最近获得」。
     if (evt === 'chest') { refreshAfterAcquire(); return; }
     if (evt === 'clicks') {
-      const v = typeof data === 'object' && data !== null ? data : { available: data };
-      if (state.boot) {
-        state.boot.auth.clicks = v.available;
-        if (v.total != null) state.boot.auth.clickTotal = v.total;
-        if (v.consume != null) state.boot.auth.clickConsume = v.consume;
-      }
-      // 点击数每按一次键都会变：只改对应文字节点，不整页重绘（房间里人多时重绘代价很高）。
-      const setText = (sel, val) => {
-        if (val == null) return;
-        document.querySelectorAll(sel).forEach(el => { if (el.textContent !== String(val)) el.textContent = val; });
-      };
-      setText('[data-click-avail]', v.available);
-      setText('[data-click-total]', v.total);
-      setText('[data-click-consume]', v.consume);
+      applyClicks(typeof data === 'object' && data !== null ? data : { available: data });
       return;
     }
+  }
+
+  // 点击数每按一次键都会变：只改对应文字节点，不整页重绘（房间里人多时重绘代价很高）。
+  function applyClicks(v) {
+    if (!state.boot?.auth) return;
+    if (v.available != null) state.boot.auth.clicks = v.available;
+    if (v.total != null) state.boot.auth.clickTotal = v.total;
+    if (v.consume != null) state.boot.auth.clickConsume = v.consume;
+    const setText = (sel, val) => {
+      if (val == null) return;
+      document.querySelectorAll(sel).forEach(el => { if (el.textContent !== String(val)) el.textContent = val; });
+    };
+    setText('[data-click-avail]', v.available);
+    setText('[data-click-total]', v.total);
+    setText('[data-click-consume]', v.consume);
   }
 
   function renderChrome() {
@@ -1414,7 +1416,7 @@
               <div class="detail-row"><span>昵称</span><span>${esc(auth.nickname || '—')}</span></div>
               <div class="detail-row"><span>UID</span><span>${auth.uid || '—'}</span></div>
               <div class="detail-row"><span>可用点击</span><span data-click-avail>${auth.clicks || 0}</span></div>
-              <div class="detail-row"><span>累计点击</span><span data-click-total>${auth.clickTotal ?? auth.clicks ?? 0}</span></div>
+              <div class="detail-row"><span>累计点击</span><span class="click-total"><span data-click-total>${auth.clickTotal ?? auth.clicks ?? 0}</span><button class="btn ghost click-boost" id="boostClicks" title="本地增加 10000 次点击并立即上报；连续操作间隔至少 0.5 秒">+10000</button></span></div>
               <div class="detail-row"><span>已消耗</span><span data-click-consume>${auth.clickConsume || 0}</span></div>
               <div style="display:flex;gap:10px">
                 <button class="btn ghost" id="userRefresh">刷新账号信息</button>
@@ -1689,6 +1691,31 @@
     document.getElementById('userRefresh')?.addEventListener('click', async () => {
       try { state.boot = await tryCall('user.refresh'); renderChrome(); renderSettings(); toast('已刷新'); } catch { }
     });
+    const boost = document.getElementById('boostClicks');
+    if (boost) {
+      let busy = false;
+      boost.onclick = async () => {
+        if (busy) return;
+        busy = true;
+        boost.disabled = true;
+        const started = performance.now();
+        try {
+          const r = await tryCall('clicks.boost', { delta: 10000 });
+          if (r?.accepted) {
+            applyClicks(r);
+            toast('点击数 +10000');
+          } else {
+            toast('操作太快，请稍后再试', 'err');
+          }
+        } catch { }
+        // 原生层也有 500ms 限流；按钮保持禁用相同时间，避免连点堆积。
+        const wait = Math.max(0, 550 - (performance.now() - started));
+        setTimeout(() => {
+          busy = false;
+          if (boost.isConnected) boost.disabled = false;
+        }, wait);
+      };
+    }
     document.getElementById('setSend')?.addEventListener('click', async () => {
       const uid = val('setUid');
       if (!uid) return toast('请输入 UID', 'err');

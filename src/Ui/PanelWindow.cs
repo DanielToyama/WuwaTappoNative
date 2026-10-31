@@ -30,6 +30,8 @@ public sealed class PanelWindow : Form
     {
         _app = app;
         Text = "Wuwatappo";
+        // 不设 Icon 时任务栏/Alt+Tab 会显示 WinForms 默认图标。
+        Icon = AppIcon.Panel;
         FormBorderStyle = FormBorderStyle.None;
         // 面板尺寸由下面自己按“桌宠所在屏幕”的 DPI/工作区计算，避免 WinForms 再缩放一次。
         AutoScaleMode = AutoScaleMode.None;
@@ -384,6 +386,21 @@ public sealed class PanelWindow : Form
             case "user.refresh":
                 await auth.WhoAmIAsync();
                 return BootPayload();
+
+            case "clicks.boost":
+            {
+                if (!auth.IsLoggedIn) throw new ApiException(-1, "请先登录后再补充点击数");
+                long delta = ApiClient.ReadLong(data["delta"]);
+                if (delta != 10000) throw new ApiException(-1, "仅支持增加 10000 点击");
+                bool accepted = _app.Room.BoostLocalClicks(delta);
+                return new
+                {
+                    accepted,
+                    available = _app.Room.AvailableClicks,
+                    total = _app.Room.DisplayClicks,
+                    consume = _app.Room.ServerConsume,
+                };
+            }
 
             case "bag.list":
                 return await LoadBagAsync();

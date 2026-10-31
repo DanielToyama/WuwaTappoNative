@@ -723,7 +723,7 @@ public sealed class PetWindow : Form
 
     void BuildTray()
     {
-        _icon = BuildIcon();
+        _icon = AppIcon.Tray;
         _tray = new NotifyIcon
         {
             Icon = _icon,
@@ -733,23 +733,6 @@ public sealed class PetWindow : Form
         };
         _tray.DoubleClick += (s, e) => OpenPanelRequested?.Invoke();
         _tray.BalloonTipClicked += (s, e) => OpenPanelRequested?.Invoke();
-    }
-
-    Icon BuildIcon()
-    {
-        try
-        {
-            string head = System.IO.Path.Combine(Paths.DefaultAssets, "role_1501_1001_head_1.png");
-            using var src = Image.FromFile(head);
-            using var bmp = new Bitmap(32, 32);
-            using (var g = Graphics.FromImage(bmp))
-            {
-                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-                g.DrawImage(src, 0, 0, 32, 32);
-            }
-            return Icon.FromHandle(bmp.GetHicon());
-        }
-        catch { return SystemIcons.Application; }
     }
 
     /// <summary>托盘气泡。后台线程（如自动领宝箱）也会调用，必须切回 UI 线程。</summary>

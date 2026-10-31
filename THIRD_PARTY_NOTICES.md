@@ -20,5 +20,6 @@
 ## 游戏内容
 
 「鸣潮」、WuwaTappo 及全部游戏素材的版权归库洛游戏所有。本仓库随附的少量素材（默认角色帧、
-宝箱 UI 底图、应用图标、外观目录 JSON）仅用于保证构建结果一致，不构成对这些素材的任何授权；
-版权仍归库洛游戏所有。详见 [NOTICE.md](NOTICE.md) 与 [assets/README.md](assets/README.md)。
+宝箱 UI 底图、使用默认角色头帧合成的应用图标、外观目录 JSON）仅用于保证构建结果一致，
+不构成对这些素材的任何授权；版权仍归库洛游戏所有。
+详见 [NOTICE.md](NOTICE.md) 与 [assets/README.md](assets/README.md)。

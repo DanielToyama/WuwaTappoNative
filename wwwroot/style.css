@@ -160,6 +160,8 @@ img { -webkit-user-drag: none; }
 .detail-name { font-size: 20px; font-weight: 800; color: var(--ink-strong); }
 .detail-row { display: flex; justify-content: space-between; font-size: 14px; color: var(--ink-dim); }
 .detail-empty { margin: auto; color: var(--ink-dim); text-align: center; line-height: 1.8; }
+.click-total { display: inline-flex; align-items: center; gap: 8px; }
+.click-boost { height: 26px; padding: 0 10px; font-size: 12px; line-height: 1; border-radius: 8px; box-shadow: none; flex: none; }
 
 /* 设置 */
 .settings-scroll { overflow-y: auto; padding-right: 6px; }

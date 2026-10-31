@@ -35,6 +35,7 @@ public sealed class RoomManager : IDisposable
     long _baseClicks;
     long _pendingClicks;
     long _serverConsume;
+    long _lastBoostMs;
     int _busy;
     int _generation;
 
@@ -511,6 +512,25 @@ public sealed class RoomManager : IDisposable
     {
         Interlocked.Add(ref _pendingClicks, n);
         ClicksChanged?.Invoke();
+    }
+
+    /// <summary>
+    /// 设置页“+10000”：对齐原版 Helper 暴露的本地点击数补充按钮。
+    /// 先记入本地待上报，再立即尝试一次 cr；500ms 内只接受一次，避免连点造成保存风暴。
+    /// </summary>
+    public bool BoostLocalClicks(long delta)
+    {
+        if (delta != 10000) return false;
+        long now = Environment.TickCount64;
+        long previous = Interlocked.Read(ref _lastBoostMs);
+        if (previous != 0 && now - previous < 500) return false;
+        if (Interlocked.CompareExchange(ref _lastBoostMs, now, previous) != previous) return false;
+
+        Interlocked.Add(ref _pendingClicks, delta);
+        ClicksChanged?.Invoke();
+        // 与原版一致：按钮不等待服务器回包，避免网络慢时把设置页卡住。
+        _ = FlushClicksAsync();
+        return true;
     }
 
     /// <summary>
