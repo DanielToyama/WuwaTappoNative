@@ -114,4 +114,10 @@ jobs:
           $files = @()
           $files += Get-ChildItem dist/*.msi | ForEach-Object { $_.FullName }
           $files += Get-ChildItem dist/*.zip | ForEach-Object { $_.FullName }
-          gh release create $tag --title $tag --generate-notes @files
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            Write-Host "Release $tag already exists; uploading/replacing assets."
+            gh release upload $tag @files --clobber
+          } else {
+            gh release create $tag --title $tag --generate-notes @files
+          }
