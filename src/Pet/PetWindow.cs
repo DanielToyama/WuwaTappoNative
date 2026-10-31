@@ -44,6 +44,9 @@ public sealed class PetWindow : Form
 
     bool _hiddenByHotkey;
 
+    /// <summary>全局输入监听（App 用它给键盘显示转发按键高亮）。</summary>
+    public GlobalInputHook Input => _hook;
+
     public event Action OpenPanelRequested;
     public event Action<string> ChestOpenRequested;
     public event Action GeometryChanged;
@@ -84,7 +87,7 @@ public sealed class PetWindow : Form
         _room.SocketClosed += reason => Safe(() => { if (_room.State == "joined") Notify("连接断开：" + reason); });
 
         _auth.Changed += () => Safe(OnAuthChanged);
-        _room.ClicksChanged += () => Safe(Compose);
+        _room.ClicksChanged += () => Safe(RequestCompose);
         _catalog.Loaded += () => Safe(() => { _loader.Clear(); ReloadFrames(); RefreshCats(); });
 
         ReloadFrames();
@@ -235,8 +238,34 @@ public sealed class PetWindow : Form
         _blink.Start();
     }
 
-    void SetHead(int f) { if (_headFrame == f) return; _headFrame = f; Compose(); }
-    void SetBody(int f) { if (_bodyFrame == f) return; _bodyFrame = f; Compose(); }
+    void SetHead(int f) { if (_headFrame == f) return; _headFrame = f; RequestCompose(); }
+    void SetBody(int f) { if (_bodyFrame == f) return; _bodyFrame = f; RequestCompose(); }
+
+    bool _composePending;
+    System.Windows.Forms.Timer _composeTimer;
+
+    /// <summary>
+    /// 高频重绘合并：连打时每次按键都会调 SetBody / 计数变化，直接 Compose 会把 UI 线程
+    /// 塞成一条长队，键盘高亮和计数反而看着“卡住”。这里统一压到约 60fps。
+    /// </summary>
+    void RequestCompose()
+    {
+        if (IsDisposed || !IsHandleCreated) return;
+        _composePending = true;
+        if (_composeTimer == null)
+        {
+            _composeTimer = new System.Windows.Forms.Timer { Interval = 16 };
+            _composeTimer.Tick += (s, e) =>
+            {
+                _composeTimer.Stop();
+                if (!_composePending) return;
+                _composePending = false;
+                Compose();
+            };
+        }
+        if (_composeTimer.Enabled) return;
+        _composeTimer.Start();
+    }
 
     /// <summary>每次按下：左右手交替落下，220ms 后若未抬起自动回位。</summary>
     void HandDown()
@@ -845,7 +874,7 @@ public sealed class PetWindow : Form
 
     protected override void OnClosed(EventArgs e)
     {
-        foreach (var t in new[] { _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer }) { try { t?.Stop(); t?.Dispose(); } catch { } }
+        foreach (var t in new[] { _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _composeTimer }) { try { t?.Stop(); t?.Dispose(); } catch { } }
         foreach (var c in _cats.Values.ToList()) { try { c.Close(); c.Dispose(); } catch { } }
         _cats.Clear();
         _surface.Dispose();

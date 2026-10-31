@@ -28,6 +28,9 @@ public sealed class KeyboardWindow : Form
     readonly Dictionary<string, RectangleF> _keys = new();
     readonly Dictionary<string, RectangleF> _buttons = new();
     readonly HashSet<string> _down = new();
+    // 原版给每次按下约 70ms 的可见高亮：极快的点按也能看见，不会“一闪就没”。
+    readonly Dictionary<string, long> _pulseUntil = new();
+    System.Windows.Forms.Timer _pulseTimer;
     System.Windows.Forms.Timer _poll;
     Mode _mode = Mode.Hidden;
     float _scale = 1f;
@@ -57,7 +60,7 @@ public sealed class KeyboardWindow : Form
         StartPosition = FormStartPosition.Manual;
         Size = new Size(W, LettersH);
         BuildLayout(Mode.Letters);
-        _poll = new System.Windows.Forms.Timer { Interval = 33 };
+        _poll = new System.Windows.Forms.Timer { Interval = 16 };
         _poll.Tick += (s, e) => Poll();
         // 始终轮询：手柄按键即使不展开键盘界面也要驱动主角。
         _poll.Start();
@@ -139,6 +142,8 @@ public sealed class KeyboardWindow : Form
             Hide();
             return;
         }
+        _down.Clear();
+        _pulseUntil.Clear();
         BuildLayout(mode);
         Show();
         if (!_poll.Enabled) _poll.Start();
@@ -197,14 +202,94 @@ public sealed class KeyboardWindow : Form
         // 手柄始终轮询：即使键盘界面没展开，按手柄也要驱动主角挥手和点击数。
         PollPad(_mode == Mode.Controller);
         if (_mode == Mode.Controller || _mode == Mode.Hidden) return;
+        // 键盘按键由 Raw Input 边沿驱动（OnKeyEdge），这里只补鼠标左右键。
         bool changed = false;
-        foreach (var key in _keys.Keys)
+        foreach (var key in new[] { "MOUSE_L", "MOUSE_R" })
         {
+            if (!_keys.ContainsKey(key)) continue;
             bool down = IsDown(key);
-            if (down && _down.Add(key)) changed = true;
-            else if (!down && _down.Remove(key)) changed = true;
+            if (down && _down.Add(key)) { Pulse(key); changed = true; }
+            else if (!down && _down.Remove(key)) { Pulse(key); changed = true; }
         }
-        if (changed) Render();
+        if (changed) RequestRender();
+    }
+
+    /// <summary>
+    /// Raw Input 按键边沿：按下立刻高亮，不等 33ms 轮询，也不会漏掉快速点击。
+    /// 渲染按 8ms 合并，连打时不会把 UI 线程塞满。
+    /// </summary>
+    public void OnKeyEdge(int vk, bool down)
+    {
+        if (IsDisposed) return;
+        if (InvokeRequired)
+        {
+            try { BeginInvoke(new Action<int, bool>(OnKeyEdge), vk, down); } catch { }
+            return;
+        }
+        if (_mode != Mode.Letters && _mode != Mode.Wuwa) return;
+        string key = vk switch
+        {
+            0x20 => "SPACE",
+            >= 0x30 and <= 0x5A => ((char)vk).ToString(),
+            _ => null
+        };
+        if (key == null || !_keys.ContainsKey(key)) return;
+        if (down) { if (!_down.Add(key)) return; }
+        else { if (!_down.Remove(key)) return; }
+        Pulse(key);
+        RequestRender();
+    }
+
+    long _lastRenderMs;
+    bool _renderPending;
+    System.Windows.Forms.Timer _renderTimer;
+
+    bool IsLit(string key)
+    {
+        if (_down.Contains(key)) return true;
+        return _pulseUntil.TryGetValue(key, out long until) && Environment.TickCount64 < until;
+    }
+
+    void Pulse(string key)
+    {
+        _pulseUntil[key] = Environment.TickCount64 + 70;
+        if (_pulseTimer == null)
+        {
+            _pulseTimer = new System.Windows.Forms.Timer { Interval = 40 };
+            _pulseTimer.Tick += (s, e) =>
+            {
+                long now = Environment.TickCount64;
+                var expired = new List<string>();
+                foreach (var pair in _pulseUntil) if (pair.Value <= now) expired.Add(pair.Key);
+                foreach (var k in expired) _pulseUntil.Remove(k);
+                RequestRender();
+                if (_pulseUntil.Count == 0) _pulseTimer.Stop();
+            };
+        }
+        if (!_pulseTimer.Enabled) _pulseTimer.Start();
+    }
+
+    void RequestRender()
+    {
+        long now = Environment.TickCount64;
+        if (now - _lastRenderMs >= 8)
+        {
+            Render();
+            return;
+        }
+        _renderPending = true;
+        if (_renderTimer == null)
+        {
+            _renderTimer = new System.Windows.Forms.Timer { Interval = 8 };
+            _renderTimer.Tick += (s, e) =>
+            {
+                _renderTimer.Stop();
+                if (!_renderPending) return;
+                _renderPending = false;
+                Render();
+            };
+        }
+        if (!_renderTimer.Enabled) _renderTimer.Start();
     }
 
     void PollPad(bool render)
@@ -272,6 +357,7 @@ public sealed class KeyboardWindow : Form
     void Render()
     {
         if (!IsHandleCreated) return;
+        _lastRenderMs = Environment.TickCount64;
         int w = Math.Max(1, Width), h = Math.Max(1, Height);
         var surface = _surface.Begin(w, h);
         using (var g = Graphics.FromImage(surface))
@@ -283,7 +369,7 @@ public sealed class KeyboardWindow : Form
             DrawToolbar(g, s);
             DrawPlate(g, s);
             if (_mode == Mode.Controller) DrawPad(g, s);
-            else foreach (var pair in _keys) DrawKey(g, s, pair.Key, pair.Value, _down.Contains(pair.Key));
+            else foreach (var pair in _keys) DrawKey(g, s, pair.Key, pair.Value, IsLit(pair.Key));
         }
         _surface.Apply(this);
         _painted = true;
@@ -542,6 +628,8 @@ public sealed class KeyboardWindow : Form
     protected override void OnClosed(EventArgs e)
     {
         _poll?.Dispose();
+        _renderTimer?.Dispose();
+        _pulseTimer?.Dispose();
         _surface.Dispose();
         base.OnClosed(e);
     }

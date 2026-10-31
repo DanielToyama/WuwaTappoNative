@@ -37,6 +37,8 @@ public sealed class GlobalInputHook : IDisposable
     public event Action<int> KeyUp;
     /// <summary>非修饰键按下（含当时按住的 Ctrl/Alt/Shift）。快捷键匹配用，不消耗按键。</summary>
     public event Action<int, bool, bool, bool> HotkeyKeyDown;
+    /// <summary>任意按键的按下/抬起边沿（不含长按重复）。只用于界面高亮，不拦截、不计数。</summary>
+    public event Action<int, bool> KeyEdge;
 
     static bool IsModifier(int vk) => vk is 0x10 or 0x11 or 0x12
         or 0xA0 or 0xA1 or 0xA2 or 0xA3 or 0xA4 or 0xA5 or 0x5B or 0x5C;
@@ -116,6 +118,9 @@ public sealed class GlobalInputHook : IDisposable
             lock (_gate) first = _pressed.Add(vk);
             if (!first) return; // 长按的自动重复
 
+            // 高亮走边沿事件：不等轮询，按下立刻亮。
+            Safe(() => KeyEdge?.Invoke(vk, true));
+
             if (!App.UiInputFocused)
             {
                 bool ctrl, alt, shift;
@@ -134,6 +139,7 @@ public sealed class GlobalInputHook : IDisposable
         {
             bool was;
             lock (_gate) was = _pressed.Remove(vk);
+            if (was) Safe(() => KeyEdge?.Invoke(vk, false));
             if (was && !blocked) Safe(() => KeyUp?.Invoke(vk));
         }
     }

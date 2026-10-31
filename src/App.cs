@@ -52,12 +52,11 @@ public sealed class App : ApplicationContext
             if (Auth.IsLoggedIn) Room.SyncServerClicks(Auth.TotalClickCount, Auth.TotalClickConsume);
             else Room.ResetPendingClicks();
         };
-        Room.ClicksChanged += () => Panel?.Push("clicks", new
-        {
-            available = Room.AvailableClicks,
-            total = Room.DisplayClicks,
-            consume = Room.ServerConsume
-        });
+        // 点击数变化很频繁（每次按键一次）。面板可能没开，开了也不能每次都走一趟
+        // WebView2 序列化 + postMessage；这里合并成 100ms 一次。
+        Room.ClicksChanged += QueueClicksPush;
+        // 键盘显示直接吃 Raw Input 边沿：按下立刻亮，不再等 16ms 轮询，也不会漏掉快速点击。
+        Pet.Input.KeyEdge += (vk, down) => Keyboard.OnKeyEdge(vk, down);
         Pet.GeometryChanged += LayoutKeyboard;
         Pet.RefreshRequested += () => _ = RefreshEverythingAsync();
         // 快捷键/托盘菜单改了窗口设置后，面板里的开关要跟着变，否则界面显示和实际状态不一致。
@@ -391,6 +390,36 @@ public sealed class App : ApplicationContext
         }
     }
 
+    int _clicksPending;
+    System.Threading.Timer _clicksPushTimer;
+
+    /// <summary>
+    /// 点击数每次按键都会变。面板没开时直接丢弃；开着时按 100ms 节流推送，
+    /// 避免高频输入把 WebView2 的消息队列塞满（表现出来就是界面“卡住不刷新”）。
+    /// </summary>
+    void QueueClicksPush()
+    {
+        if (Panel == null) return;
+        Interlocked.Exchange(ref _clicksPending, 1);
+        if (_clicksPushTimer == null)
+        {
+            _clicksPushTimer = new System.Threading.Timer(_ =>
+            {
+                if (Interlocked.Exchange(ref _clicksPending, 0) == 0) return;
+                PushClicksNow();
+            }, null, 100, Timeout.Infinite);
+            return;
+        }
+        _clicksPushTimer.Change(100, Timeout.Infinite);
+    }
+
+    void PushClicksNow() => Panel?.Push("clicks", new
+    {
+        available = Room.AvailableClicks,
+        total = Room.DisplayClicks,
+        consume = Room.ServerConsume
+    });
+
     public void PushAuth()
     {
         Panel?.Push("auth", new
@@ -436,6 +465,7 @@ public sealed class App : ApplicationContext
         {
             try { _autoChestTimer?.Dispose(); } catch { }
             try { _clickRefreshTimer?.Dispose(); } catch { }
+            try { _clicksPushTimer?.Dispose(); } catch { }
             try { Room.Dispose(); } catch { }
             try { Store.Dispose(); } catch { }
             try { Auth.Api.Dispose(); } catch { }
