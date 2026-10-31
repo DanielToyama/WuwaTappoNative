@@ -248,6 +248,48 @@
     });
   }
 
+  function showInheritLogin() {
+    modal(`
+      <div class="about">
+        <div class="about-title">继承官方程序登录状态</div>
+        <div class="about-note about-note--warn">
+          <p>建议在获取前先关闭本家程序的开机自动启动，以免下次开机因为 token 冲突导致掉线。</p>
+          <p>继续后会读取本机官方 WuwaTappo 客户端的登录数据；如果官方客户端正在运行，会被关闭。只读取本机文件，不上传 token。</p>
+          <p>如果当前已经登录了其他账号，会被官方客户端的账号替换。请确认官方客户端已经在当前 Windows 用户下登录过一次。</p>
+        </div>
+        <div style="display:flex;gap:10px;justify-content:center">
+          <button class="btn ghost" id="inheritCancel">取消</button>
+          <button class="btn" id="inheritGo">开始继承</button>
+        </div>
+      </div>`, host => {
+      const cancel = host.querySelector('#inheritCancel');
+      const go = host.querySelector('#inheritGo');
+      let busy = false;
+      host.onclick = e => { if (e.target === host && !busy) closeModal(); };
+      cancel.onclick = () => { if (!busy) closeModal(); };
+      go.onclick = async () => {
+        if (busy) return;
+        busy = true;
+        cancel.disabled = true;
+        go.disabled = true;
+        go.textContent = '正在读取…';
+        try {
+          const r = await tryCall('token.inherit');
+          state.boot = await call('boot');
+          closeModal();
+          renderChrome();
+          navigate('bag');
+          toast('已继承官方程序登录状态' + (r?.nickname ? '：' + r.nickname : ''));
+        } catch {
+          busy = false;
+          cancel.disabled = false;
+          go.disabled = false;
+          go.textContent = '开始继承';
+        }
+      };
+    });
+  }
+
   function handleEvent(evt, data) {
     if (evt === 'boot') { state.boot = data; renderChrome(); renderPage(); maybeShowDisclaimer(); maybeOpenEmoteEditor(); return; }
     if (evt === 'auth') { if (state.boot) state.boot.auth = { ...state.boot.auth, ...data }; renderChrome(); renderPage(); return; }
@@ -323,14 +365,15 @@
   function renderLogin() {
     return `<div class="login-wrap"><div class="login-card">
       <h2>登录 Wuwa Tappo</h2>
-      <div class="hint">使用游戏 UID 或绑定的手机号登录。验证码会发送到账号绑定的手机/邮箱；登录态仅保存在本机。</div>
-      <input class="input" id="loginUid" placeholder="游戏 UID（9-10 位）或手机号（11 位）" inputmode="numeric" maxlength="13" />
+      <div class="hint">使用游戏 UID 登录；如果无法完成验证码登录，请使用官方登录状态。</div>
+      <input class="input" id="loginUid" placeholder="游戏 UID（9-10 位）" inputmode="numeric" maxlength="10" />
       <div style="display:flex;gap:10px">
         <input class="input" id="loginCode" placeholder="6 位验证码" style="flex:1" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
         <button class="btn ghost" id="sendCodeBtn">发送验证码</button>
       </div>
       <button class="btn" id="loginBtn">登录</button>
-      <div class="hint">也可以从官方客户端复制 infoToken，在「设置 → 账号」中导入。</div>
+      <div class="hint">如果无法完成 UID 验证码登录，请先在官方客户端登录，再点击下方按钮继承官方登录状态。</div>
+      <button class="btn ghost" id="loginInherit">继承官方程序登录状态</button>
     </div></div>`;
   }
 
@@ -346,19 +389,19 @@
     });
     digitsOnly(uidEl); digitsOnly(codeEl);
 
-    // UID 9-10 位，或手机号 11 位（可带 +86 / 86 前缀）。
-    const uidValid = v => /^(?:1\d{10}|[0-9]{9,10})$/.test(v);
+    // 手机号登录已移除，只接受 9-10 位游戏 UID。
+    const uidValid = v => /^[0-9]{9,10}$/.test(v);
     send.onclick = async () => {
       const uid = uidEl.value.trim();
-      if (!uid) return toast('请输入 UID 或手机号', 'err');
-      if (!uidValid(uid)) return toast('请输入 9-10 位 UID 或 11 位手机号', 'err');
+      if (!uid) return toast('请输入游戏 UID', 'err');
+      if (!uidValid(uid)) return toast('请输入 9-10 位游戏 UID', 'err');
       try { await tryCall('login.sendCode', { uid }); toast('验证码已发送'); } catch { }
     };
     go.onclick = async () => {
       const uid = uidEl.value.trim();
       const code = codeEl.value.trim();
-      if (!uid) return toast('请输入 UID 或手机号', 'err');
-      if (!uidValid(uid)) return toast('请输入 9-10 位 UID 或 11 位手机号', 'err');
+      if (!uid) return toast('请输入游戏 UID', 'err');
+      if (!uidValid(uid)) return toast('请输入 9-10 位游戏 UID', 'err');
       if (!/^[0-9]{6}$/.test(code)) return toast('请输入 6 位数字验证码', 'err');
       try {
         await tryCall('login.submit', { uid, code });
@@ -368,6 +411,7 @@
         navigate('bag');
       } catch { }
     };
+    document.getElementById('loginInherit')?.addEventListener('click', showInheritLogin);
   }
 
   /* ---------------- 背包 ---------------- */
@@ -1422,10 +1466,10 @@
                 <button class="btn ghost" id="userRefresh">刷新账号信息</button>
                 <button class="btn danger" id="logoutBtn">退出登录</button>
               </div>` : `
-              <div class="detail-row"><span>登录</span><span class="muted">使用 UID + 验证码</span></div>
+              <div class="detail-row"><span>登录</span><span class="muted">UID + 验证码（也可继承官方登录状态）</span></div>
               <div style="display:flex;gap:10px">
-                <input class="input" id="setUid" placeholder="游戏 UID 或手机号" style="width:180px" />
-                <input class="input" id="setCode" placeholder="验证码" style="width:140px" />
+                <input class="input" id="setUid" placeholder="游戏 UID（9-10 位）" style="width:180px" />
+                <input class="input" id="setCode" placeholder="6 位验证码" style="width:140px" />
                 <button class="btn ghost" id="setSend">发送验证码</button>
                 <button class="btn" id="setLogin">登录</button>
               </div>
@@ -1433,6 +1477,10 @@
                 <input class="input" id="setToken" placeholder="粘贴官方客户端 infoToken" style="flex:1" />
                 <button class="btn ghost" id="setTokenBtn">导入 token</button>
               </div>`}
+            <div class="inherit-login">
+              <div class="setting-sub">建议在获取前先关闭本家程序的开机自动启动，以免下次开机因为 token 冲突导致掉线。</div>
+              <button class="btn ghost" id="inheritLogin">继承官方程序登录状态</button>
+            </div>
           </div>
         </div>
 
@@ -1718,14 +1766,18 @@
     }
     document.getElementById('setSend')?.addEventListener('click', async () => {
       const uid = val('setUid');
-      if (!uid) return toast('请输入 UID', 'err');
+      if (!uid) return toast('请输入游戏 UID', 'err');
+      if (!/^[0-9]{9,10}$/.test(uid)) return toast('请输入 9-10 位游戏 UID', 'err');
       try { await tryCall('login.sendCode', { uid }); toast('验证码已发送'); } catch { }
     });
     document.getElementById('setLogin')?.addEventListener('click', async () => {
       const uid = val('setUid'), code = val('setCode');
-      if (!uid || !code) return toast('请输入 UID 与验证码', 'err');
+      if (!uid || !code) return toast('请输入游戏 UID 与验证码', 'err');
+      if (!/^[0-9]{9,10}$/.test(uid)) return toast('请输入 9-10 位游戏 UID', 'err');
+      if (!/^[0-9]{6}$/.test(code)) return toast('请输入 6 位数字验证码', 'err');
       try { await tryCall('login.submit', { uid, code }); state.boot = await call('boot'); renderChrome(); navigate('bag'); toast('登录成功'); } catch { }
     });
+    document.getElementById('inheritLogin')?.addEventListener('click', showInheritLogin);
     document.getElementById('setTokenBtn')?.addEventListener('click', async () => {
       const token = val('setToken');
       if (!token) return toast('请输入 token', 'err');

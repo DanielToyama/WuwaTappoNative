@@ -61,7 +61,7 @@ public sealed class AuthService
     }
 
     /// <summary>
-    /// 发送验证码。服务端按数字校验 playerId，传字符串会返回 10001 Invalid parameters
+    /// 发送 UID 验证码。服务端按数字校验 playerId，传字符串会返回 10001 Invalid parameters
     /// （原版前端也是 Number(uid)）。
     /// </summary>
     public async Task SendUidCodeAsync(string playerId)
@@ -70,14 +70,18 @@ public sealed class AuthService
         await Api.PostAsync("api/auth/uid-send-code", new { playerId = uid });
     }
 
-    /// <summary>UID / 手机号登录。playerId 与 code 都必须是数字，字符串会被判定为无效参数。</summary>
+    /// <summary>
+    /// UID 登录。playerId 与 code 都必须是数字，字符串会被判定为无效参数。
+    /// 手机号通道已实测不可用，客户端不再接受手机号。
+    /// </summary>
     public async Task LoginWithUidAsync(string playerId, string code)
     {
         long uid = ParsePlayerId(playerId);
         string trimmed = (code ?? "").Trim();
         if (string.IsNullOrEmpty(trimmed)) throw new ApiException(-1, "请输入验证码");
         if (!trimmed.All(char.IsDigit)) throw new ApiException(-1, "验证码只能是数字");
-        if (trimmed.Length != 6) throw new ApiException(-1, "验证码为 6 位数字");
+        if (trimmed.Length != 6) throw new ApiException(-1, "UID 验证码为 6 位数字");
+
         long codeNum = long.Parse(trimmed);
         var data = await Api.PostAsync("api/auth/uid-login", new { playerId = uid, code = codeNum });
         ApplyAuthToken(data);
@@ -208,23 +212,16 @@ public sealed class AuthService
         return 0;
     }
 
-    /// <summary>原版校验：纯数字且至少 9 位（游戏特征码/UID）。</summary>
-    /// <summary>
-    /// 接受游戏 UID（9~10 位）或手机号（11 位，可带 +86 / 86 前缀）。
-    /// 两者都通过同一个 playerId 数字参数提交，服务端按位数区分：
-    /// 11 位会走第三方短信通道，实测会返回 10023 而不是“查询不到角色”。
-    /// </summary>
+    /// <summary>原版校验：游戏 UID 为 9~10 位纯数字。手机号通道实测不可用，不再接受 11 位输入。</summary>
     static long ParsePlayerId(string playerId)
     {
         string raw = (playerId ?? "").Trim().Replace(" ", "");
-        if (string.IsNullOrEmpty(raw)) throw new ApiException(-1, "请输入 UID 或手机号");
-        if (raw.StartsWith("+")) raw = raw[1..];
-        if (!raw.All(char.IsDigit)) throw new ApiException(-1, "UID / 手机号只能是数字");
-        // 手机号允许带 86 国家码，统一裁掉后再按 11 位校验。
-        if (raw.Length == 13 && raw.StartsWith("86")) raw = raw[2..];
-        if (raw.Length < 9) throw new ApiException(-1, "UID 至少 9 位数字，手机号请填 11 位");
-        if (raw.Length > 11) throw new ApiException(-1, "最多 11 位（手机号）");
-        if (raw.Length == 11 && raw[0] != '1') throw new ApiException(-1, "手机号格式不正确");
+        if (string.IsNullOrEmpty(raw)) throw new ApiException(-1, "请输入游戏 UID");
+        if (!raw.All(char.IsDigit)) throw new ApiException(-1, "游戏 UID 只能是数字");
+        if (raw.Length == 11)
+            throw new ApiException(-1, "手机号登录已移除，请使用官方登录状态或游戏 UID");
+        if (raw.Length < 9 || raw.Length > 10)
+            throw new ApiException(-1, "游戏 UID 为 9-10 位数字");
         return long.Parse(raw);
     }
 }

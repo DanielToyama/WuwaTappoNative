@@ -162,6 +162,9 @@ img { -webkit-user-drag: none; }
 .detail-empty { margin: auto; color: var(--ink-dim); text-align: center; line-height: 1.8; }
 .click-total { display: inline-flex; align-items: center; gap: 8px; }
 .click-boost { height: 26px; padding: 0 10px; font-size: 12px; line-height: 1; border-radius: 8px; box-shadow: none; flex: none; }
+.inherit-login { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid rgba(231, 183, 124, .55); }
+.inherit-login .setting-sub { flex: 1 1 260px; line-height: 1.5; }
+.inherit-login .btn { height: 34px; padding: 0 14px; font-size: 13px; flex: none; }
 
 /* 设置 */
 .settings-scroll { overflow-y: auto; padding-right: 6px; }

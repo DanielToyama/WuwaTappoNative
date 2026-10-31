@@ -374,9 +374,48 @@ public sealed class PanelWindow : Form
                 if (await auth.TryRestoreAsync())
                 {
                     _app.Pet.BeginInvoke(new Action(() => _app.Pet.ApplySettings()));
+                    await _app.Room.EnsureLobbyAsync();
+                    await _app.ResumeLastRoomAsync();
                     return new { loggedIn = true, nickname = auth.Nickname };
                 }
                 throw new ApiException(-1, "token 无效或已过期");
+
+            case "token.inherit":
+            {
+                var extracted = await Task.Run(() =>
+                {
+                    var clients = OfficialTokenReader.FindClientProcesses();
+                    try
+                    {
+                        if (clients.Count > 0)
+                            OfficialTokenReader.CloseClientProcesses(clients, Log.Write);
+                    }
+                    finally
+                    {
+                        foreach (var process in clients) process.Dispose();
+                    }
+                    return OfficialTokenReader.Extract(Log.Write);
+                });
+
+                var token = extracted.PreferredToken;
+                if (token == null || string.IsNullOrWhiteSpace(token.Value))
+                {
+                    if (extracted.SawV20)
+                        throw new ApiException(-1, "官方客户端使用了 v20 App-Bound Encryption，无法读取 token，请改用 UID + 验证码登录。");
+                    if (extracted.TokenDecryptFailed)
+                        throw new ApiException(-1, "找到 token 但解密失败；请确认官方客户端与本程序使用同一 Windows 用户，并在客户端重新登录后再试。");
+                    throw new ApiException(-1, "官方客户端中没有找到登录 token，请先在官方客户端完成登录。");
+                }
+
+                auth.SetTokenManually(token.Value);
+                if (!await auth.TryRestoreAsync())
+                    throw new ApiException(-1, "读取到 token，但服务器验证失败；请重新登录官方客户端后再试。");
+
+                _app.Pet.BeginInvoke(new Action(() => _app.Pet.ApplySettings()));
+                await _app.Room.EnsureLobbyAsync();
+                await _app.ResumeLastRoomAsync();
+                return new { loggedIn = true, nickname = auth.Nickname };
+            }
 
             case "logout":
                 await auth.LogoutAsync();

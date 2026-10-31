@@ -1,5 +1,6 @@
 using System;
 using System.Windows.Forms;
+using WuwatappoNative.Net;
 
 namespace WuwatappoTokenExtractor;
 
@@ -9,7 +10,7 @@ static class Program
     static void Main()
     {
         ApplicationConfiguration.Initialize();
-        TokenExtractor.CleanupStaleDumps();
+        OfficialTokenReader.CleanupStaleDumps();
         Application.Run(new MainForm());
     }
 }

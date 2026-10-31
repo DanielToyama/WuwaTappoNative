@@ -1,6 +1,7 @@
 using System;
 using System.Windows.Forms;
 using WuwatappoNative.Core;
+using WuwatappoNative.Net;
 
 namespace WuwatappoNative;
 
@@ -11,6 +12,7 @@ static class Program
     {
         Paths.EnsureDirs();
         Log.Init(args);
+        OfficialTokenReader.CleanupStaleDumps();
         // 单实例必须在提权/创建窗口之前判断；第二个实例只负责请求已有实例显示面板。
         if (!SingleInstance.Acquire())
         {

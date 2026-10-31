@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Windows.Forms;
+using WuwatappoNative.Net;
 
 namespace WuwatappoTokenExtractor;
 
@@ -220,7 +221,7 @@ public sealed class MainForm : Form
 
         try
         {
-            var clients = TokenExtractor.FindClientProcesses();
+            var clients = OfficialTokenReader.FindClientProcesses();
             try
             {
                 if (clients.Count > 0)
@@ -240,7 +241,7 @@ public sealed class MainForm : Form
                     }
 
                     Action<string> progress = AppendLog;
-                    await Task.Run(() => TokenExtractor.CloseClientProcesses(clients, progress));
+                    await Task.Run(() => OfficialTokenReader.CloseClientProcesses(clients, progress));
                     AppendLog("官方客户端已关闭。");
                 }
                 else
@@ -255,7 +256,7 @@ public sealed class MainForm : Form
 
             _status.Text = "正在读取并解密…";
             Action<string> logProgress = AppendLog;
-            var result = await Task.Run(() => TokenExtractor.Extract(logProgress));
+            var result = await Task.Run(() => OfficialTokenReader.Extract(logProgress));
 
             if (result.PreferredToken is { } token)
             {

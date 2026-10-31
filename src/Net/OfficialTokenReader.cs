@@ -10,7 +10,9 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 
-namespace WuwatappoTokenExtractor;
+#nullable enable
+
+namespace WuwatappoNative.Net;
 
 public sealed class TokenEntry
 {
@@ -46,8 +48,9 @@ public sealed class TokenExtractionException : Exception
 /// <summary>
 /// 只读取本机官方 WuwaTappo（WebView2）数据：关闭客户端 → 复制 Cookies/Local State →
 /// DPAPI 解出 AES 密钥 → AES-256-GCM 解密 token。复制件在读取后立即删除。
+/// 主程序与独立提取器共用这份实现，避免两套解密逻辑产生偏差。
 /// </summary>
-public static class TokenExtractor
+public static class OfficialTokenReader
 {
     static readonly string[] ClientProcessNames = { "WuwaTappo" };
 
