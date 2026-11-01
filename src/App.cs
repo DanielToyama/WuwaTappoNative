@@ -78,6 +78,7 @@ public sealed class App : ApplicationContext
             {
                 KeyboardWindow.Mode.Letters => "letters",
                 KeyboardWindow.Mode.Wuwa => "wuwa",
+                KeyboardWindow.Mode.Rhythm => "rhythm",
                 KeyboardWindow.Mode.Controller => "controller",
                 _ => "hidden"
             };
@@ -387,13 +388,17 @@ public sealed class App : ApplicationContext
 
     public void ApplyKeyboardMode()
     {
+        Keyboard.SetRhythm(Cfg.RhythmMode, Cfg.RhythmKeys);
         var mode = Cfg.KeyboardMode switch
         {
             "letters" => KeyboardWindow.Mode.Letters,
             "wuwa" => KeyboardWindow.Mode.Wuwa,
+            "rhythm" => KeyboardWindow.Mode.Rhythm,
             "controller" => KeyboardWindow.Mode.Controller,
             _ => KeyboardWindow.Mode.Hidden
         };
+        if (Cfg.RhythmMode && mode == KeyboardWindow.Mode.Wuwa) mode = KeyboardWindow.Mode.Rhythm;
+        if (!Cfg.RhythmMode && mode == KeyboardWindow.Mode.Rhythm) mode = KeyboardWindow.Mode.Wuwa;
         Keyboard.SetMode(mode);
         LayoutKeyboard();
     }

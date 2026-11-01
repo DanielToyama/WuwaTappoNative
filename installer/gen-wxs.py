@@ -1,7 +1,7 @@
 import os, uuid
 
 import sys
-version = sys.argv[1] if len(sys.argv) > 1 else '0.0.23'
+version = sys.argv[1] if len(sys.argv) > 1 else '0.0.24'
 root = 'publish/app-' + version
 tree = {'files': [], 'dirs': {}}
 

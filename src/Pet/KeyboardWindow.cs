@@ -6,6 +6,7 @@ using System.Drawing.Imaging;
 using System.Drawing.Text;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
+using WuwatappoNative.Core;
 
 namespace WuwatappoNative.Pet;
 
@@ -16,18 +17,22 @@ namespace WuwatappoNative.Pet;
 /// </summary>
 public sealed class KeyboardWindow : Form
 {
-    public enum Mode { Hidden, Letters, Wuwa, Controller }
+    public enum Mode { Hidden, Letters, Wuwa, Rhythm, Controller }
 
     const int W = 200;
     const int ToolbarH = 24;
     const int LettersH = ToolbarH + 121;
     const int WuwaH = ToolbarH + 116;
+    const int RhythmH = ToolbarH + 86;
     const int PadH = ToolbarH + 182;
     const float KeyW = 15, KeyH = 19, Gap = 3;
 
     readonly Dictionary<string, RectangleF> _keys = new();
     readonly Dictionary<string, RectangleF> _buttons = new();
+    readonly List<RectangleF> _rhythmLanes = new();
     readonly HashSet<string> _down = new();
+    bool _rhythmEnabled;
+    string[] _rhythmKeys = (string[])RhythmKeys.Defaults.Clone();
     // 原版给每次按下约 70ms 的可见高亮：极快的点按也能看见，不会“一闪就没”。
     readonly Dictionary<string, long> _pulseUntil = new();
     System.Windows.Forms.Timer _pulseTimer;
@@ -75,6 +80,7 @@ public sealed class KeyboardWindow : Form
     {
         Mode.Letters => LettersH,
         Mode.Wuwa => WuwaH,
+        Mode.Rhythm => RhythmH,
         Mode.Controller => PadH,
         _ => LettersH
     };
@@ -83,8 +89,9 @@ public sealed class KeyboardWindow : Form
     {
         _keys.Clear();
         _buttons.Clear();
+        _rhythmLanes.Clear();
         _buttons["26键"] = new RectangleF(4, 2, 44, 18);
-        _buttons["鸣潮专属"] = new RectangleF(52, 2, 64, 18);
+        _buttons[_rhythmEnabled ? "音游模式" : "鸣潮专属"] = new RectangleF(52, 2, 64, 18);
         _buttons["手柄"] = new RectangleF(120, 2, 40, 18);
         _buttons["×"] = new RectangleF(W - 24, 2, 20, 18);
 
@@ -124,6 +131,21 @@ public sealed class KeyboardWindow : Form
             _keys["MOUSE_R"] = new RectangleF(mx + 26, my, 26, 59);
             ApplyLogicalSize(WuwaH);
         }
+        else if (mode == Mode.Rhythm)
+        {
+            // 四键音游指示器：沿用项目的奶油键帽和暖橙高亮，不使用参考工具的素材。
+            float gap = 6, kw = 42, kh = 42;
+            float startX = (W - (4 * kw + 3 * gap)) / 2f;
+            float y = ToolbarH + 12;
+            for (int i = 0; i < 4; i++)
+            {
+                string label = i < _rhythmKeys.Length ? _rhythmKeys[i] : RhythmKeys.Defaults[i];
+                var rect = new RectangleF(startX + i * (kw + gap), y, kw, kh);
+                _keys[label] = rect;
+                _rhythmLanes.Add(rect);
+            }
+            ApplyLogicalSize(RhythmH);
+        }
         else if (mode == Mode.Controller)
         {
             ApplyLogicalSize(PadH);
@@ -152,6 +174,18 @@ public sealed class KeyboardWindow : Form
         BuildLayout(mode);
         Show();
         if (!_poll.Enabled) _poll.Start();
+        Render();
+    }
+
+    /// <summary>切换音游模式并更新四个触发键；已显示时立即重建键帽。</summary>
+    public void SetRhythm(bool enabled, string[] keys)
+    {
+        _rhythmEnabled = enabled;
+        _rhythmKeys = RhythmKeys.Normalize(keys);
+        if (_mode == Mode.Hidden) return;
+        _down.Clear();
+        _pulseUntil.Clear();
+        BuildLayout(_mode);
         Render();
     }
 
@@ -209,7 +243,7 @@ public sealed class KeyboardWindow : Form
             try { BeginInvoke(new Action<int, bool>(OnKeyEdge), vk, down); } catch { }
             return;
         }
-        if (_mode != Mode.Letters && _mode != Mode.Wuwa) return;
+        if (_mode != Mode.Letters && _mode != Mode.Wuwa && _mode != Mode.Rhythm) return;
         string key = vk switch
         {
             0x01 => "MOUSE_L",
@@ -221,13 +255,9 @@ public sealed class KeyboardWindow : Form
         if (key == null || !_keys.ContainsKey(key)) return;
         if (down) { if (!_down.Add(key)) return; }
         else { if (!_down.Remove(key)) return; }
-        Pulse(key);
+        if (down) Pulse(key);
         RequestRender();
     }
-
-    long _lastRenderMs;
-    bool _renderPending;
-    System.Windows.Forms.Timer _renderTimer;
 
     bool IsLit(string key)
     {
@@ -237,10 +267,11 @@ public sealed class KeyboardWindow : Form
 
     void Pulse(string key)
     {
-        _pulseUntil[key] = Environment.TickCount64 + 70;
+        // 只给按下边沿一个很短的可见脉冲；松开不再延长，快速连打时不会一直亮。
+        _pulseUntil[key] = Environment.TickCount64 + 35;
         if (_pulseTimer == null)
         {
-            _pulseTimer = new System.Windows.Forms.Timer { Interval = 40 };
+            _pulseTimer = new System.Windows.Forms.Timer { Interval = 10 };
             _pulseTimer.Tick += (s, e) =>
             {
                 long now = Environment.TickCount64;
@@ -256,25 +287,8 @@ public sealed class KeyboardWindow : Form
 
     void RequestRender()
     {
-        long now = Environment.TickCount64;
-        if (now - _lastRenderMs >= 8)
-        {
-            Render();
-            return;
-        }
-        _renderPending = true;
-        if (_renderTimer == null)
-        {
-            _renderTimer = new System.Windows.Forms.Timer { Interval = 8 };
-            _renderTimer.Tick += (s, e) =>
-            {
-                _renderTimer.Stop();
-                if (!_renderPending) return;
-                _renderPending = false;
-                Render();
-            };
-        }
-        if (!_renderTimer.Enabled) _renderTimer.Start();
+        // 键盘窗口很小，直接重绘即可；不再用 8ms 合并延迟，音游连打也能立刻看到按键变化。
+        Render();
     }
 
     void PollPad(bool render)
@@ -342,7 +356,6 @@ public sealed class KeyboardWindow : Form
     void Render()
     {
         if (!IsHandleCreated) return;
-        _lastRenderMs = Environment.TickCount64;
         int w = Math.Max(1, Width), h = Math.Max(1, Height);
         var surface = _surface.Begin(w, h);
         using (var g = Graphics.FromImage(surface))
@@ -354,7 +367,11 @@ public sealed class KeyboardWindow : Form
             DrawToolbar(g, s);
             DrawPlate(g, s, LogicalHeight);
             if (_mode == Mode.Controller) DrawPad(g, s);
-            else foreach (var pair in _keys) DrawKey(g, s, pair.Key, pair.Value, IsLit(pair.Key));
+            else
+            {
+                foreach (var pair in _keys) DrawKey(g, s, pair.Key, pair.Value, IsLit(pair.Key));
+                DrawRhythmLaneNumbers(g, s);
+            }
         }
         _surface.Apply(this);
         _painted = true;
@@ -375,7 +392,11 @@ public sealed class KeyboardWindow : Form
             DrawToolbar(g, s);
             DrawPlate(g, s, LogicalHeight);
             if (_mode == Mode.Controller) DrawPad(g, s);
-            else foreach (var pair in _keys) DrawKey(g, s, pair.Key, pair.Value, IsLit(pair.Key));
+            else
+            {
+                foreach (var pair in _keys) DrawKey(g, s, pair.Key, pair.Value, IsLit(pair.Key));
+                DrawRhythmLaneNumbers(g, s);
+            }
         }
         finally { g.Restore(state); }
     }
@@ -389,6 +410,7 @@ public sealed class KeyboardWindow : Form
             var r = new RectangleF(pair.Value.X * s, pair.Value.Y * s, pair.Value.Width * s, pair.Value.Height * s);
             bool active = (pair.Key == "26键" && _mode == Mode.Letters)
                 || (pair.Key == "鸣潮专属" && _mode == Mode.Wuwa)
+                || (pair.Key == "音游模式" && _mode == Mode.Rhythm)
                 || (pair.Key == "手柄" && _mode == Mode.Controller);
             using (var path = PetComposer.Rounded(r, 9 * s))
             using (var brush = new SolidBrush(active ? Color.FromArgb(254, 210, 145) : Color.FromArgb(255, 243, 221)))
@@ -428,8 +450,9 @@ public sealed class KeyboardWindow : Form
     {
         float dy = down ? 2 * s : 0;
         var r = new RectangleF(logical.X * s, logical.Y * s + dy, logical.Width * s, logical.Height * s);
+        bool rhythm = _mode == Mode.Rhythm;
         bool wuwa = _mode == Mode.Wuwa;
-        float radius = (wuwa ? 8 : (key.StartsWith("MOUSE") || key == "SPACE") ? 6 : 5) * s;
+        float radius = (rhythm ? 9 : wuwa ? 8 : (key.StartsWith("MOUSE") || key == "SPACE") ? 6 : 5) * s;
         var shadow = new RectangleF(r.X, r.Y + (down ? 0 : 2 * s), r.Width, r.Height);
         using (var path = PetComposer.Rounded(shadow, radius))
         using (var brush = new SolidBrush(Color.FromArgb(255, 190, 152, 121)))
@@ -444,19 +467,25 @@ public sealed class KeyboardWindow : Form
             g.DrawPath(glow, path);
         }
         string label = key switch { "MOUSE_L" => "左键", "MOUSE_R" => "右键", "SPACE" => "空格", _ => key };
-        float fs = (wuwa ? 14f : (key.StartsWith("MOUSE") || key == "SPACE") ? 9f : 9f) * s;
+        float fs = (rhythm ? 22f : wuwa ? 14f : (key.StartsWith("MOUSE") || key == "SPACE") ? 9f : 9f) * s;
         using var font = new Font("Microsoft YaHei UI", fs, FontStyle.Bold, GraphicsUnit.Pixel);
         using var text = new SolidBrush(down ? Color.FromArgb(255, 110, 69, 45) : PetComposer.Ink);
         using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-        if (key == "MOUSE_L" && !wuwa)
+        g.DrawString(label, font, text, r, fmt);
+    }
+
+    void DrawRhythmLaneNumbers(Graphics g, float s)
+    {
+        if (_mode != Mode.Rhythm) return;
+        using var font = new Font("Microsoft YaHei UI", 8f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+        using var text = new SolidBrush(Color.FromArgb(155, PetComposer.Ink));
+        using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+        for (int i = 0; i < _rhythmLanes.Count; i++)
         {
-            var state = g.Save();
-            g.TranslateTransform(r.X + r.Width / 2, r.Y + r.Height / 2);
-            g.RotateTransform(-90);
-            g.DrawString("左键", font, text, new RectangleF(-r.Height / 2, -r.Width / 2, r.Height, r.Width), fmt);
-            g.Restore(state);
+            var r = _rhythmLanes[i];
+            g.DrawString((i + 1).ToString(), font, text,
+                new RectangleF(r.X * s, (r.Bottom + 3) * s, r.Width * s, 10 * s), fmt);
         }
-        else g.DrawString(label, font, text, r, fmt);
     }
 
     // ---------------- 手柄 ----------------
@@ -501,7 +530,7 @@ public sealed class KeyboardWindow : Form
         DrawPadKey(g, s, board.Right - 76 * s, board.Y + 24 * s, 44 * s, 13 * s, "RB", PadPressed(0x0200), 6 * s);
 
         // 十字键
-        float dx = board.X + 42 * s, dy = board.Y + 66 * s, ds = 14 * s;
+        float dx = board.X + 42 * s, dy = board.Y + 55 * s, ds = 10.5f * s;
         DrawPadKey(g, s, dx, dy - ds * 1.5f, ds * 1.7f, ds * 1.5f, "▲", PadPressed(0x0001), 3 * s);
         DrawPadKey(g, s, dx, dy + ds * 1.5f, ds * 1.7f, ds * 1.5f, "▼", PadPressed(0x0002), 3 * s);
         DrawPadKey(g, s, dx - ds * 1.5f, dy, ds * 1.5f, ds * 1.7f, "◀", PadPressed(0x0004), 3 * s);
@@ -624,6 +653,7 @@ public sealed class KeyboardWindow : Form
             {
                 "26键" => Mode.Letters,
                 "鸣潮专属" => Mode.Wuwa,
+                "音游模式" => Mode.Rhythm,
                 _ => Mode.Controller
             });
             return;
@@ -633,7 +663,6 @@ public sealed class KeyboardWindow : Form
     protected override void OnClosed(EventArgs e)
     {
         _poll?.Dispose();
-        _renderTimer?.Dispose();
         _pulseTimer?.Dispose();
         _surface.Dispose();
         base.OnClosed(e);

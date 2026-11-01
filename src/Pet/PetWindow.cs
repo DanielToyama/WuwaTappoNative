@@ -636,8 +636,9 @@ public sealed class PetWindow : Form
         _cfg.KeyboardMode = _cfg.KeyboardMode switch
         {
             "hidden" => "letters",
-            "letters" => "wuwa",
+            "letters" => _cfg.RhythmMode ? "rhythm" : "wuwa",
             "wuwa" => "controller",
+            "rhythm" => "controller",
             _ => "hidden"
         };
         ConfigStore.Save(_cfg);
@@ -821,7 +822,7 @@ public sealed class PetWindow : Form
         _menu.Items.Add(opacity);
 
         var kb = new ToolStripMenuItem("桌面键盘");
-        foreach (var (key, label) in new[] { ("hidden", "不显示"), ("letters", "26 键"), ("wuwa", "鸣潮专属"), ("controller", "手柄") })
+        foreach (var (key, label) in new[] { ("hidden", "不显示"), ("letters", "26 键"), ("wuwa", "鸣潮专属"), ("rhythm", "音游模式"), ("controller", "手柄") })
         {
             string k = key;
             var item = new ToolStripMenuItem(label) { Checked = _cfg.KeyboardMode == key };
@@ -850,11 +851,17 @@ public sealed class PetWindow : Form
             {
                 "letters" => "26 键",
                 "wuwa" => "鸣潮专属",
+                "rhythm" => "音游模式",
                 "controller" => "手柄",
                 _ => "不显示"
             };
             foreach (ToolStripItem sub in mi.DropDownItems)
-                ((ToolStripMenuItem)sub).Checked = ((ToolStripMenuItem)sub).Text == active;
+            {
+                var subItem = (ToolStripMenuItem)sub;
+                if (subItem.Text == "鸣潮专属") subItem.Visible = !_cfg.RhythmMode;
+                else if (subItem.Text == "音游模式") subItem.Visible = _cfg.RhythmMode;
+                subItem.Checked = subItem.Text == active;
+            }
         }
     }
 

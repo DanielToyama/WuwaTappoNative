@@ -297,6 +297,8 @@ public sealed class PanelWindow : Form
             keyboardMode = _app.Cfg.KeyboardMode,
             showMappingControls = _app.Cfg.ShowMappingControls,
             hideOtherPets = _app.Cfg.HideOtherPets,
+            rhythmMode = _app.Cfg.RhythmMode,
+            rhythmKeys = _app.Cfg.RhythmKeys,
             allowOverlap = _app.Cfg.AllowOverlap,
             captureMode = _app.Cfg.CaptureMode,
             captureWidth = _app.Cfg.CaptureWidth,
@@ -713,8 +715,28 @@ public sealed class PanelWindow : Form
                         case "topmost": cfg.Topmost = ApiClient.ReadBool(kv.Value); break;
                         case "clickThrough": cfg.ClickThrough = ApiClient.ReadBool(kv.Value); break;
                         case "hoverFade": cfg.HoverFade = ApiClient.ReadBool(kv.Value); break;
-                        case "keyboardMode": cfg.KeyboardMode = ApiClient.ReadString(kv.Value); break;
+                        case "keyboardMode":
+                        {
+                            string mode = ApiClient.ReadString(kv.Value);
+                            if (mode == "rhythm" && !cfg.RhythmMode) mode = "wuwa";
+                            cfg.KeyboardMode = mode;
+                            break;
+                        }
                         case "showMappingControls": cfg.ShowMappingControls = ApiClient.ReadBool(kv.Value); break;
+                        case "rhythmMode":
+                        {
+                            bool on = ApiClient.ReadBool(kv.Value);
+                            cfg.RhythmMode = on;
+                            if (on) cfg.KeyboardMode = "rhythm";
+                            else if (cfg.KeyboardMode == "rhythm") cfg.KeyboardMode = "wuwa";
+                            break;
+                        }
+                        case "rhythmKeys":
+                        {
+                            var arr = kv.Value as JsonArray;
+                            cfg.RhythmKeys = RhythmKeys.Normalize(arr?.Select(x => ApiClient.ReadString(x)));
+                            break;
+                        }
                         case "hideOtherPets":
                             cfg.HideOtherPets = ApiClient.ReadBool(kv.Value);
                             hideOthersChanged = true;

@@ -28,9 +28,13 @@ public sealed class Settings
     public bool Topmost { get; set; } = true;
     public bool ClickThrough { get; set; }
     public bool HoverFade { get; set; }
-    public string KeyboardMode { get; set; } = "hidden"; // hidden | letters | wuwa
+    public string KeyboardMode { get; set; } = "hidden"; // hidden | letters | wuwa | rhythm | controller
     public bool ShowMappingControls { get; set; } = true;
     public bool HideOtherPets { get; set; }
+    /// <summary>开启后把鸣潮专属指示器替换成四键音游指示器。</summary>
+    public bool RhythmMode { get; set; }
+    /// <summary>音游模式从左到右的四个触发键（单字符字母/数字）。</summary>
+    public string[] RhythmKeys { get; set; } = { "D", "F", "J", "K" };
     /// <summary>允许角色桌宠互相重叠；关闭后重叠的联机桌宠会自动挪到旁边。</summary>
     public bool AllowOverlap { get; set; } = true;
     /// <summary>OBS 绿幕采集窗口：只显示主角，背景纯绿。</summary>
@@ -88,6 +92,9 @@ public static class ConfigStore
                             Array.Copy(cfg.EmoteAssetIds, slots, Math.Min(5, cfg.EmoteAssetIds.Length));
                         cfg.EmoteAssetIds = slots;
                     }
+                    cfg.RhythmKeys = RhythmKeys.Normalize(cfg.RhythmKeys);
+                    if (cfg.RhythmMode && cfg.KeyboardMode == "wuwa") cfg.KeyboardMode = "rhythm";
+                    else if (!cfg.RhythmMode && cfg.KeyboardMode == "rhythm") cfg.KeyboardMode = "wuwa";
                     return cfg;
                 }
             }

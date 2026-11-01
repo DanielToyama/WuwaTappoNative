@@ -1672,9 +1672,19 @@
         <div class="section">
           <div class="section-title">桌面键盘</div>
           <div class="setting-item">
+            <div><div class="setting-title">音游模式</div><div class="setting-sub">把鸣潮专属指示器替换四键音游指示器；开启后立即切换</div></div>
+            <div class="switch ${s.rhythmMode ? 'on' : ''}" data-switch="rhythmMode"></div>
+          </div>
+          ${s.rhythmMode ? `<div class="setting-item">
+            <div><div class="setting-title">音游触发键位</div><div class="setting-sub">从左到右四个键；显示对应字母，只接受单个字母或数字且不能重复</div></div>
+            <div class="setting-content">
+              ${[0, 1, 2, 3].map(i => `<input class="input" data-rhythm-key="${i}" maxlength="1" value="${esc(s.rhythmKeys?.[i] || ['D', 'F', 'J', 'K'][i])}" style="width:46px;text-align:center;text-transform:uppercase;font-weight:700" inputmode="text" autocomplete="off" />`).join('')}
+            </div>
+          </div>` : ''}
+          <div class="setting-item">
             <div><div class="setting-title">键盘映射</div><div class="setting-sub">桌面键盘完全穿透，不拦截输入</div></div>
             <div class="setting-content">
-              ${[['hidden', '不显示'], ['letters', '26 键'], ['wuwa', '鸣潮专属'], ['controller', '手柄']].map(([k, label]) =>
+              ${[['hidden', '不显示'], ['letters', '26 键'], s.rhythmMode ? ['rhythm', '音游模式'] : ['wuwa', '鸣潮专属'], ['controller', '手柄']].map(([k, label]) =>
                 `<button class="pill ${s.keyboardMode === k ? 'active' : ''}" data-kb="${k}">${label}</button>`).join('')}
             </div>
           </div>
@@ -1877,6 +1887,7 @@
       try {
         await tryCall('settings.set', { [key]: next });
         await syncBoot();
+        if (key === 'rhythmMode') { renderSettings(); return; }
         if (key === 'runAsAdmin') {
           const saved = !!state.boot?.settings?.runAsAdmin;
           const elevated = !!state.boot?.settings?.isElevated;
@@ -1889,6 +1900,23 @@
     });
     document.querySelectorAll('[data-kb]').forEach(el => el.onclick = async () => {
       try { await tryCall('settings.set', { keyboardMode: el.dataset.kb }); await syncBoot(); renderSettings(); } catch { }
+    });
+    const rhythmInputs = [...document.querySelectorAll('[data-rhythm-key]')];
+    rhythmInputs.forEach(input => {
+      input.addEventListener('input', () => {
+        input.value = String(input.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 1);
+      });
+      input.addEventListener('change', async () => {
+        const keys = rhythmInputs.map(x => String(x.value || '').trim().toUpperCase());
+        if (keys.some(k => !/^[A-Z0-9]$/.test(k))) return toast('四个键位都必须是单个字母或数字', 'err');
+        if (new Set(keys).size !== 4) return toast('四个触发键位不能重复', 'err');
+        try {
+          await tryCall('settings.set', { rhythmKeys: keys });
+          await syncBoot();
+          renderSettings();
+          toast('音游键位已保存');
+        } catch { }
+      });
     });
     document.getElementById('openLog')?.addEventListener('click', () => call('open.log'));
     document.getElementById('aboutBtn')?.addEventListener('click', showAbout);
