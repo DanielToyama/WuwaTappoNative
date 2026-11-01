@@ -31,6 +31,12 @@ public sealed class Settings
     public string KeyboardMode { get; set; } = "hidden"; // hidden | letters | wuwa
     public bool ShowMappingControls { get; set; } = true;
     public bool HideOtherPets { get; set; }
+    /// <summary>允许角色桌宠互相重叠；关闭后重叠的联机桌宠会自动挪到旁边。</summary>
+    public bool AllowOverlap { get; set; } = true;
+    /// <summary>OBS 绿幕采集窗口：只显示主角，背景纯绿。</summary>
+    public bool CaptureMode { get; set; }
+    public int CaptureWidth { get; set; } = 400;
+    public int CaptureHeight { get; set; } = 700;
     public bool AlwaysShowChest { get; set; }
     public bool AutoChest { get; set; }
     /// <summary>自动领取宝箱成功后是否发 Windows 托盘通知。</summary>

@@ -35,6 +35,7 @@ public sealed class App : ApplicationContext
         Room = new RoomManager(Auth, Cfg);
         Pet = new PetWindow(Cfg, Auth, Catalog, Store, Room);
         Keyboard = new KeyboardWindow();
+        Pet.KeyboardUI = Keyboard;
 
         Pet.OpenPanelRequested += OpenPanel;
         Pet.ChestOpenRequested += place => _ = OpenChestSafeAsync(place);
@@ -68,6 +69,8 @@ public sealed class App : ApplicationContext
         Pet.FormClosed += (s, e) => ExitThread();
 
         Pet.Show();
+        Pet.ApplyCaptureMode();
+        if (!Cfg.AllowOverlap) Pet.ResolveOverlaps();
         ApplyKeyboardMode();
         Keyboard.ModeRequested += mode =>
         {
@@ -193,6 +196,9 @@ public sealed class App : ApplicationContext
             Log.Write("自动回房失败 " + room + " " + ex.Message);
         }
     }
+
+    /// <summary>登录/启动/重新开启自动宝箱后立刻检查一次，不等 30 秒周期。</summary>
+    public void CheckAutoChestNow() => _ = AutoChestTickAsync();
 
     async Task AutoChestTickAsync()
     {
@@ -339,6 +345,8 @@ public sealed class App : ApplicationContext
                 ApplySkinTestArg();
                 Pet.BeginInvoke(new Action(() => Pet.ApplySettings()));
                 PushAuth();
+                // 启动恢复登录后立刻检查一次，别让已经可领的宝箱干等 30 秒首个定时器。
+                CheckAutoChestNow();
             }
             else
             {

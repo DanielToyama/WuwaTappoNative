@@ -574,7 +574,7 @@
   }
 
   function bagListItems() {
-    const q = state.bagSearch.trim().toLowerCase();
+    const q = String(state.bagSearch || '').trim().toLowerCase();
     let items;
     if (state.bagTab === 'recent') {
       const order = new Map((state.bagRecentIds || []).map((id, i) => [id, i]));
@@ -585,6 +585,9 @@
       return items.sort((a, b) => (order.get(a.id) ?? 9999) - (order.get(b.id) ?? 9999));
     }
     items = state.bag.filter(x => x.type === state.bagTab);
+    // 系列/角色下拉以前只改了 state，没有参与过滤，所以看起来“没反应”。
+    if (state.bagSeries) items = items.filter(x => String(x.series || '') === state.bagSeries);
+    if (state.bagRole) items = items.filter(x => assetMeta(x).role === state.bagRole);
     if (state.bagRarity) items = items.filter(x => effRarity(x.rarity) === state.bagRarity);
     if (q) items = items.filter(x => (x.name || '').toLowerCase().includes(q) || (x.series || '').toLowerCase().includes(q));
     return items.sort((a, b) => (RARITY_ORDER[effRarity(b.rarity)] || 0) - (RARITY_ORDER[effRarity(a.rarity)] || 0)
@@ -1284,7 +1287,10 @@
         </div>
         <div class="room-right">
           <div class="panel-box" style="flex:1;display:flex;flex-direction:column;min-height:0">
-            <div class="section-title" style="margin-left:0">房间成员（${room.members?.length || 0}）</div>
+            <div style="display:flex;align-items:center;gap:10px">
+              <div class="section-title" style="margin-left:0;flex:1">房间成员（${room.members?.length || 0}）</div>
+              <button class="btn ghost" id="resetCatOrder" ${joined ? '' : 'disabled'} style="height:30px;padding:0 12px;font-size:13px" title="主角贴右下，其他成员在底部排成一排">重置排序</button>
+            </div>
             <div class="member-list" id="memberList">
               ${(room.members || []).map(m => `
                 <div class="member ${m.owner ? 'owner' : ''}">
@@ -1328,6 +1334,9 @@
     };
     document.querySelectorAll('[data-hist]').forEach(b => b.onclick = async () => {
       try { const r = await tryCall('room.join', { roomNo: b.dataset.hist }); state.boot.room = r; renderRoom(); toast('已加入房间'); } catch { }
+    });
+    document.getElementById('resetCatOrder')?.addEventListener('click', async () => {
+      try { await tryCall('room.resetOrder'); toast('已重置角色排序'); } catch { }
     });
     document.getElementById('hideOthers').onclick = async () => {
       const hide = !state.boot?.settings?.hideOtherPets;
@@ -1582,6 +1591,22 @@
             <div><div class="setting-title">鼠标悬停时半透明</div><div class="setting-sub">便于看清桌宠后的内容</div></div>
             <div class="switch ${s.hoverFade ? 'on' : ''}" data-switch="hoverFade"></div>
           </div>
+          <div class="setting-item">
+            <div><div class="setting-title">允许角色重叠</div><div class="setting-sub">默认开启；关闭后检测到重叠的联机桌宠会自动挪到旁边</div></div>
+            <div class="switch ${s.allowOverlap !== false ? 'on' : ''}" data-switch="allowOverlap"></div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">OBS 绿幕窗口</div><div class="setting-sub">主角完整 GUI（数字/计数条/宝箱/昵称）和键盘/手柄面板一起显示在纯绿窗口中；带标题栏，可拖动/拉边调整</div></div>
+            <div class="switch ${s.captureMode ? 'on' : ''}" data-switch="captureMode"></div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">绿幕窗口大小</div><div class="setting-sub">单位像素，指绿色客户区大小；OBS 窗口采集选择 “Wuwatappo Capture”</div></div>
+            <div class="setting-content">
+              <input class="input" id="captureW" type="number" min="160" max="1600" step="10" value="${s.captureWidth ?? 400}" style="width:86px" />
+              <span class="muted">×</span>
+              <input class="input" id="captureH" type="number" min="160" max="1600" step="10" value="${s.captureHeight ?? 700}" style="width:86px" />
+            </div>
+          </div>
         </div>
 
         <div class="section">
@@ -1768,6 +1793,17 @@
     document.getElementById('setScale')?.addEventListener('change', async e => {
       try { await tryCall('settings.set', { scale: Number(e.target.value) }); await syncBoot(); } catch { }
     });
+    const captureW = document.getElementById('captureW');
+    const captureH = document.getElementById('captureH');
+    const applyCaptureSize = async () => {
+      if (!captureW || !captureH) return;
+      const w = Math.min(1600, Math.max(160, Math.round(Number(captureW.value) || 400)));
+      const h = Math.min(1600, Math.max(160, Math.round(Number(captureH.value) || 700)));
+      captureW.value = w; captureH.value = h;
+      try { await tryCall('settings.set', { captureWidth: w, captureHeight: h }); await syncBoot(); } catch { }
+    };
+    captureW?.addEventListener('change', applyCaptureSize);
+    captureH?.addEventListener('change', applyCaptureSize);
     const op = document.getElementById('setOpacity');
     op?.addEventListener('input', () => { document.getElementById('opacityVal').textContent = op.value + '%'; });
     op?.addEventListener('change', async () => {

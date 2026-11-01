@@ -47,6 +47,10 @@ public sealed class KeyboardWindow : Form
     public Mode CurrentMode => _mode;
     public event Action<Mode> ModeRequested;
     public event Action CloseRequested;
+    /// <summary>键盘/手柄画面变化，绿幕采集窗口据此重绘。</summary>
+    public event Action VisualChanged;
+    public int LogicalHeightForCapture => LogicalHeight;
+    public int CaptureWidth => W;
     /// <summary>手柄有新按键按下：驱动主角挥手与点击数（摇杆不参与）。</summary>
     public event Action PadButtonDown;
     /// <summary>手柄所有按键都松开。</summary>
@@ -140,6 +144,7 @@ public sealed class KeyboardWindow : Form
         if (mode == Mode.Hidden)
         {
             Hide();
+            VisualChanged?.Invoke();
             return;
         }
         _down.Clear();
@@ -347,12 +352,32 @@ public sealed class KeyboardWindow : Form
             g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
             float s = Width / (float)W;
             DrawToolbar(g, s);
-            DrawPlate(g, s);
+            DrawPlate(g, s, LogicalHeight);
             if (_mode == Mode.Controller) DrawPad(g, s);
             else foreach (var pair in _keys) DrawKey(g, s, pair.Key, pair.Value, IsLit(pair.Key));
         }
         _surface.Apply(this);
         _painted = true;
+        VisualChanged?.Invoke();
+    }
+
+    /// <summary>把当前键盘/手柄 GUI 画到绿幕采集窗口的指定区域（不画自己的背景）。</summary>
+    public void DrawTo(Graphics g, Rectangle dest)
+    {
+        if (_mode == Mode.Hidden || dest.Width <= 0 || dest.Height <= 0) return;
+        var state = g.Save();
+        try
+        {
+            g.TranslateTransform(dest.X, dest.Y);
+            float s = dest.Width / (float)W;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+            DrawToolbar(g, s);
+            DrawPlate(g, s, LogicalHeight);
+            if (_mode == Mode.Controller) DrawPad(g, s);
+            else foreach (var pair in _keys) DrawKey(g, s, pair.Key, pair.Value, IsLit(pair.Key));
+        }
+        finally { g.Restore(state); }
     }
 
     void DrawToolbar(Graphics g, float s)
@@ -377,9 +402,9 @@ public sealed class KeyboardWindow : Form
         }
     }
 
-    void DrawPlate(Graphics g, float s)
+    void DrawPlate(Graphics g, float s, int logicalHeight)
     {
-        var plate = new RectangleF(2 * s, 22 * s, (W - 4) * s, Height - 24 * s);
+        var plate = new RectangleF(2 * s, 22 * s, (W - 4) * s, logicalHeight * s - 24 * s);
         using (var shadow = PetComposer.Rounded(new RectangleF(plate.X, plate.Y + 3 * s, plate.Width, plate.Height), 16 * s))
         using (var brush = new SolidBrush(Color.FromArgb(160, 234, 211, 183)))
             g.FillPath(brush, shadow);

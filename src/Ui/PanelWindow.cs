@@ -296,6 +296,10 @@ public sealed class PanelWindow : Form
             keyboardMode = _app.Cfg.KeyboardMode,
             showMappingControls = _app.Cfg.ShowMappingControls,
             hideOtherPets = _app.Cfg.HideOtherPets,
+            allowOverlap = _app.Cfg.AllowOverlap,
+            captureMode = _app.Cfg.CaptureMode,
+            captureWidth = _app.Cfg.CaptureWidth,
+            captureHeight = _app.Cfg.CaptureHeight,
             alwaysShowChest = _app.Cfg.AlwaysShowChest,
             autoChest = _app.Cfg.AutoChest,
             notifyChestClaimed = _app.Cfg.NotifyChestClaimed,
@@ -398,6 +402,7 @@ public sealed class PanelWindow : Form
                 _app.Pet.BeginInvoke(new Action(() => _app.Pet.ApplySettings()));
                 await _app.Room.EnsureLobbyAsync();
                 await _app.ResumeLastRoomAsync();
+                _app.CheckAutoChestNow();
                 return new { loggedIn = true, nickname = auth.Nickname };
 
             case "login.token":
@@ -407,6 +412,7 @@ public sealed class PanelWindow : Form
                     _app.Pet.BeginInvoke(new Action(() => _app.Pet.ApplySettings()));
                     await _app.Room.EnsureLobbyAsync();
                     await _app.ResumeLastRoomAsync();
+                    _app.CheckAutoChestNow();
                     return new { loggedIn = true, nickname = auth.Nickname };
                 }
                 throw new ApiException(-1, "token 无效或已过期");
@@ -445,6 +451,7 @@ public sealed class PanelWindow : Form
                 _app.Pet.BeginInvoke(new Action(() => _app.Pet.ApplySettings()));
                 await _app.Room.EnsureLobbyAsync();
                 await _app.ResumeLastRoomAsync();
+                _app.CheckAutoChestNow();
                 return new { loggedIn = true, nickname = auth.Nickname };
             }
 
@@ -623,6 +630,10 @@ public sealed class PanelWindow : Form
                 return _app.RoomState();
             }
 
+            case "room.resetOrder":
+                _app.Pet.BeginInvoke(new Action(_app.Pet.ResetCatOrder));
+                return new { ok = true };
+
             case "emote.send":
             {
                 long emoteId = ApiClient.ReadLong(data["id"]);
@@ -675,8 +686,15 @@ public sealed class PanelWindow : Form
                             cfg.HideOtherPets = ApiClient.ReadBool(kv.Value);
                             hideOthersChanged = true;
                             break;
+                        case "allowOverlap": cfg.AllowOverlap = ApiClient.ReadBool(kv.Value); break;
+                        case "captureMode": cfg.CaptureMode = ApiClient.ReadBool(kv.Value); break;
+                        case "captureWidth": cfg.CaptureWidth = Math.Clamp((int)ApiClient.ReadLong(kv.Value), 160, 1600); break;
+                        case "captureHeight": cfg.CaptureHeight = Math.Clamp((int)ApiClient.ReadLong(kv.Value), 160, 1600); break;
                         case "alwaysShowChest": cfg.AlwaysShowChest = ApiClient.ReadBool(kv.Value); break;
-                        case "autoChest": cfg.AutoChest = ApiClient.ReadBool(kv.Value); break;
+                        case "autoChest":
+                            cfg.AutoChest = ApiClient.ReadBool(kv.Value);
+                            if (cfg.AutoChest) _app.CheckAutoChestNow();
+                            break;
                         case "notifyChestClaimed": cfg.NotifyChestClaimed = ApiClient.ReadBool(kv.Value); break;
                         case "notifyHotkeys": cfg.NotifyHotkeys = ApiClient.ReadBool(kv.Value); break;
                         case "launchAtLogin":
@@ -709,10 +727,14 @@ public sealed class PanelWindow : Form
                 }
                 cfg.Opacity = Math.Clamp(cfg.Opacity, 0.2, 1.0);
                 cfg.Scale = Math.Clamp(cfg.Scale, 0.25, 2.0);
+                cfg.CaptureWidth = Math.Clamp(cfg.CaptureWidth, 160, 1600);
+                cfg.CaptureHeight = Math.Clamp(cfg.CaptureHeight, 160, 1600);
                 ConfigStore.Save(cfg);
                 _app.Pet.BeginInvoke(new Action(() =>
                 {
                     _app.Pet.ApplySettings();
+                    _app.Pet.ApplyCaptureMode();
+                    if (!cfg.AllowOverlap) _app.Pet.ResolveOverlaps();
                     // “隐藏其他成员”开关必须立刻重建/移除联机桌宠，不能等下一次房间事件。
                     if (hideOthersChanged) _app.Pet.RefreshMembers();
                 }));

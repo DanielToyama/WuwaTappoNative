@@ -43,6 +43,8 @@ public sealed class PetWindow : Form
     Icon _icon;
 
     bool _hiddenByHotkey;
+    CaptureWindow _capture;
+    Bitmap _captureFrame;
 
     /// <summary>全局输入监听（App 用它给键盘显示转发按键高亮）。</summary>
     public GlobalInputHook Input => _hook;
@@ -55,6 +57,10 @@ public sealed class PetWindow : Form
     public event Action RefreshRequested;
     /// <summary>窗口设置被快捷键/菜单改动后触发，面板据此刷新开关状态。</summary>
     public event Action SettingsChanged;
+    /// <summary>主角帧/手部/眨眼变化时通知绿幕采集窗口重绘。</summary>
+    public event Action CaptureChanged;
+    /// <summary>绿幕窗口需要一起绘制当前键盘/手柄 GUI。</summary>
+    public KeyboardWindow KeyboardUI { get; set; }
 
     public PetWindow(Settings cfg, AuthService auth, Catalog catalog, AssetStore store, RoomManager room)
     {
@@ -87,7 +93,7 @@ public sealed class PetWindow : Form
         _room.SocketClosed += reason => Safe(() => { if (_room.State == "joined") Notify("连接断开：" + reason); });
 
         _auth.Changed += () => Safe(OnAuthChanged);
-        _room.ClicksChanged += () => Safe(RequestCompose);
+        _room.ClicksChanged += () => Safe(() => { CaptureChanged?.Invoke(); RequestCompose(); });
         _catalog.Loaded += () => Safe(() => { _loader.Clear(); ReloadFrames(); RefreshCats(); });
 
         ReloadFrames();
@@ -154,10 +160,20 @@ public sealed class PetWindow : Form
     {
         if (!IsHandleCreated) return;
         if (_frames == null || !_frames.Ready) return;
-        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        var info = BuildInfo(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        // 高频重绘（每次按键、每次计数变化）复用同一张后缓冲。
+        var surface = _surface.Begin(Size.Width, Size.Height);
+        PetComposer.ComposeInto(surface, _frames, _bodyFrame, _headFrame, info,
+            _cfg.HoverFade && _hoverFadeOn ? 0.4 : Math.Clamp(_cfg.Opacity, 0.1, 1.0));
+        _surface.Apply(this);
+        CaptureChanged?.Invoke();
+    }
+
+    PetComposer.Info BuildInfo(long now)
+    {
         long leftTs = ApiClient.ReadLong(_auth.UserInfo?["left_treasure_chest"]);
         long rightTs = ApiClient.ReadLong(_auth.UserInfo?["right_treasure_chest"]);
-        var info = new PetComposer.Info
+        return new PetComposer.Info
         {
             Clicks = _room.AvailableClicks,
             KeyboardOn = _cfg.KeyboardMode != "hidden",
@@ -173,11 +189,6 @@ public sealed class PetWindow : Form
             ChestButton = _chestBtnArt,
             ChestCountdown = _chestBgArt,
         };
-        // 高频重绘（每次按键、每次计数变化）复用同一张后缓冲。
-        var surface = _surface.Begin(Size.Width, Size.Height);
-        PetComposer.ComposeInto(surface, _frames, _bodyFrame, _headFrame, info,
-            _cfg.HoverFade && _hoverFadeOn ? 0.4 : Math.Clamp(_cfg.Opacity, 0.1, 1.0));
-        _surface.Apply(this);
     }
 
     bool _hovering, _hoverFadeOn;
@@ -254,8 +265,8 @@ public sealed class PetWindow : Form
         _blink.Start();
     }
 
-    void SetHead(int f) { if (_headFrame == f) return; _headFrame = f; RequestCompose(); }
-    void SetBody(int f) { if (_bodyFrame == f) return; _bodyFrame = f; RequestCompose(); }
+    void SetHead(int f) { if (_headFrame == f) return; _headFrame = f; CaptureChanged?.Invoke(); RequestCompose(); }
+    void SetBody(int f) { if (_bodyFrame == f) return; _bodyFrame = f; CaptureChanged?.Invoke(); RequestCompose(); }
 
     bool _composePending;
     System.Windows.Forms.Timer _composeTimer;
@@ -422,6 +433,7 @@ public sealed class PetWindow : Form
             _cfg.PetY = Top;
             ConfigStore.Save(_cfg);
             GeometryChanged?.Invoke();
+            if (!_cfg.AllowOverlap) ResolveOverlaps();
         }
     }
 
@@ -455,7 +467,86 @@ public sealed class PetWindow : Form
         ApplyWindowStyles();
         Compose();
         UpdateCatScales();
+        ApplyCaptureMode();
+        if (!_cfg.AllowOverlap) ResolveOverlaps();
         RefreshMenu();
+    }
+
+    /// <summary>打开/关闭/调整 OBS 绿幕窗口。绿幕窗口只复制主角，不影响桌面桌宠。</summary>
+    public void ApplyCaptureMode()
+    {
+        int w = Math.Clamp(_cfg.CaptureWidth, 160, 1600);
+        int h = Math.Clamp(_cfg.CaptureHeight, 160, 1600);
+        if (!_cfg.CaptureMode)
+        {
+            var old = _capture;
+            _capture = null;
+            if (old != null)
+            {
+                try { old.ClosingFromOwner = true; old.Close(); old.Dispose(); } catch { }
+            }
+            return;
+        }
+
+        if (_capture == null || _capture.IsDisposed)
+        {
+            _capture = new CaptureWindow(this);
+            _capture.FormClosed += (s, e) => { if (ReferenceEquals(_capture, s)) _capture = null; };
+            _capture.Show();
+        }
+        _capture.SetCaptureSize(w, h);
+        _capture.Invalidate();
+    }
+
+    /// <summary>绿幕窗口右键关闭时同步关掉设置开关，避免下次 ApplySettings 又弹出来。</summary>
+    public void DisableCaptureMode()
+    {
+        _cfg.CaptureMode = false;
+        Save();
+        ApplyCaptureMode();
+        NotifySettingsChanged();
+    }
+
+    /// <summary>用户拖动绿幕窗口边框调整大小后回写设置，下次打开保持该尺寸。</summary>
+    public void SetCaptureSizeFromWindow(int width, int height)
+    {
+        width = Math.Clamp(width, 160, 1600);
+        height = Math.Clamp(height, 160, 1600);
+        if (_cfg.CaptureWidth == width && _cfg.CaptureHeight == height) return;
+        _cfg.CaptureWidth = width;
+        _cfg.CaptureHeight = height;
+        Save();
+        NotifySettingsChanged();
+    }
+
+    /// <summary>用户从任务栏/Alt+F4 关闭绿幕窗口时，把设置开关同步关掉。</summary>
+    public void OnCaptureWindowUserClosed()
+    {
+        if (!_cfg.CaptureMode) return;
+        _cfg.CaptureMode = false;
+        Save();
+        NotifySettingsChanged();
+    }
+
+    /// <summary>
+    /// 把主角完整 GUI（角色、数字、计数条、宝箱、昵称和按钮）画到 OBS 绿幕窗口。
+    /// 键盘/手柄 GUI 由 CaptureWindow 另外调用 KeyboardWindow.DrawTo 拼接。
+    /// </summary>
+    public void DrawCapture(Graphics g, Rectangle dest)
+    {
+        if (_frames == null || !_frames.Ready || dest.Width <= 0 || dest.Height <= 0) return;
+        // 按采集窗口的最终像素尺寸合成，而不是拿缩小后的桌宠窗口位图放大。
+        // 桌宠 Scale 很小时窗口可能只有 136×165；直接放大到 OBS 绿幕尺寸会明显糊。
+        int w = Math.Max(1, dest.Width), h = Math.Max(1, dest.Height);
+        if (_captureFrame == null || _captureFrame.Width != w || _captureFrame.Height != h)
+        {
+            _captureFrame?.Dispose();
+            _captureFrame = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+        }
+        PetComposer.ComposeInto(_captureFrame, _frames, _bodyFrame, _headFrame,
+            BuildInfo(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()), 1.0);
+        // 位图已经就是目标尺寸，一比一贴图，避免再次双三次插值把文字和边缘磨糊。
+        g.DrawImageUnscaled(_captureFrame, dest.X, dest.Y);
     }
 
     void ApplyWindowStyles()
@@ -778,6 +869,7 @@ public sealed class PetWindow : Form
                 {
                     _cfg.MemberPositions[CatKey(id)] = new[] { p.X, p.Y };
                     Save();
+                    if (!_cfg.AllowOverlap) ResolveOverlaps(id);
                 };
                 _cats[id] = cat;
                 cat.Show();
@@ -849,6 +941,164 @@ public sealed class PetWindow : Form
         return new Point(wa.Left, wa.Top);
     }
 
+    /// <summary>
+    /// 联机面板“重置排序”：本地主角贴右下，当前实际显示的联机成员从右往左排列；
+    /// 一行放不下时向上换行。只排列已经存在的桌宠，不再给离线/隐藏/已离开成员留空位。
+    /// </summary>
+    public void ResetCatOrder()
+    {
+        var wa = Screen.FromControl(this).WorkingArea;
+        float s = DpiScale * (float)_cfg.Scale;
+        int margin = Math.Max(8, (int)Math.Round(12 * s));
+        int gap = Math.Max(6, (int)Math.Round(10 * s));
+
+        int localX = Math.Max(wa.Left, wa.Right - Width - margin);
+        int localY = Math.Max(wa.Top, wa.Bottom - Height - margin);
+        Location = new Point(localX, localY);
+        _cfg.PetX = localX;
+        _cfg.PetY = localY;
+
+        // 只排列当前房间仍在显示的人；离线/隐藏/已离开的成员即使还残留窗口也不占位。
+        var memberIds = _cats.Keys
+            .Where(id => _room.Members.TryGetValue(id, out var m) && m.Online && m.Visible)
+            .OrderBy(id => id)
+            .ToList();
+        string prefix = (_room.RoomNo ?? "") + ":";
+        foreach (string key in _cfg.MemberPositions.Keys
+                     .Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList())
+            _cfg.MemberPositions.Remove(key);
+
+        if (memberIds.Count > 0)
+        {
+            int rw = Math.Max(1, (int)Math.Round(RemoteCatWindow.W * s));
+            int catH = Math.Max(1, (int)Math.Round(RemoteCatWindow.CatH * s));
+            int rh = Math.Max(1, (int)Math.Round(RemoteCatWindow.H * s));
+            int rowStep = Math.Max(1, catH + gap);
+            int rightEdge = localX - gap;
+            int leftLimit = wa.Left + margin;
+            int baseY = Math.Max(wa.Top, wa.Bottom - rh - margin);
+            int cursorRight = rightEdge;
+            int row = 0;
+
+            for (int i = 0; i < memberIds.Count; i++)
+            {
+                int rawX = cursorRight - rw;
+                if (rawX < leftLimit && cursorRight != rightEdge)
+                {
+                    row++;
+                    cursorRight = rightEdge;
+                    rawX = cursorRight - rw;
+                }
+                int x = Math.Max(leftLimit, rawX);
+                int y = Math.Max(wa.Top, baseY - row * rowStep);
+                long id = memberIds[i];
+                if (_cats.TryGetValue(id, out var cat)) cat.Location = new Point(x, y);
+                _cfg.MemberPositions[CatKey(id)] = new[] { x, y };
+                cursorRight = x - gap;
+            }
+        }
+
+        Save();
+        GeometryChanged?.Invoke();
+        if (!_cfg.AllowOverlap) ResolveOverlaps();
+    }
+
+    /// <summary>
+    /// 关闭“允许重叠”后，把与主角/其他成员相交的联机桌宠向附近空位挪动。
+    /// 本地主角位置保持不动，作为固定障碍物；刚被拖动的成员优先让位。
+    /// </summary>
+    public void ResolveOverlaps(long? priorityId = null)
+    {
+        if (_cfg.AllowOverlap) return;
+        var cats = _cats.Where(kv => kv.Value.Visible).OrderBy(kv => kv.Key).ToList();
+        if (priorityId.HasValue)
+            cats = cats.OrderBy(kv => kv.Key == priorityId.Value ? 0 : 1).ThenBy(kv => kv.Key).ToList();
+
+        bool changed = false;
+        for (int pass = 0; pass < 8; pass++)
+        {
+            bool movedThisPass = false;
+            foreach (var pair in cats)
+            {
+                var cat = pair.Value;
+                var rect = CatVisibleRect(cat);
+                var obstacles = new List<Rectangle>();
+                var local = LocalVisibleRect();
+                if (!local.IsEmpty) obstacles.Add(local);
+                foreach (var other in cats)
+                    if (other.Key != pair.Key) obstacles.Add(CatVisibleRect(other.Value));
+                if (!obstacles.Any(o => o.IntersectsWith(rect))) continue;
+
+                var target = FindFreeCatPoint(cat, obstacles);
+                if (!target.HasValue) continue;
+                cat.Location = target.Value;
+                _cfg.MemberPositions[CatKey(pair.Key)] = new[] { target.Value.X, target.Value.Y };
+                movedThisPass = true;
+                changed = true;
+            }
+            if (!movedThisPass) break;
+        }
+        if (changed) Save();
+    }
+
+    Rectangle CatVisibleRect(RemoteCatWindow cat)
+    {
+        float s = DpiScale * (float)_cfg.Scale;
+        int head = (int)Math.Round(RemoteCatWindow.Headroom * s);
+        int catH = (int)Math.Round(RemoteCatWindow.CatH * s);
+        return new Rectangle(cat.Left, cat.Top + head, cat.Width, catH);
+    }
+
+    Rectangle LocalVisibleRect()
+    {
+        if (!Visible || _hiddenByHotkey) return Rectangle.Empty;
+        float s = Width / (float)PetComposer.WindowW;
+        var cat = new Rectangle(
+            Left + (int)Math.Round(PetComposer.CatX * s),
+            Top + (int)Math.Round(PetComposer.CatY * s),
+            (int)Math.Round(PetComposer.CatSize * s),
+            (int)Math.Round(PetComposer.CatSize * s));
+        var hud = new Rectangle(
+            Left,
+            Top + (int)Math.Round(PetComposer.InfoY * s),
+            Width,
+            (int)Math.Round(PetComposer.CounterH * s));
+        return Rectangle.Union(cat, hud);
+    }
+
+    Point? FindFreeCatPoint(RemoteCatWindow cat, List<Rectangle> obstacles)
+    {
+        var current = CatVisibleRect(cat);
+        var wa = Screen.FromPoint(new Point(current.Left + current.Width / 2, current.Top + current.Height / 2)).WorkingArea;
+        float s = DpiScale * (float)_cfg.Scale;
+        int head = (int)Math.Round(RemoteCatWindow.Headroom * s);
+        int w = cat.Width;
+        int h = (int)Math.Round(RemoteCatWindow.CatH * s);
+        int stepX = Math.Max(24, (int)Math.Round(w * 0.5));
+        int stepY = Math.Max(24, (int)Math.Round(h * 0.5));
+        int maxX = Math.Max(wa.Left, wa.Right - w);
+        int maxY = Math.Max(wa.Top, wa.Bottom - h);
+
+        for (int row = 0; row < 8; row++)
+        {
+            int y = Math.Clamp(current.Top - row * stepY, wa.Top, maxY);
+            for (int dist = 0; dist <= 8; dist++)
+            {
+                int[] signs = dist == 0 ? new[] { 0 } : new[] { -1, 1 };
+                foreach (int sign in signs)
+                {
+                    int x = Math.Clamp(current.Left + sign * dist * stepX, wa.Left, maxX);
+                    var candidate = new Rectangle(x, y, w, h);
+                    if (candidate.Left < wa.Left || candidate.Top < wa.Top ||
+                        candidate.Right > wa.Right || candidate.Bottom > wa.Bottom) continue;
+                    if (!obstacles.Any(o => o.IntersectsWith(candidate)))
+                        return new Point(x, y - head);
+                }
+            }
+        }
+        return DefaultCatPoint();
+    }
+
     void UpdateCatScales()
     {
         float s = DpiScale * (float)_cfg.Scale;
@@ -876,6 +1126,7 @@ public sealed class PetWindow : Form
         foreach (var id in _cats.Keys.ToList())
             if (!_room.Members.ContainsKey(id)) RemoveCat(id);
         foreach (var id in _room.Members.Keys.ToList()) UpdateCat(id);
+        if (!_cfg.AllowOverlap) ResolveOverlaps();
     }
 
     Point DefaultLocation()
@@ -899,11 +1150,16 @@ public sealed class PetWindow : Form
         Size = WindowSize();
         Compose();
         UpdateCatScales();
+        if (!_cfg.AllowOverlap) ResolveOverlaps();
         GeometryChanged?.Invoke();
     }
 
     protected override void OnClosed(EventArgs e)
     {
+        try { if (_capture != null) { _capture.ClosingFromOwner = true; _capture.Close(); _capture.Dispose(); } } catch { }
+        _captureFrame?.Dispose();
+        _captureFrame = null;
+        _capture = null;
         foreach (var t in new[] { _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _hoverFadeTimer, _composeTimer }) { try { t?.Stop(); t?.Dispose(); } catch { } }
         foreach (var c in _cats.Values.ToList()) { try { c.Close(); c.Dispose(); } catch { } }
         _cats.Clear();
