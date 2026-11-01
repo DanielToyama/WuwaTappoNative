@@ -4,6 +4,7 @@ using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Drawing.Text;
+using System.Threading;
 using WuwatappoNative.Assets;
 
 namespace WuwatappoNative.Pet;
@@ -13,6 +14,16 @@ public sealed class PetFrames
     public Image Head1, Head2, Body1, Body2, Body3, Accessory;
     public double AccOffsetX, AccOffsetY;
     public bool Ready => Head1 != null && Body1 != null;
+
+    int _pending;
+    /// <summary>还有图片在下载。Ready 可能已经是默认图，Loading 仍为 true。</summary>
+    public bool Loading => Volatile.Read(ref _pending) > 0;
+
+    internal void AddPending() => Interlocked.Increment(ref _pending);
+    internal void CompletePending()
+    {
+        if (Interlocked.Decrement(ref _pending) < 0) Interlocked.Exchange(ref _pending, 0);
+    }
 
     /// <summary>任一帧到货（含失败后的默认图兜底）都会触发，窗口据此重绘。</summary>
     public event Action Changed;
@@ -76,6 +87,9 @@ public sealed class PetImageLoader
             frames.Accessory = Fetch(_catalog.CdnUrl(acc.Url), v => frames.Accessory = v, frames);
         }
 
+        // 先显示默认外观，避免网慢时桌宠空白；真实帧到货后会逐张替换，期间由 Loading 转圈提示。
+        if (!frames.Ready) LoadDefaultFrames(frames);
+
         // 目录还没加载完时无法判断这个 id 是真的不存在还是暂时查不到：先给默认图但不入缓存，
         // 等 Catalog.Loaded 后重新解析，避免把默认皮肤固化成结果。
         bool cacheable = hasSkin || catalogLoaded || skinId <= 0;
@@ -129,13 +143,21 @@ public sealed class PetImageLoader
     Image Fetch(string url, Action<Image> assign, PetFrames frames)
     {
         if (string.IsNullOrEmpty(url)) return null;
+        // onStarted 在真正发起下载时 +1；完成回调无论成功失败都 -1，并只从缓存读取，
+        // 绝不能再次调用 Get(url)，否则失败会重新 Prefetch，形成无限下载风暴。
         var img = _store.Get(url, () =>
         {
-            var loaded = _store.Get(url);
-            if (loaded == null) return;
-            assign(loaded);
-            frames.RaiseChanged();
-        });
+            try
+            {
+                var loaded = _store.GetCached(url);
+                if (loaded != null) assign(loaded);
+            }
+            finally
+            {
+                frames.CompletePending();
+                frames.RaiseChanged();
+            }
+        }, () => frames.AddPending());
         if (img != null) assign(img);
         return img;
     }
@@ -178,6 +200,8 @@ public static class PetComposer
         public long NowMs;
         public bool ShowChestLeft, ShowChestRight;
         public Image ChestButton, ChestCountdown;
+        public bool Loading;
+        public double LoadingPhase;
     }
 
     public static readonly Rectangle ChestLeftRect = new(183, 263, 62, 44);
@@ -223,6 +247,7 @@ public static class PetComposer
         DrawStrip(g, s, info);
         // 手/手臂单独盖在计数条和工具栏上：角色本体在 UI 后面，但拍桌的手要压住 UI。
         DrawHandsOverStrip(g, s, body, cat);
+        if (info.Loading) DrawLoading(g, s, info.LoadingPhase, CatX + CatSize - 30, CatY + 30);
         if (opacity < 0.999)
         {
             using var attrs = new ImageAttributes();
@@ -357,6 +382,22 @@ public static class PetComposer
     {
         long total = (ms + 999) / 1000;
         return $"{total / 60:00}:{total % 60:00}";
+    }
+
+    /// <summary>图片还在下载时画一个旋转圆环；网络慢时让用户知道不是卡死。</summary>
+    public static void DrawLoading(Graphics g, float s, double phase, float centerX, float centerY)
+    {
+        float r = Math.Max(9f, 15f * s);
+        var box = new RectangleF(centerX * s - r, centerY * s - r, r * 2, r * 2);
+        using (var bg = new SolidBrush(Color.FromArgb(220, Cream)))
+            g.FillEllipse(bg, box);
+        using var pen = new Pen(Color.FromArgb(245, 214, 152, 78), Math.Max(2f, 3.2f * s))
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round
+        };
+        float start = (float)((phase * 360.0) % 360.0);
+        g.DrawArc(pen, box, start, 285f);
     }
 
     static Rectangle Scaled(Rectangle r, float s) =>

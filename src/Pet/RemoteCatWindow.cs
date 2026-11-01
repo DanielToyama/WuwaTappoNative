@@ -258,7 +258,7 @@ public sealed class RemoteCatWindow : Form
         string url = _catalog.CdnUrl(e.Url);
         var img = _store.Get(url, () =>
         {
-            var loaded = _store.Get(url);
+            var loaded = _store.GetCached(url);
             if (loaded != null && IsHandleCreated) BeginInvoke(new Action(() => PushBubble(loaded)));
         });
         return img;

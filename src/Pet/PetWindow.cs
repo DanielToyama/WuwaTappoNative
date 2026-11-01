@@ -34,7 +34,7 @@ public sealed class PetWindow : Form
     Point _dragCursor, _dragOrigin;
     readonly EmoteBubbleLayer _bubbles = new();
     readonly EmoteWheelLayer _wheel = new();
-    System.Windows.Forms.Timer _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _hoverFadeTimer;
+    System.Windows.Forms.Timer _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _hoverFadeTimer, _loadingTimer;
     long _lastSkin = -1, _lastAcc = -1;
     Image _chestBtnArt, _chestBgArt;
     ContextMenuStrip _menu;
@@ -127,12 +127,26 @@ public sealed class PetWindow : Form
         if (_frames != null) _frames.Changed -= OnFramesChanged;
         _frames = _loader.Get(_cfg.CharacterAssetId, _cfg.AccessoryAssetId);
         _frames.Changed += OnFramesChanged;
-        Log.Write($"DBG reload frames cfg={_cfg.CharacterAssetId}/{_cfg.AccessoryAssetId} ready={_frames?.Ready}");
+        UpdateLoadingAnimation();
+        Log.Write($"DBG reload frames cfg={_cfg.CharacterAssetId}/{_cfg.AccessoryAssetId} ready={_frames?.Ready} loading={_frames?.Loading}");
         if (Size != WindowSize()) Size = WindowSize();
         Compose();
     }
 
-    void OnFramesChanged() => Safe(Compose);
+    void OnFramesChanged() => Safe(() =>
+    {
+        UpdateLoadingAnimation();
+        Compose();
+    });
+
+    void UpdateLoadingAnimation()
+    {
+        if (_frames?.Loading == true)
+        {
+            if (!_loadingTimer.Enabled) _loadingTimer.Start();
+        }
+        else _loadingTimer.Stop();
+    }
 
     /// <summary>换装后清缓存并立即重绘（本地与云端装扮变更都走这里）。</summary>
     public void ReloadAppearance()
@@ -159,12 +173,26 @@ public sealed class PetWindow : Form
     void Compose()
     {
         if (!IsHandleCreated) return;
-        if (_frames == null || !_frames.Ready) return;
+        if (_frames == null || (!_frames.Ready && !_frames.Loading)) return;
         var info = BuildInfo(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        info.Loading = _frames.Loading;
+        info.LoadingPhase = (Environment.TickCount64 % 1000) / 1000.0;
         // 高频重绘（每次按键、每次计数变化）复用同一张后缓冲。
         var surface = _surface.Begin(Size.Width, Size.Height);
-        PetComposer.ComposeInto(surface, _frames, _bodyFrame, _headFrame, info,
-            _cfg.HoverFade && _hoverFadeOn ? 0.4 : Math.Clamp(_cfg.Opacity, 0.1, 1.0));
+        if (_frames.Ready)
+        {
+            PetComposer.ComposeInto(surface, _frames, _bodyFrame, _headFrame, info,
+                _cfg.HoverFade && _hoverFadeOn ? 0.4 : Math.Clamp(_cfg.Opacity, 0.1, 1.0));
+        }
+        else
+        {
+            using var g = Graphics.FromImage(surface);
+            g.Clear(Color.Transparent);
+            float s = surface.Width / (float)PetComposer.WindowW;
+            PetComposer.DrawLoading(g, s, info.LoadingPhase,
+                PetComposer.CatX + PetComposer.CatSize / 2f,
+                PetComposer.CatY + PetComposer.CatSize / 2f);
+        }
         _surface.Apply(this);
         CaptureChanged?.Invoke();
     }
@@ -259,6 +287,17 @@ public sealed class PetWindow : Form
             _hoverFadeTimer.Stop();
             if (!_hovering || !_cfg.HoverFade || _hoverFadeOn) return;
             _hoverFadeOn = true;
+            Compose();
+        };
+        _loadingTimer = new System.Windows.Forms.Timer { Interval = 80 };
+        _loadingTimer.Tick += (s, e) =>
+        {
+            if (_frames?.Loading != true)
+            {
+                _loadingTimer.Stop();
+                Compose();
+                return;
+            }
             Compose();
         };
         MouseEnter += (s, e) => ShowWheel();
@@ -534,7 +573,22 @@ public sealed class PetWindow : Form
     /// </summary>
     public void DrawCapture(Graphics g, Rectangle dest)
     {
-        if (_frames == null || !_frames.Ready || dest.Width <= 0 || dest.Height <= 0) return;
+        if (_frames == null || dest.Width <= 0 || dest.Height <= 0) return;
+        if (!_frames.Ready)
+        {
+            if (!_frames.Loading) return;
+            var state = g.Save();
+            try
+            {
+                g.TranslateTransform(dest.X, dest.Y);
+                float ls = dest.Width / (float)PetComposer.WindowW;
+                PetComposer.DrawLoading(g, ls, (Environment.TickCount64 % 1000) / 1000.0,
+                    PetComposer.CatX + PetComposer.CatSize / 2f,
+                    PetComposer.CatY + PetComposer.CatSize / 2f);
+            }
+            finally { g.Restore(state); }
+            return;
+        }
         // 按采集窗口的最终像素尺寸合成，而不是拿缩小后的桌宠窗口位图放大。
         // 桌宠 Scale 很小时窗口可能只有 136×165；直接放大到 OBS 绿幕尺寸会明显糊。
         int w = Math.Max(1, dest.Width), h = Math.Max(1, dest.Height);
@@ -543,8 +597,10 @@ public sealed class PetWindow : Form
             _captureFrame?.Dispose();
             _captureFrame = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
         }
-        PetComposer.ComposeInto(_captureFrame, _frames, _bodyFrame, _headFrame,
-            BuildInfo(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()), 1.0);
+        var info = BuildInfo(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        info.Loading = _frames.Loading;
+        info.LoadingPhase = (Environment.TickCount64 % 1000) / 1000.0;
+        PetComposer.ComposeInto(_captureFrame, _frames, _bodyFrame, _headFrame, info, 1.0);
         // 位图已经就是目标尺寸，一比一贴图，避免再次双三次插值把文字和边缘磨糊。
         g.DrawImageUnscaled(_captureFrame, dest.X, dest.Y);
     }
@@ -615,7 +671,7 @@ public sealed class PetWindow : Form
         var entry = _catalog.Find(assetType, assetId);
         if (entry != null) url = _catalog.CdnUrl(entry.Url);
         if (string.IsNullOrEmpty(url)) return;
-        var img = _store.Get(url, () => Safe(() => { var loaded = _store.Get(url); if (loaded != null) PushBubble(loaded); }));
+        var img = _store.Get(url, () => Safe(() => { var loaded = _store.GetCached(url); if (loaded != null) PushBubble(loaded); }));
         if (img != null) PushBubble(img);
     }
 
@@ -626,7 +682,7 @@ public sealed class PetWindow : Form
         if (entry != null)
         {
             string url = _catalog.CdnUrl(entry.Url);
-            var img = _store.Get(url, () => Safe(() => { var loaded = _store.Get(url); if (loaded != null) PushBubble(loaded); }));
+            var img = _store.Get(url, () => Safe(() => { var loaded = _store.GetCached(url); if (loaded != null) PushBubble(loaded); }));
             if (img != null) PushBubble(img);
         }
         try { await _room.SendEmoteAsync(id); } catch (Exception ex) { Log.Write("发送表情失败 " + ex.Message); }
@@ -1160,7 +1216,7 @@ public sealed class PetWindow : Form
         _captureFrame?.Dispose();
         _captureFrame = null;
         _capture = null;
-        foreach (var t in new[] { _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _hoverFadeTimer, _composeTimer }) { try { t?.Stop(); t?.Dispose(); } catch { } }
+        foreach (var t in new[] { _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _hoverFadeTimer, _loadingTimer, _composeTimer }) { try { t?.Stop(); t?.Dispose(); } catch { } }
         foreach (var c in _cats.Values.ToList()) { try { c.Close(); c.Dispose(); } catch { } }
         _cats.Clear();
         _surface.Dispose();

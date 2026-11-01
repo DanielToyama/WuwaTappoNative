@@ -29,8 +29,8 @@ public sealed class AssetStore : IDisposable
         return Path.Combine(Paths.ImageCacheDir, hash + ".png");
     }
 
-    /// <summary>同步拿内存/磁盘图片；没有则返回 null 并在后台下载，完成回调 onReady。</summary>
-    public Image Get(string url, Action onReady = null)
+    /// <summary>只查内存/磁盘缓存，绝不触发下载。下载完成回调里必须用它，避免失败后再次 Prefetch 造成死循环。</summary>
+    public Image GetCached(string url)
     {
         if (string.IsNullOrEmpty(url)) return null;
         if (_memory.TryGetValue(url, out var img)) return img;
@@ -40,6 +40,16 @@ public sealed class AssetStore : IDisposable
             _memory[url] = local;
             return local;
         }
+        return null;
+    }
+
+    /// <summary>同步拿内存/磁盘图片；没有则返回 null 并在后台下载，完成回调 onReady。
+    /// onStarted 只在实际发起后台下载时同步调用，用于统计“正在加载”的帧数量。</summary>
+    public Image Get(string url, Action onReady = null, Action onStarted = null)
+    {
+        if (string.IsNullOrEmpty(url)) return null;
+        if (GetCached(url) is Image cached) return cached;
+        onStarted?.Invoke();
         Prefetch(url, onReady);
         return null;
     }
@@ -55,15 +65,34 @@ public sealed class AssetStore : IDisposable
         if (!_inflight.TryAdd(url, 0)) return;
         _ = Task.Run(async () =>
         {
+            Exception last = null;
             try
             {
                 string path = CachePathOf(url);
-                var bytes = await _http.GetByteArrayAsync(url).ConfigureAwait(false);
                 Directory.CreateDirectory(Paths.ImageCacheDir);
-                var tmp = path + ".tmp";
-                await File.WriteAllBytesAsync(tmp, bytes).ConfigureAwait(false);
-                File.Move(tmp, path, true);
-                _pathOf[url] = path;
+                for (int attempt = 1; attempt <= 3; attempt++)
+                {
+                    try
+                    {
+                        var bytes = await _http.GetByteArrayAsync(url).ConfigureAwait(false);
+                        var tmp = path + ".tmp";
+                        await File.WriteAllBytesAsync(tmp, bytes).ConfigureAwait(false);
+                        File.Move(tmp, path, true);
+                        _pathOf[url] = path;
+                        last = null;
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        last = ex;
+                        if (attempt < 3)
+                        {
+                            Log.Write($"图片下载重试 {attempt}/3 {url} {ex.Message}");
+                            await Task.Delay(400 * attempt).ConfigureAwait(false);
+                        }
+                    }
+                }
+                if (last != null) Log.Write("图片下载失败（已重试 3 次） " + url + " " + last.Message);
             }
             catch (Exception ex) { Log.Write("图片下载失败 " + url + " " + ex.Message); }
             finally { _inflight.TryRemove(url, out _); }
