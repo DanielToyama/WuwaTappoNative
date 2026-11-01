@@ -14,7 +14,6 @@ namespace WuwatappoNative;
 public sealed class App : ApplicationContext
 {
     public Settings Cfg { get; }
-    public static volatile bool UiInputFocused;
     public AuthService Auth { get; }
     public Catalog Catalog { get; } = new();
     public AssetStore Store { get; } = new();

@@ -12,8 +12,7 @@ namespace WuwatappoNative.Pet;
 /// 因此不会吞掉任何软件的输入，也不在输入路径上增加延迟。
 /// 按下/抬起分别通知，用于“按下一只手落下、抬起手抬起”的双手机制；
 /// 全局快捷键也在这条事件流里匹配，效果与直接监听相同但不会独占按键。
-/// 自身面板输入框聚焦时不计数、不触发快捷键（避免打字误触和录入快捷键时自触发），
-/// 但面板本身处于前台时仍然统计，不能因为打开设置就停掉计数。
+/// 面板打开、输入框聚焦时也照常计数和匹配快捷键，监听没有“面板内忽略”的分支。
 /// 点击本程序自己的窗口（面板、桌宠、成员桌宠）不重复计数：桌宠点击由窗口自己记账。
 /// </summary>
 public sealed class GlobalInputHook : IDisposable
@@ -129,10 +128,6 @@ public sealed class GlobalInputHook : IDisposable
         if (vk == 0 || vk == 0xFF) return; // 无虚拟键的媒体键等
         bool down = (kb.Flags & 1) == 0;   // RI_KEY_BREAK = 1
 
-        // 面板打开不再等于停止统计：只有正在输入文字时才屏蔽计数/快捷键，
-        // 否则“打开设置就收不到点击”会表现得像监听失效。
-        bool blocked = App.UiInputFocused;
-
         if (down)
         {
             bool first;
@@ -142,26 +137,23 @@ public sealed class GlobalInputHook : IDisposable
             // 高亮走边沿事件：不等轮询，按下立刻亮。
             Safe(() => KeyEdge?.Invoke(vk, true));
 
-            if (!App.UiInputFocused)
+            bool ctrl, alt, shift;
+            lock (_gate)
             {
-                bool ctrl, alt, shift;
-                lock (_gate)
-                {
-                    ctrl = _pressed.Contains(0x11) || _pressed.Contains(0xA2) || _pressed.Contains(0xA3);
-                    alt = _pressed.Contains(0x12) || _pressed.Contains(0xA4) || _pressed.Contains(0xA5);
-                    shift = _pressed.Contains(0x10) || _pressed.Contains(0xA0) || _pressed.Contains(0xA1);
-                }
-                if (!IsModifier(vk)) Safe(() => HotkeyKeyDown?.Invoke(vk, ctrl, alt, shift));
+                ctrl = _pressed.Contains(0x11) || _pressed.Contains(0xA2) || _pressed.Contains(0xA3);
+                alt = _pressed.Contains(0x12) || _pressed.Contains(0xA4) || _pressed.Contains(0xA5);
+                shift = _pressed.Contains(0x10) || _pressed.Contains(0xA0) || _pressed.Contains(0xA1);
             }
+            if (!IsModifier(vk)) Safe(() => HotkeyKeyDown?.Invoke(vk, ctrl, alt, shift));
 
-            if (!blocked) Safe(() => KeyDown?.Invoke(vk));
+            Safe(() => KeyDown?.Invoke(vk));
         }
         else
         {
             bool was;
             lock (_gate) was = _pressed.Remove(vk);
             if (was) Safe(() => KeyEdge?.Invoke(vk, false));
-            if (was && !blocked) Safe(() => KeyUp?.Invoke(vk));
+            if (was) Safe(() => KeyUp?.Invoke(vk));
         }
     }
 

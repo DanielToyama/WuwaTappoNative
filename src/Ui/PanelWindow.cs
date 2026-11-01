@@ -25,6 +25,7 @@ public sealed class PanelWindow : Form
     WebView2 _web;
     bool _ready;
     bool _fitting;
+    bool _detached;
 
     public PanelWindow(App app)
     {
@@ -42,13 +43,44 @@ public sealed class PanelWindow : Form
         DoubleBuffered = true;
         BuildWebView();
 
-        app.Room.StateChanged += () => SafePushRoom();
+        app.Room.StateChanged += OnRoomStateChanged;
         // 人数多时名册/外观事件是成批来的：合并到下一次消息循环再推一次，
         // 否则 40 人的房间每次按键都会序列化 40 份完整房间状态发给 WebView。
-        app.Room.MemberUpdated += _ => QueuePushRoom();
-        app.Room.MemberRemoved += _ => QueuePushRoom();
+        app.Room.MemberUpdated += OnMemberListChanged;
+        app.Room.MemberRemoved += OnMemberListChanged;
         app.Room.RosterChanged += QueuePushRoom;
-        app.Auth.Changed += () => SafePushAuth();
+        app.Auth.Changed += OnAuthChanged;
+    }
+
+    void OnRoomStateChanged() => SafePushRoom();
+    void OnMemberListChanged(long _) => QueuePushRoom();
+    void OnAuthChanged() => SafePushAuth();
+
+    /// <summary>关闭面板时解除 App 的事件订阅并释放 WebView2，否则 Hide() 会一直占着整个浏览器实例。</summary>
+    void Detach()
+    {
+        if (_detached) return;
+        _detached = true;
+        _ready = false;
+        try { _app.Room.StateChanged -= OnRoomStateChanged; } catch { }
+        try { _app.Room.MemberUpdated -= OnMemberListChanged; } catch { }
+        try { _app.Room.MemberRemoved -= OnMemberListChanged; } catch { }
+        try { _app.Room.RosterChanged -= QueuePushRoom; } catch { }
+        try { _app.Auth.Changed -= OnAuthChanged; } catch { }
+        try { _web?.Dispose(); } catch { }
+        _web = null;
+    }
+
+    protected override void OnFormClosed(FormClosedEventArgs e)
+    {
+        base.OnFormClosed(e);
+        Detach();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) Detach();
+        base.Dispose(disposing);
     }
 
     /// <summary>
@@ -208,8 +240,10 @@ public sealed class PanelWindow : Form
                 _ready = e.IsSuccess;
                 if (_ready) Push("boot", BootPayload());
             };
-            string url = "https://wuwatappo.local/index.html"
-                + (Array.IndexOf(Environment.GetCommandLineArgs(), "--demo") >= 0 ? "?demo=1" : "");
+            // 带版本号查询串，避免升级后 WebView2 仍使用旧 index.html/app.js 缓存。
+            string panelVersion = typeof(PanelWindow).Assembly.GetName().Version?.ToString(3) ?? "0";
+            string url = "https://wuwatappo.local/index.html?v=" + Uri.EscapeDataString(panelVersion);
+            if (Array.IndexOf(Environment.GetCommandLineArgs(), "--demo") >= 0) url += "&demo=1";
             string page = ArgValue("--panel-page");
             string hash = "";
             if (!string.IsNullOrEmpty(page)) hash = "#page=" + page;
@@ -340,11 +374,8 @@ public sealed class PanelWindow : Form
                 WindowState = FormWindowState.Minimized;
                 return true;
             case "win.close":
-                Hide();
-                return true;
-
-            case "ui.inputFocus":
-                App.UiInputFocused = ApiClient.ReadBool(data["focused"]);
+                // 不在 WebView2 的消息处理栈里直接 Dispose，先排到下一轮消息循环。
+                BeginInvoke(new Action(Close));
                 return true;
 
             case "ui.disclaimerShown":
@@ -887,20 +918,6 @@ public sealed class PanelWindow : Form
         ApplyRegion();
     }
 
-    // 面板隐藏/失焦时必须清掉“正在输入”的标记：否则在输入框里关掉面板后，
-    // 原生层会一直以为用户在打字，导致全局按键统计像是失效了。
-    protected override void OnDeactivate(EventArgs e)
-    {
-        base.OnDeactivate(e);
-        App.UiInputFocused = false;
-    }
-
-    protected override void OnVisibleChanged(EventArgs e)
-    {
-        base.OnVisibleChanged(e);
-        if (!Visible) App.UiInputFocused = false;
-    }
-
     protected override void OnResize(EventArgs e)
     {
         base.OnResize(e);
@@ -912,17 +929,6 @@ public sealed class PanelWindow : Form
         if (Width <= 0 || Height <= 0) return;
         using var path = PetComposer.Rounded(new RectangleF(0, 0, Width, Height), 18);
         Region = new Region(path);
-    }
-
-    protected override void OnFormClosing(FormClosingEventArgs e)
-    {
-        if (e.CloseReason == CloseReason.UserClosing)
-        {
-            e.Cancel = true;
-            Hide();
-            return;
-        }
-        base.OnFormClosing(e);
     }
 
     [DllImport("user32.dll")] static extern bool ReleaseCapture();

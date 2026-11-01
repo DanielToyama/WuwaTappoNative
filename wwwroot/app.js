@@ -143,26 +143,12 @@
       `<button class="tab" data-page="${p.key}">${ICONS[p.icon]}<span>${p.title}</span></button>`).join('');
     document.querySelectorAll('.tab').forEach(btn => btn.onclick = () => navigate(btn.dataset.page));
     document.getElementById('closeBtn').onclick = () => call('win.close');
+    document.getElementById('winCloseBtn').onclick = () => call('win.close');
     document.getElementById('minBtn').onclick = () => call('win.min');
     document.getElementById('titlebar').addEventListener('mousedown', e => {
       if (e.target.closest('button')) return;
       call('win.drag');
     });
-    // 输入框聚焦时通知原生层：不要计点击数、不要驱动桌宠手部动画。
-    // 窗口失焦/重新聚焦也要同步一次，避免“在输入框里关掉面板后统计一直停着”。
-    const isTextTarget = t => t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable);
-    const sendInputFocus = focused => {
-      try { window.chrome.webview.postMessage({ id: 0, cmd: 'ui.inputFocus', data: { focused } }); } catch { }
-    };
-    const syncInputFocus = () => sendInputFocus(isTextTarget(document.activeElement));
-    document.addEventListener('focusin', e => {
-      if (isTextTarget(e.target)) sendInputFocus(true);
-    });
-    document.addEventListener('focusout', e => {
-      if (isTextTarget(e.target)) sendInputFocus(false);
-    });
-    window.addEventListener('focus', syncInputFocus);
-    window.addEventListener('blur', () => sendInputFocus(false));
     navigate(state.page);
     setInterval(updateChestStatus, 1000);
   }
@@ -305,7 +291,7 @@
     }
     if (evt === 'toast') { toast(data.text, data.kind); return; }
     // 自动领宝箱发生在后台，面板收到后同步背包与「最近获得」。
-    if (evt === 'chest') { refreshAfterAcquire(); return; }
+    if (evt === 'chest') { refreshAfterAcquire(data?.asset_id); return; }
     if (evt === 'clicks') {
       applyClicks(typeof data === 'object' && data !== null ? data : { available: data });
       return;
@@ -437,6 +423,7 @@
     return first || (assetMeta(item).role === '0' ? '通用' : '角色 ' + item.roleId);
   }
   const RECENT_KEY = 'wn_recent_assets';
+  const UNSEEN_KEY = 'wn_unseen_assets';
   const RECENT_MAX = 80;
 
   /**
@@ -460,6 +447,33 @@
   function saveRecent(list) {
     try { localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, RECENT_MAX))); } catch { }
   }
+  function loadUnseen() {
+    try {
+      const arr = JSON.parse(localStorage.getItem(UNSEEN_KEY) || '[]');
+      return Array.isArray(arr) ? arr.filter(x => typeof x === 'number') : [];
+    } catch { return []; }
+  }
+  function saveUnseen(list) {
+    try { localStorage.setItem(UNSEEN_KEY, JSON.stringify([...new Set(list)])); } catch { }
+  }
+  /** 宝箱响应只有 id；先把它前插到最近获得并标记小红点，不等下一次背包扫描。 */
+  function markRecentObtained(id) {
+    id = Number(id);
+    if (!Number.isFinite(id) || id <= 0) return;
+    const recent = [id, ...loadRecent().filter(x => x !== id)];
+    saveRecent(recent);
+    const unseen = [id, ...loadUnseen().filter(x => x !== id)];
+    saveUnseen(unseen);
+    const owned = new Set((state.bag || []).map(x => x.id));
+    state.bagRecentIds = recent.filter(x => owned.has(x));
+    state.bagNewIds = unseen.filter(x => owned.has(x));
+  }
+  /** 点击/查看后清除该物品的小红点，直到它再次被重新获取。 */
+  function markNewSeen(id) {
+    const unseen = loadUnseen().filter(x => x !== id);
+    saveUnseen(unseen);
+    state.bagNewIds = (state.bagNewIds || []).filter(x => x !== id);
+  }
   function refreshNewAssets() {
     try {
       const rawKnown = localStorage.getItem('wn_known_assets');
@@ -476,16 +490,20 @@
         }
         saveRecent(recent);
       }
+      // 小红点单独持久化，面板关闭/重开后仍然可见，直到用户点开该物品。
+      const unseen = [...new Set([...fresh, ...loadUnseen()])];
+      saveUnseen(unseen);
       // 背包里已不存在的（例如被消耗掉）不再显示，但保留记录以免误删历史。
       const owned = new Set(ids);
       state.bagRecentIds = recent.filter(id => owned.has(id));
-      state.bagNewIds = fresh;
+      state.bagNewIds = unseen.filter(id => owned.has(id));
       localStorage.setItem('wn_known_assets', JSON.stringify([...new Set([...known, ...ids])]));
     } catch { state.bagRecentIds = []; state.bagNewIds = []; }
   }
   /** 保留记录：只在用户主动清空时调用。 */
   function dismissNewAssets() {
     saveRecent([]);
+    saveUnseen([]);
     state.bagRecentIds = [];
     state.bagNewIds = [];
   }
@@ -614,6 +632,7 @@
     host.querySelectorAll('.card').forEach(el => {
       const id = Number(el.dataset.id);
       el.onclick = () => {
+        markNewSeen(id);
         state.bagSelected = state.bag.find(v => v.id === id);
         renderBagList();
         renderBagDetail();
@@ -635,7 +654,9 @@
 
   function cardHtml(item, selected, withFav) {
     const fav = state.favors.has(item.id) ? '★' : '☆';
+    const isNew = (state.bagNewIds || []).includes(item.id);
     return `<div class="card ${selected ? 'selected' : ''}" data-id="${item.id}">
+      ${isNew ? '<span class="new-dot" title="最近获得"></span>' : ''}
       ${withFav ? `<div class="fav" data-id="${item.id}" title="收藏">${fav}</div>` : ''}
       ${img(item.thumb, 'thumb', item.name)}
       <div class="rarity-bar ${rarityClass(item.rarity)}"></div>
@@ -973,7 +994,9 @@
       renderSynth();
     });
     document.getElementById('synthClear').onclick = () => { synthResetSlots(); renderSynth(); };
-    document.getElementById('synthOne').onclick = synthOneClick;
+    document.getElementById('synthOne').onclick = () => {
+      synthOneClick().catch(e => toast(e.message || '一键选择失败', 'err'));
+    };
     document.getElementById('synthSubmit').onclick = doSynth;
 
     const grid = document.getElementById('synthGrid');
@@ -1009,16 +1032,27 @@
     });
   }
 
-  function synthOneClick() {
+  async function synthOneClick() {
     const need = synthNeed();
     const filled = state.synthSlots.filter(x => x !== null).length;
+    if (filled >= need) return;
     const anchor = synthAnchor();
-    const pool = synthEligible(state.synthType).filter(x => synthUsable(x) > 0);
+    // 一键选择搜索全部三类材料，不再受当前“类型”页签限制。
+    await Promise.all(['character_skin', 'accessory', 'emote']
+      .map(t => ensureAtlas(t).catch(() => [])));
+    const pool = ['character_skin', 'accessory', 'emote']
+      .flatMap(t => synthEligible(t))
+      .filter(x => synthUsable(x) > 0);
+
     let group;
+    let chosenType;
+    let chosenRarity;
     if (anchor) {
-      group = pool.filter(x => x.type === anchor.type && effRarity(x.rarity) === effRarity(anchor.rarity));
+      chosenType = anchor.type;
+      chosenRarity = effRarity(anchor.rarity);
+      group = pool.filter(x => x.type === chosenType && effRarity(x.rarity) === chosenRarity);
       if (group.reduce((s, x) => s + synthUsable(x), 0) < need - filled)
-        return toast('同类型同稀有度的可用材料不足', 'err');
+        return toast('已有槽位对应的类型/稀有度材料不足', 'err');
     } else {
       const groups = new Map();
       for (const it of pool) {
@@ -1028,12 +1062,19 @@
       }
       const orderT = { character_skin: 0, accessory: 1, emote: 2 };
       const orderR = { epic: 4, rare: 3, uncommon: 2, common: 1 };
-      group = [...groups.values()].sort((a, b) =>
-        orderT[a[0].type] - orderT[b[0].type]
-        || orderR[effRarity(b[0].rarity)] - orderR[effRarity(a[0].rarity)])[0];
-      if (!group || group.reduce((s, x) => s + synthUsable(x), 0) < need)
-        return toast('没有足够的多余收集物可供一键选择', 'err');
+      const candidates = [...groups.values()]
+        .filter(g => g.reduce((s, x) => s + synthUsable(x), 0) >= need)
+        .sort((a, b) =>
+          orderR[effRarity(b[0].rarity)] - orderR[effRarity(a[0].rarity)]
+          || orderT[a[0].type] - orderT[b[0].type]
+          || b.reduce((s, x) => s + synthUsable(x), 0) - a.reduce((s, x) => s + synthUsable(x), 0));
+      if (!candidates.length)
+        return toast('角色 / 配件 / 表情中都没有足够的多余材料', 'err');
+      group = candidates[0];
+      chosenType = group[0].type;
+      chosenRarity = effRarity(group[0].rarity);
     }
+
     let remaining = need - filled;
     const slots = [...state.synthSlots];
     for (const it of group) {
@@ -1047,17 +1088,45 @@
       if (remaining <= 0) break;
     }
     state.synthSlots = slots;
+    // 让类型/稀有度页签跟随实际选中的材料，否则 renderSynth 会把跨类材料当作无效槽位清掉。
+    state.synthType = chosenType;
+    state.synthRarity = chosenRarity;
     renderSynth();
   }
 
-  /** 开箱/合成/兑换后刷新背包，并把新物品前插到「最近获得」第一页。 */
-  async function refreshAfterAcquire() {
-    try {
-      await ensureBag(true);
+  /**
+   * 开箱/合成/兑换后刷新背包，并把新物品前插到「最近获得」第一页。
+   * 服务器背包列表可能比开箱响应晚一拍；带 acquiredId 时最多重试约 3 秒，
+   * 确保面板不因为一次过早的 bag.list 而漏掉刚获得的物品。
+   */
+  async function refreshAfterAcquire(acquiredId) {
+    acquiredId = Number(acquiredId);
+    if (!Number.isFinite(acquiredId) || acquiredId <= 0) acquiredId = 0;
+    if (acquiredId) markRecentObtained(acquiredId);
+    let loaded = false;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      try {
+        const r = await call('bag.list');
+        state.bag = r.items || [];
+        loaded = true;
+        if (!acquiredId || state.bag.some(x => x.id === acquiredId)) break;
+      } catch { }
+      await new Promise(resolve => setTimeout(resolve, 300));
+    }
+    if (loaded) {
       state.bagNewReady = false;
       refreshNewAssets();
-      if (state.page === 'bag') renderBag();
-    } catch { }
+      if (acquiredId) {
+        const owned = new Set((state.bag || []).map(x => x.id));
+        if (owned.has(acquiredId)) {
+          markRecentObtained(acquiredId);
+          state.bagRecentIds = loadRecent().filter(id => owned.has(id));
+          state.bagNewIds = loadUnseen().filter(id => owned.has(id));
+        }
+      }
+    }
+    if (state.page === 'bag') renderBag();
+    if (!loaded) toast('背包刷新失败，请稍后手动刷新', 'err');
   }
 
   async function doSynth() {
@@ -1067,8 +1136,8 @@
     const sameLevel = state.synthMode === 'same';
     try {
       const r = await tryCall('synthesize', { ids, sameLevel });
-      const id = r?.asset_id || r?.data?.asset_id;
-      await refreshAfterAcquire();
+      const id = Number(r?.asset_id || r?.data?.asset_id) || 0;
+      await refreshAfterAcquire(id);
       const found = (state.bag || []).find(v => v.id === id);
       let thumb = '', name = '合成成功';
       if (found) { thumb = found.thumb; name = found.name; }
@@ -1271,8 +1340,8 @@
     document.querySelectorAll('[data-chest]').forEach(b => b.onclick = async () => {
       try {
         const r = await tryCall('chest.open', { place: b.dataset.chest, clickNum: 1000 });
-        const id = r?.asset_id;
-        await refreshAfterAcquire();
+        const id = Number(r?.asset_id) || 0;
+        await refreshAfterAcquire(id);
         let thumb = '', name = '领取成功';
         if (id) {
           const list = await ensureCatalog('character_skin').catch(() => []);

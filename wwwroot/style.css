@@ -121,7 +121,8 @@ img { -webkit-user-drag: none; }
 .card .name { font-size: 13px; font-weight: 700; color: var(--ink-strong); text-align: center; width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .sub { font-size: 11px; color: var(--ink-dim); width: 100%; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card .qty { position: absolute; right: 8px; bottom: 8px; font-size: 12px; font-weight: 800; color: var(--ink-strong); background: rgba(255, 248, 233, .9); border-radius: 9px; padding: 0 6px; }
-.card .fav { position: absolute; left: 8px; top: 8px; width: 24px; height: 24px; border-radius: 50%; background: rgba(255, 248, 233, .85); font-size: 14px; line-height: 24px; text-align: center; color: #d99a5c; }
+.card .fav { position: absolute; right: 8px; top: 8px; width: 24px; height: 24px; border-radius: 50%; background: rgba(255, 248, 233, .85); font-size: 14px; line-height: 24px; text-align: center; color: #d99a5c; }
+.card .new-dot { position: absolute; left: 7px; top: 7px; width: 10px; height: 10px; border-radius: 50%; background: #e14b4b; box-shadow: 0 0 0 2px var(--cream-4); z-index: 2; }
 .rarity-bar { height: 5px; width: 100%; border-radius: 3px; background: var(--common); }
 .rarity-epic { background: var(--epic); }
 .rarity-rare { background: var(--rare); }

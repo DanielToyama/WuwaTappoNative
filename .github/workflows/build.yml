@@ -76,6 +76,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # Release notes need the previous tag/commit list, not a shallow checkout.
+          fetch-depth: 0
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -105,19 +108,51 @@ jobs:
             dist/*.zip
           if-no-files-found: error
 
+      - name: Generate release notes
+        id: notes
+        shell: pwsh
+        run: |
+          [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
+          $tag = '${{ github.ref_name }}'
+          $version = '${{ steps.ver.outputs.version }}'
+          $prev = git describe --tags --abbrev=0 "$tag^" 2>$null
+          if ($LASTEXITCODE -ne 0) { $prev = $null }
+          $range = if ($prev) { "$prev..$tag" } else { $tag }
+          $commits = git log --no-merges --pretty=format:'- %s (%h)' $range
+          if (-not $commits) { $commits = '- 本次发布' }
+          $template = @'
+          ## 更新内容
+
+          {0}
+
+          ## 下载说明
+
+          - `WuwatappoNative-{1}-x64.msi`：安装包，安装到当前用户目录并创建开始菜单/桌面快捷方式。
+          - `WuwatappoNative-{1}-portable.zip`：绿色便携版，解压即用，不需要安装。
+          - `WuwatappoTokenExtractor-*-x64.zip`：官方登录凭证获取器，用于从本机官方 WuwaTappo 客户端提取 `kuro_infoToken`；也可以直接使用主程序的「继承官方程序登录状态」。
+          '@
+          $body = $template -f $commits, $version
+          $notes = Join-Path $env:RUNNER_TEMP "release-notes-$version.md"
+          [IO.File]::WriteAllText($notes, $body, [Text.UTF8Encoding]::new($false))
+          "notes=$notes" >> $env:GITHUB_OUTPUT
+
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: pwsh
         run: |
           $tag = '${{ github.ref_name }}'
+          $version = '${{ steps.ver.outputs.version }}'
+          $notes = '${{ steps.notes.outputs.notes }}'
+          $title = "Wuwatappo Native $version"
           $files = @()
           $files += Get-ChildItem dist/*.msi | ForEach-Object { $_.FullName }
           $files += Get-ChildItem dist/*.zip | ForEach-Object { $_.FullName }
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
-            Write-Host "Release $tag already exists; uploading/replacing assets."
+            Write-Host "Release $tag already exists; updating notes and replacing assets."
+            gh release edit $tag --title $title --notes-file $notes
             gh release upload $tag @files --clobber
           } else {
-            gh release create $tag --title $tag --generate-notes @files
+            gh release create $tag --title $title --notes-file $notes @files
           }
