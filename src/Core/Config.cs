@@ -59,6 +59,8 @@ public sealed class Settings
     public Dictionary<string, string> Hotkeys { get; set; } = new();
     /// <summary>首次启动的免责声明是否已经确认过。</summary>
     public bool DisclaimerShown { get; set; }
+    /// <summary>首次启动的 UAC 管理员权限询问是否已经回答过。</summary>
+    public bool UacPromptShown { get; set; }
 }
 
 public static class ConfigStore

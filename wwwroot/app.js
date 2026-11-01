@@ -37,6 +37,7 @@
     bagNewIds: [],
     bagRecentIds: [],
     disclaimerOpen: false,
+    uacPromptOpen: false,
     favors: new Set(),
     catalog: {},
     atlas: {},
@@ -167,6 +168,7 @@
       renderChrome();
       renderPage();
       maybeShowDisclaimer();
+      maybeShowUacPrompt();
       maybeOpenEmoteEditor();
     } catch (e) { toast('初始化失败：' + e.message, 'err'); }
   }
@@ -196,6 +198,64 @@
         if (state.boot) state.boot.disclaimerShown = true;
         closeModal();
         try { await call('ui.disclaimerShown'); } catch { }
+        // 免责声明之后再询问一次 UAC；使用 setTimeout 让当前弹窗先完成关闭。
+        setTimeout(() => maybeShowUacPrompt(), 120);
+      };
+    });
+  }
+
+  function maybeShowUacPrompt() {
+    if (!state.boot || state.boot.uacPromptShown) return;
+    if (state.boot.settings?.isElevated) return;
+    if (state.uacPromptOpen || state.disclaimerOpen) return;
+    state.uacPromptOpen = true;
+    modal(`
+      <div class="about">
+        <div class="about-title">管理员权限（UAC）</div>
+        <div class="about-note">
+          <p>是否授予该应用管理员 UAC 权限？</p>
+          <p>标准权限无法监听其他 UAC 程序的输入。本程序只把管理员权限用于触发键位，不会有任何敏感操作、上传键盘内容等行为；可自行使用 AI 等工具审查源代码。</p>
+          <p>如不授予，可能会影响部分程序内的键位统计，其他功能不受影响。</p>
+        </div>
+        <div style="display:flex;gap:10px;justify-content:center">
+          <button class="btn" id="mUacYes">是</button>
+          <button class="btn ghost" id="mUacNo">否</button>
+        </div>
+      </div>`, host => {
+      host.onclick = null;
+      const yes = host.querySelector('#mUacYes');
+      const no = host.querySelector('#mUacNo');
+      const finish = (granted) => {
+        yes.disabled = true; no.disabled = true;
+        state.uacPromptOpen = false;
+        if (state.boot) state.boot.uacPromptShown = true;
+        closeModal();
+        try { call('ui.uacPromptResult', { granted }); } catch { }
+      };
+      yes.onclick = async () => {
+        yes.disabled = true; no.disabled = true;
+        yes.textContent = '正在请求…';
+        try {
+          const r = await call('ui.uacPromptResult', { granted: true });
+          state.uacPromptOpen = false;
+          if (state.boot) {
+            state.boot.uacPromptShown = true;
+            if (state.boot.settings) state.boot.settings.runAsAdmin = !!r?.granted;
+          }
+          closeModal();
+          if (r?.restarting) toast('已授予管理员权限，正在重启…');
+          else if (r?.cancelled) toast('已取消 UAC，继续使用普通权限；可随时在设置中开启', 'err');
+          else if (r?.elevated) toast('已启用管理员权限启动');
+        } catch {
+          yes.disabled = false; no.disabled = false;
+          yes.textContent = '是';
+          toast('请求管理员权限失败', 'err');
+        }
+      };
+      no.onclick = () => {
+        if (state.boot?.settings) state.boot.settings.runAsAdmin = false;
+        finish(false);
+        toast('已跳过管理员权限；可随时在设置中开启');
       };
     });
   }
@@ -277,7 +337,7 @@
   }
 
   function handleEvent(evt, data) {
-    if (evt === 'boot') { state.boot = data; renderChrome(); renderPage(); maybeShowDisclaimer(); maybeOpenEmoteEditor(); return; }
+    if (evt === 'boot') { state.boot = data; renderChrome(); renderPage(); maybeShowDisclaimer(); maybeShowUacPrompt(); maybeOpenEmoteEditor(); return; }
     if (evt === 'auth') { if (state.boot) state.boot.auth = { ...state.boot.auth, ...data }; renderChrome(); renderPage(); return; }
     if (evt === 'room') {
       if (!state.boot) return;

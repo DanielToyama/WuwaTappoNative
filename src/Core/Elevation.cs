@@ -29,7 +29,7 @@ public static class Elevation
     }
 
     /// <summary>以管理员权限重新启动当前程序。返回 true 表示新进程已经启动。</summary>
-    public static bool TryRestartElevated(bool reopenPanel = false)
+    public static bool TryRestartElevated(bool reopenPanel = false, string panelPage = "settings")
     {
         if (IsElevated) return false;
         try
@@ -52,8 +52,8 @@ public static class Elevation
             {
                 if (!args.Contains("--panel")) args.Add("--panel");
                 int page = args.IndexOf("--panel-page");
-                if (page >= 0 && page + 1 < args.Count) args[page + 1] = "settings";
-                else { args.Add("--panel-page"); args.Add("settings"); }
+                if (page >= 0 && page + 1 < args.Count) args[page + 1] = panelPage;
+                else { args.Add("--panel-page"); args.Add(panelPage); }
             }
             if (args.Count > 0) psi.Arguments = string.Join(" ", args.Select(Quote));
             Process.Start(psi);

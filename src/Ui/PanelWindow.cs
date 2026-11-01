@@ -286,6 +286,7 @@ public sealed class PanelWindow : Form
         },
         room = _app.RoomState(),
         disclaimerShown = _app.Cfg.DisclaimerShown,
+        uacPromptShown = _app.Cfg.UacPromptShown,
         settings = new
         {
             scale = _app.Cfg.Scale,
@@ -389,6 +390,38 @@ public sealed class PanelWindow : Form
                     ConfigStore.Save(_app.Cfg);
                 }
                 return true;
+
+            case "ui.uacPromptResult":
+            {
+                bool granted = ApiClient.ReadBool(data["granted"]);
+                cfg.UacPromptShown = true;
+                if (!granted)
+                {
+                    cfg.RunAsAdmin = false;
+                    ConfigStore.Save(cfg);
+                    Log.Write("首次启动未授予管理员权限");
+                    return new { granted = false, elevated = false, restarting = false, cancelled = false };
+                }
+
+                cfg.RunAsAdmin = true;
+                ConfigStore.Save(cfg);
+                if (Elevation.IsElevated)
+                    return new { granted = true, elevated = true, restarting = false, cancelled = false };
+
+                // 先释放单实例锁，提权后的新进程才能正常启动并读取上面的配置。
+                SingleInstance.ReleaseForRelaunch();
+                if (!Elevation.TryRestartElevated(reopenPanel: true, panelPage: "bag"))
+                {
+                    cfg.RunAsAdmin = false;
+                    ConfigStore.Save(cfg);
+                    if (SingleInstance.Acquire())
+                        SingleInstance.SetActivationHandler(() => _app.RequestPanelFromOtherInstance());
+                    Log.Write("首次启动 UAC 被取消");
+                    return new { granted = true, elevated = false, restarting = false, cancelled = true };
+                }
+                _app.ScheduleRestartExit();
+                return new { granted = true, elevated = false, restarting = true, cancelled = false };
+            }
 
             case "boot":
                 return BootPayload();
