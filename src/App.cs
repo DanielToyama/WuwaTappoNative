@@ -31,7 +31,7 @@ public sealed class App : ApplicationContext
     readonly object _gameModeRuleGate = new();
     bool _gameModeRuleMatched;
     bool _gameModeRuleAuto;
-    long _lastAutoClickFlushMs;
+    long _clickUserId;
     readonly object _autoEmoteGate = new();
     readonly Queue<long> _autoEmoteTimes = new();
     DateTime _nextLeftAttempt = DateTime.MinValue, _nextRightAttempt = DateTime.MinValue;
@@ -44,6 +44,7 @@ public sealed class App : ApplicationContext
         // 配置与注册表对齐：用户手动删了 Run 项、或换过安装目录，都在启动时修正。
         Cfg.LaunchAtLogin = AutoStart.Sync(Cfg.LaunchAtLogin, Cfg.RunAsAdmin);
         Auth = new AuthService(Cfg);
+        _clickUserId = Auth.UserId;
         Room = new RoomManager(Auth, Cfg);
         Pet = new PetWindow(Cfg, Auth, Catalog, Store, Room);
         Keyboard = new KeyboardWindow();
@@ -63,8 +64,16 @@ public sealed class App : ApplicationContext
         };
         Auth.Changed += () =>
         {
-            if (Auth.IsLoggedIn) Room.SyncServerClicks(Auth.TotalClickCount, Auth.TotalClickConsume);
-            else Room.ResetPendingClicks();
+            if (!Auth.IsLoggedIn)
+            {
+                Room.ResetClickState();
+                _clickUserId = 0;
+                return;
+            }
+            // 切换账号不能继承上一账号的累计点击。
+            if (_clickUserId != 0 && _clickUserId != Auth.UserId) Room.ResetClickState();
+            _clickUserId = Auth.UserId;
+            Room.SyncServerClicks(Auth.TotalClickCount, Auth.TotalClickConsume);
         };
         // 点击数变化很频繁（每次按键一次）。面板可能没开，开了也不能每次都走一趟
         // WebView2 序列化 + postMessage；这里合并成 100ms 一次。
@@ -255,7 +264,7 @@ public sealed class App : ApplicationContext
         catch { }
     }
 
-    /// <summary>自动敲击定时器：按设置频率产生一次本地敲击，并每秒合并一次上传。</summary>
+    /// <summary>自动敲击定时器：按设置频率产生一次本地敲击，由 RoomManager 批量上传。</summary>
     public void ApplyAutoSettings() => ApplyAutoClickTimer();
 
     void ApplyAutoClickTimer()
@@ -266,9 +275,13 @@ public sealed class App : ApplicationContext
         if (Cfg.AutoClickEnabled)
         {
             int period = Math.Max(50, (int)Math.Round(1000.0 / rate));
-            _autoClickTimer.Change(700, period);
+            _autoClickTimer.Change(50, period);
         }
-        else _autoClickTimer.Change(Timeout.Infinite, Timeout.Infinite);
+        else
+        {
+            _autoClickTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            _ = Room.FlushClicksNowAsync();
+        }
     }
 
     /// <summary>
@@ -347,10 +360,7 @@ public sealed class App : ApplicationContext
             {
                 try { Pet.BeginInvoke(new Action(Pet.VirtualTap)); } catch { }
             }
-            long now = Environment.TickCount64;
-            long last = Interlocked.Read(ref _lastAutoClickFlushMs);
-            if (now - last >= 1000 && Interlocked.CompareExchange(ref _lastAutoClickFlushMs, now, last) == last)
-                _ = Room.FlushClicksNowAsync();
+            // 点击上传由 RoomManager 每 5 秒批量执行，避免自动敲击时高频 cr 被服务端限流。
         }
         catch (Exception ex) { Log.Write("自动敲击失败 " + ex.Message); }
     }
@@ -470,7 +480,7 @@ public sealed class App : ApplicationContext
             long consume = ApiClient.ReadLong(resp?["click_consume"]);
             if (consume > 0) Room.AddConsume(consume);
             // 开箱请求已把本地未上报的点击包含在 click_num 里，服务器总额会吸收它们。
-            Room.ResetPendingClicks();
+            Room.AbsorbPendingClicks();
             // 先本地清掉该侧宝箱并立即刷新 UI；user/me 只做后台校正，不能让慢请求拖住奖励提示。
             Auth.MarkChestOpened(place);
             PushAuth();

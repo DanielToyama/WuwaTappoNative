@@ -883,6 +883,7 @@ public sealed class PanelWindow : Form
                 cfg.CaptureWidth = Math.Clamp(cfg.CaptureWidth, 160, 1600);
                 cfg.CaptureHeight = Math.Clamp(cfg.CaptureHeight, 160, 1600);
                 ConfigStore.Save(cfg);
+                _app.ApplyAutoSettings();
                 _app.Pet.BeginInvoke(new Action(() =>
                 {
                     _app.Pet.ApplySettings();

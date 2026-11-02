@@ -35,12 +35,15 @@ public sealed class RoomManager : IDisposable
     System.Threading.Timer _reconnectTimer;
     int _reconnectBusy;
     bool _reconnectSuppressed;
+    readonly object _clicksLock = new();
     long _baseClicks;
     long _pendingClicks;
+    long _inflightClicks;
     long _serverConsume;
     long _lastBoostMs;
     int _busy;
     int _generation;
+    int _flushingClicks;
 
     /// <summary>累计总额：服务器已记录 + 本地未上报。上报 cr 与开宝箱的 click_num 都用它。</summary>
     public long DisplayClicks => Interlocked.Read(ref _baseClicks) + Interlocked.Read(ref _pendingClicks);
@@ -75,7 +78,7 @@ public sealed class RoomManager : IDisposable
     {
         _auth = auth;
         _cfg = cfg;
-        _reportTimer = new System.Threading.Timer(_ => _ = FlushClicksAsync(), null, 30000, 30000);
+        _reportTimer = new System.Threading.Timer(_ => _ = FlushClicksAsync(), null, 5000, 5000);
         // Socket 断开或首次连接失败后，不能只等一次重试；后台每 5 秒检查并恢复房间连接。
         _reconnectTimer = new System.Threading.Timer(_ => _ = AutoReconnectTickAsync(), null, 3000, 5000);
     }
@@ -528,7 +531,8 @@ public sealed class RoomManager : IDisposable
 
     public void AddClicks(long n)
     {
-        Interlocked.Add(ref _pendingClicks, n);
+        if (n <= 0) return;
+        lock (_clicksLock) { _pendingClicks += n; }
         ClicksChanged?.Invoke();
         LocalClick?.Invoke();
     }
@@ -545,7 +549,7 @@ public sealed class RoomManager : IDisposable
         if (previous != 0 && now - previous < 500) return false;
         if (Interlocked.CompareExchange(ref _lastBoostMs, now, previous) != previous) return false;
 
-        Interlocked.Add(ref _pendingClicks, delta);
+        lock (_clicksLock) { _pendingClicks += delta; }
         ClicksChanged?.Invoke();
         // 与原版一致：按钮不等待服务器回包，避免网络慢时把设置页卡住。
         _ = FlushClicksAsync();
@@ -558,12 +562,56 @@ public sealed class RoomManager : IDisposable
     /// </summary>
     public void SyncServerClicks(long total, long consume)
     {
-        Interlocked.Exchange(ref _baseClicks, Math.Max(0, total));
-        Interlocked.Exchange(ref _serverConsume, Math.Max(0, consume));
+        lock (_clicksLock)
+        {
+            total = Math.Max(0, total);
+            consume = Math.Max(0, consume);
+            // 服务器累计值只允许前进；账号切换由 App 调用 ResetClickState 单独重置。
+            // 这样不会被晚到的旧 user/me 响应把显示数字拉回去。
+            if (total >= _baseClicks)
+            {
+                // 这次同步如果已经包含正在上报的 cr，ack 回来时不能再加一次。
+                if (_inflightClicks > 0 && total >= _baseClicks + _inflightClicks)
+                    _inflightClicks = 0;
+                _baseClicks = total;
+            }
+            _serverConsume = consume;
+        }
         ClicksChanged?.Invoke();
     }
 
-    public void ResetPendingClicks() => Interlocked.Exchange(ref _pendingClicks, 0);
+    /// <summary>开箱结算时把已包含在 click_num 里的待上报点击并入服务器累计。</summary>
+    public void AbsorbPendingClicks()
+    {
+        lock (_clicksLock)
+        {
+            if (_pendingClicks > 0)
+            {
+                _baseClicks += _pendingClicks;
+                _pendingClicks = 0;
+            }
+        }
+        ClicksChanged?.Invoke();
+    }
+
+    public void ResetPendingClicks()
+    {
+        lock (_clicksLock) { _pendingClicks = 0; }
+        ClicksChanged?.Invoke();
+    }
+
+    /// <summary>登录用户变化时清空本地点击账本，避免新账号继承旧账号的累计值。</summary>
+    public void ResetClickState()
+    {
+        lock (_clicksLock)
+        {
+            _baseClicks = 0;
+            _pendingClicks = 0;
+            _inflightClicks = 0;
+            _serverConsume = 0;
+        }
+        ClicksChanged?.Invoke();
+    }
 
     /// <summary>立即尝试上报当前待上传点击；自动敲击按秒合并调用。</summary>
     public Task FlushClicksNowAsync() => FlushClicksAsync();
@@ -604,34 +652,49 @@ public sealed class RoomManager : IDisposable
     public void AddConsume(long n)
     {
         if (n <= 0) return;
-        Interlocked.Add(ref _serverConsume, n);
+        lock (_clicksLock) { _serverConsume += n; }
         ClicksChanged?.Invoke();
     }
 
     async Task FlushClicksAsync()
     {
-        long pending = Interlocked.Exchange(ref _pendingClicks, 0);
-        if (pending == 0 || _socket?.Connected != true) { if (pending != 0) Interlocked.Add(ref _pendingClicks, pending); return; }
-        // 原版 cr 的 num 是“服务器累计 + 本地待上报”的总额，不是增量。
-        long gross = Interlocked.Read(ref _baseClicks) + pending;
+        if (Interlocked.CompareExchange(ref _flushingClicks, 1, 0) != 0) return;
+        long sent = 0, gross = 0;
         try
         {
-            var ack = await _socket.EmitAsync("cr", new JsonObject { ["num"] = gross });
-            int code = ack is JsonObject o ? ApiClient.ReadInt(o["c"]) : -1;
-            if (code == 0 || code == 200)
+            lock (_clicksLock)
             {
-                Interlocked.Exchange(ref _baseClicks, gross);
-                ClicksChanged?.Invoke();
+                if (_socket?.Connected != true || _pendingClicks <= 0) return;
+                sent = _pendingClicks;
+                _pendingClicks = 0;
+                _inflightClicks = sent;
+                gross = _baseClicks + sent;
             }
-            else
+
+            bool success = false;
+            try
             {
-                Log.Write("点击上报被拒绝 c=" + code);
-                Interlocked.Add(ref _pendingClicks, pending);
+                var ack = await _socket.EmitAsync("cr", new JsonObject { ["num"] = gross });
+                int code = ack is JsonObject o ? ApiClient.ReadInt(o["c"]) : -1;
+                success = code == 0 || code == 200;
+                if (!success) Log.Write("点击上报被拒绝 c=" + code);
             }
+            catch (Exception ex) { Log.Write("点击上报异常 " + ex.Message); }
+
+            lock (_clicksLock)
+            {
+                if (_inflightClicks > 0)
+                {
+                    if (success) _baseClicks += _inflightClicks;
+                    else _pendingClicks += _inflightClicks;
+                    _inflightClicks = 0;
+                }
+            }
+            ClicksChanged?.Invoke();
         }
-        catch
+        finally
         {
-            Interlocked.Add(ref _pendingClicks, pending);
+            Interlocked.Exchange(ref _flushingClicks, 0);
         }
     }
 

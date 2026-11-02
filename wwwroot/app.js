@@ -1709,14 +1709,20 @@
     const lines = String(markdown || '').split(/\r?\n/);
     const out = [];
     let inList = false;
+    let skipDownload = false;
     const closeList = () => { if (inList) { out.push('</ul>'); inList = false; } };
     for (const raw of lines) {
       const line = raw.trim();
       if (!line) { closeList(); continue; }
       let m;
       if ((m = line.match(/^#{1,4}\s+(.*)$/))) {
+        // 下载说明由横幅底部统一提供，多个版本拼接时不要重复整段。
+        if (/下载说明|download/i.test(m[1])) { skipDownload = true; closeList(); continue; }
+        skipDownload = false;
         closeList();
         out.push(`<div class="update-h">${inline(m[1])}</div>`);
+      } else if (skipDownload) {
+        continue;
       } else if ((m = line.match(/^[-*]\s+(.*)$/))) {
         if (!inList) { out.push('<ul>'); inList = true; }
         out.push(`<li>${inline(m[1])}</li>`);
@@ -1737,15 +1743,28 @@
     const body = u.body || u.Body || '';
     const dateValue = u.publishedAt || u.PublishedAt;
     const date = dateValue ? new Date(dateValue).toLocaleDateString('zh-CN') : '';
+    const entries = Array.isArray(u.entries) ? u.entries : (Array.isArray(u.Entries) ? u.Entries : []);
+    const multi = entries.length > 1;
+    const notes = multi
+      ? entries.map(e => {
+          const etag = e.tag || e.Tag || '';
+          const edate = e.publishedAt || e.PublishedAt;
+          const edateText = edate ? new Date(edate).toLocaleDateString('zh-CN') : '';
+          return `<section class="update-entry">
+            <div class="update-entry-head"><span>${esc(etag)}</span>${edateText ? `<span class="update-entry-date">${esc(edateText)}</span>` : ''}</div>
+            ${releaseNotesHtml(e.body || e.Body || '')}
+          </section>`;
+        }).join('')
+      : releaseNotesHtml(body);
     return `<section class="update-banner">
       <div class="update-banner-head">
         <div>
           <div class="update-banner-title">发现新版本 ${esc(tag)}</div>
-          <div class="update-banner-sub">当前版本 ${esc(state.boot?.version || '')}${date ? ' · ' + esc(date) : ''}</div>
+          <div class="update-banner-sub">当前版本 ${esc(state.boot?.version || '')}${date ? ' · ' + esc(date) : ''}${multi ? ` · 包含 ${entries.length} 个版本更新` : ''}</div>
         </div>
         <button class="update-dismiss" id="updateDismiss" title="本次启动不再显示">×</button>
       </div>
-      <div class="update-notes">${releaseNotesHtml(body)}</div>
+      <div class="update-notes">${notes}</div>
       <div class="update-banner-actions">
         <a class="btn" href="${esc(u.url || u.Url || 'https://github.com/DanielToyama/WuwaTappoNative/releases/latest')}" target="_blank" rel="noreferrer">前往 GitHub 更新</a>
         <span class="update-qq">交流 QQ 群：<strong>1130030892</strong>，群文件也可下载</span>
