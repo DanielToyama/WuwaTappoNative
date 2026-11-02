@@ -32,6 +32,9 @@ public sealed class RoomManager : IDisposable
     readonly Settings _cfg;
     SocketClient _socket;
     System.Threading.Timer _reportTimer;
+    System.Threading.Timer _reconnectTimer;
+    int _reconnectBusy;
+    bool _reconnectSuppressed;
     long _baseClicks;
     long _pendingClicks;
     long _serverConsume;
@@ -73,6 +76,8 @@ public sealed class RoomManager : IDisposable
         _auth = auth;
         _cfg = cfg;
         _reportTimer = new System.Threading.Timer(_ => _ = FlushClicksAsync(), null, 30000, 30000);
+        // Socket 断开或首次连接失败后，不能只等一次重试；后台每 5 秒检查并恢复房间连接。
+        _reconnectTimer = new System.Threading.Timer(_ => _ = AutoReconnectTickAsync(), null, 3000, 5000);
     }
 
     public async Task CreateAsync()
@@ -92,6 +97,7 @@ public sealed class RoomManager : IDisposable
     public async Task JoinAsync(string roomNo)
     {
         if (Interlocked.Exchange(ref _busy, 1) == 1) return;
+        _reconnectSuppressed = false;
         try
         {
             roomNo = (roomNo ?? "").Trim();
@@ -134,6 +140,8 @@ public sealed class RoomManager : IDisposable
     public async Task LeaveAsync()
     {
         if (Interlocked.Exchange(ref _busy, 1) == 1) return;
+        // 退房后 cfg.RoomNo 会被清空，自动重连只会恢复大厅，不会误回旧房间。
+        _reconnectSuppressed = false;
         try
         {
             await LeaveSocketOnlyAsync();
@@ -156,25 +164,33 @@ public sealed class RoomManager : IDisposable
         await ConnectSocketAsync("");
     }
 
-    async Task RejoinRoomLaterAsync(string room)
+    async Task AutoReconnectTickAsync()
     {
-        await Task.Delay(3000);
-        if (State == "joined" || string.IsNullOrEmpty(_auth.Token) || _cfg.RoomNo != room) return;
+        if (Interlocked.Exchange(ref _reconnectBusy, 1) == 1) return;
         try
         {
-            Log.Write("重连房间 " + room);
-            await JoinAsync(room);
+            if (_reconnectSuppressed || string.IsNullOrEmpty(_auth.Token)) return;
+            string desiredRoom = _cfg.RoomNo;
+            if (!string.IsNullOrEmpty(desiredRoom))
+            {
+                if (State == "joined" && IsConnected) return;
+                if (Volatile.Read(ref _busy) == 1) return;
+                try
+                {
+                    Log.Write("自动重连房间 " + desiredRoom);
+                    await JoinAsync(desiredRoom);
+                }
+                catch (Exception ex) { Log.Write("自动重连房间失败 " + desiredRoom + " " + ex.Message); }
+            }
+            else
+            {
+                if (_socket?.Connected == true) return;
+                if (Volatile.Read(ref _busy) == 1) return;
+                try { await EnsureLobbyAsync(); }
+                catch (Exception ex) { Log.Write("自动重连大厅失败 " + ex.Message); }
+            }
         }
-        catch (Exception ex) { Log.Write("重连房间失败 " + room + " " + ex.Message); }
-    }
-
-    async Task ReconnectLobbyLaterAsync()
-    {
-        await Task.Delay(5000);
-        if (State != "joined" && _socket?.Connected != true && !string.IsNullOrEmpty(_auth.Token))
-        {
-            try { await EnsureLobbyAsync(); } catch (Exception ex) { Log.Write("大厅重连失败 " + ex.Message); }
-        }
+        finally { Interlocked.Exchange(ref _reconnectBusy, 0); }
     }
 
     async Task LeaveSocketOnlyAsync()
@@ -226,6 +242,8 @@ public sealed class RoomManager : IDisposable
 
         await CloseSocketAsync();
         State = "joined";
+        // 先让 UI 进入“连接中”，即使后面 WebSocket 连接失败也还有自动重试。
+        StateChanged?.Invoke();
         await ConnectSocketAsync(roomNo);
         StateChanged?.Invoke();
         if (announce) Log.Write("进入房间 " + roomNo);
@@ -242,16 +260,13 @@ public sealed class RoomManager : IDisposable
         {
             if (gen != _generation) return;
             bool wasJoined = State == "joined";
-            string room = RoomNo;
             if (wasJoined)
             {
-                State = "idle";
+                // 保留 joined 状态让 UI 显示“连接中…”，由后台定时器持续重连。
                 Members.Clear();
                 StateChanged?.Invoke();
             }
             SocketClosed?.Invoke(reason);
-            if (wasJoined && !string.IsNullOrEmpty(room)) _ = RejoinRoomLaterAsync(room);
-            else if (!string.IsNullOrEmpty(_auth.Token)) _ = ReconnectLobbyLaterAsync();
         };
         await _socket.ConnectAsync(_auth.Token, roomNo ?? "", _auth.Api.BaseUrl);
         Log.Write("socket 已连接 " + (string.IsNullOrEmpty(roomNo) ? "(大厅)" : roomNo));
@@ -360,6 +375,7 @@ public sealed class RoomManager : IDisposable
                 case "fd":
                 {
                     int code = ApiClient.ReadInt(payload?["c"]);
+                    _reconnectSuppressed = true;
                     State = "idle";
                     Members.Clear();
                     ForcedDisconnect?.Invoke(code);
@@ -654,6 +670,7 @@ public sealed class RoomManager : IDisposable
     public void Dispose()
     {
         _reportTimer?.Dispose();
+        _reconnectTimer?.Dispose();
         _ = CloseSocketAsync();
     }
 }

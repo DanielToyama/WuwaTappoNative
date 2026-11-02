@@ -1424,7 +1424,7 @@
       <div class="room-layout">
         <div class="room-left">
           <div class="panel-box">
-            <div class="detail-row" style="margin-bottom:6px"><span>当前房间</span><span>${joined ? (room.connected ? '已连接' : '连接中…') : '未加入'}</span></div>
+            <div class="detail-row" style="margin-bottom:6px"><span>当前房间</span><span>${joined ? (room.connected ? '已连接' : '连接中…（自动重试）') : '未加入'}</span></div>
             <div class="room-no">${joined ? esc(room.roomNo) : '——'}<span class="copy" id="copyRoom" ${joined ? '' : 'style="display:none"'}>复制</span></div>
             <div class="detail-row" style="margin-top:8px"><span>可用点击数</span><span data-click-avail>${auth.clicks ?? 0}</span></div>
             <div class="detail-row"><span>累计点击数</span><span data-click-total>${auth.clickTotal ?? auth.clicks ?? 0}</span></div>
