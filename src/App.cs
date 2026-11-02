@@ -1,5 +1,7 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -23,6 +25,10 @@ public sealed class App : ApplicationContext
     public PanelWindow Panel { get; private set; }
     System.Threading.Timer _autoChestTimer;
     System.Threading.Timer _clickRefreshTimer;
+    System.Threading.Timer _autoClickTimer;
+    long _lastAutoClickFlushMs;
+    readonly object _autoEmoteGate = new();
+    readonly Queue<long> _autoEmoteTimes = new();
     DateTime _nextLeftAttempt = DateTime.MinValue, _nextRightAttempt = DateTime.MinValue;
     int _chestBusy;
 
@@ -57,6 +63,7 @@ public sealed class App : ApplicationContext
         // 点击数变化很频繁（每次按键一次）。面板可能没开，开了也不能每次都走一趟
         // WebView2 序列化 + postMessage；这里合并成 100ms 一次。
         Room.ClicksChanged += QueueClicksPush;
+        Room.LocalClick += OnLocalClick;
         // 键盘显示直接吃 Raw Input 边沿：按下立刻亮，不再等 16ms 轮询，也不会漏掉快速点击。
         Pet.Input.KeyEdge += (vk, down) => Keyboard.OnKeyEdge(vk, down);
         Pet.GeometryChanged += LayoutKeyboard;
@@ -101,6 +108,7 @@ public sealed class App : ApplicationContext
         _ = BootAsync();
         _autoChestTimer = new System.Threading.Timer(_ => _ = AutoChestTickAsync(), null, 30000, 30000);
         _clickRefreshTimer = new System.Threading.Timer(_ => _ = RefreshClicksAsync(), null, 60000, 60000);
+        ApplyAutoClickTimer();
         StartStressHarness();
     }
 
@@ -236,6 +244,77 @@ public sealed class App : ApplicationContext
             }
         }
         catch { }
+    }
+
+    /// <summary>自动敲击定时器：按设置频率产生一次本地敲击，并每秒合并一次上传。</summary>
+    public void ApplyAutoSettings() => ApplyAutoClickTimer();
+
+    void ApplyAutoClickTimer()
+    {
+        if (_autoClickTimer == null)
+            _autoClickTimer = new System.Threading.Timer(_ => AutoClickTick(), null, Timeout.Infinite, Timeout.Infinite);
+        int rate = Math.Clamp(Cfg.AutoClickPerSecond, 1, 10);
+        if (Cfg.AutoClickEnabled)
+        {
+            int period = Math.Max(50, (int)Math.Round(1000.0 / rate));
+            _autoClickTimer.Change(700, period);
+        }
+        else _autoClickTimer.Change(Timeout.Infinite, Timeout.Infinite);
+    }
+
+    void AutoClickTick()
+    {
+        try
+        {
+            if (!Cfg.AutoClickEnabled || !Auth.IsLoggedIn || !Room.IsConnected) return;
+            Room.AddClicks(1);
+            Room.NotifyLocalAction();
+            if (Cfg.AutoClickAnimate)
+            {
+                try { Pet.BeginInvoke(new Action(Pet.VirtualTap)); } catch { }
+            }
+            long now = Environment.TickCount64;
+            long last = Interlocked.Read(ref _lastAutoClickFlushMs);
+            if (now - last >= 1000 && Interlocked.CompareExchange(ref _lastAutoClickFlushMs, now, last) == last)
+                _ = Room.FlushClicksNowAsync();
+        }
+        catch (Exception ex) { Log.Write("自动敲击失败 " + ex.Message); }
+    }
+
+    /// <summary>每次本地敲击（真实或自动）按每滚动一秒上限发送一个自动表情。</summary>
+    void OnLocalClick()
+    {
+        try
+        {
+            if (!Cfg.AutoEmoteEnabled || !Auth.IsLoggedIn || !Room.IsConnected) return;
+            int max = Math.Clamp(Cfg.AutoEmoteMaxPerSecond, 1, 20);
+            long now = Environment.TickCount64;
+            lock (_autoEmoteGate)
+            {
+                while (_autoEmoteTimes.Count > 0 && now - _autoEmoteTimes.Peek() >= 1000)
+                    _autoEmoteTimes.Dequeue();
+                if (_autoEmoteTimes.Count >= max) return;
+                _autoEmoteTimes.Enqueue(now);
+            }
+            long id = PickAutoEmoteId();
+            if (id > 0) Pet.BeginInvoke(new Action(() => Pet.SendEmoteById(id)));
+        }
+        catch (Exception ex) { Log.Write("自动表情失败 " + ex.Message); }
+    }
+
+    long PickAutoEmoteId()
+    {
+        try
+        {
+            if (Cfg.AutoEmoteMode == "specific") return Cfg.AutoEmoteId;
+            long[] ids;
+            if (Cfg.AutoEmoteMode == "library")
+                ids = Catalog.All("emote").Select(e => e.Id).Where(id => id > 0).ToArray();
+            else
+                ids = (Cfg.EmoteAssetIds ?? Array.Empty<long>()).Where(id => id > 0).ToArray();
+            return ids.Length == 0 ? 0 : ids[Random.Shared.Next(ids.Length)];
+        }
+        catch { return 0; }
     }
 
     /// <summary>登录/启动/重新开启自动宝箱后立刻检查一次，不等 30 秒周期。</summary>
@@ -536,6 +615,7 @@ public sealed class App : ApplicationContext
         {
             try { _autoChestTimer?.Dispose(); } catch { }
             try { _clickRefreshTimer?.Dispose(); } catch { }
+            try { _autoClickTimer?.Dispose(); } catch { }
             try { _clicksPushTimer?.Dispose(); } catch { }
             try { Room.Dispose(); } catch { }
             try { Store.Dispose(); } catch { }

@@ -1738,6 +1738,23 @@
     </section>`;
   }
 
+  async function loadAutoEmoteOptions() {
+    const sel = document.getElementById('autoEmoteId');
+    if (!sel) return;
+    try {
+      const list = await ensureEmotes();
+      if (!sel.isConnected) return;
+      const current = String(state.boot?.settings?.autoEmoteId || 0);
+      const options = [...(list || [])]
+        .filter(x => Number(x.mainId) > 0)
+        .sort((a, b) => String(a.name || '').localeCompare(String(b.name || ''), 'zh'));
+      sel.innerHTML = '<option value="0">请选择表情</option>' +
+        options.map(x => `<option value="${x.mainId}">${esc(x.name || x.mainId)}</option>`).join('');
+      sel.value = current;
+      if (sel.value !== current) sel.value = '0';
+    } catch { }
+  }
+
   function renderSettings() {
     const s = state.boot?.settings || {};
     const auth = state.boot?.auth || {};
@@ -1918,6 +1935,48 @@
         </div>
 
         <div class="section">
+          <div class="section-title">自动化</div>
+          <div class="setting-item">
+            <div><div class="setting-title">自动表情</div><div class="setting-sub">每次产生敲击时自动发送一个表情；受下方每秒上限限制</div></div>
+            <div class="switch ${s.autoEmoteEnabled ? 'on' : ''}" data-switch="autoEmoteEnabled"></div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">自动表情频率上限</div><div class="setting-sub">滚动一秒内最多发送数量，范围 1–20</div></div>
+            <div class="setting-content"><input class="input" id="autoEmoteRate" type="number" min="1" max="20" step="1" value="${s.autoEmoteMaxPerSecond ?? 20}" style="width:86px" ${s.autoEmoteEnabled ? '' : 'disabled'} /><span class="muted">个/秒</span></div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">表情来源</div><div class="setting-sub">快捷栏随机：只从自己的 5 个快捷表情中挑选</div></div>
+            <div class="setting-content">
+              <select class="select" id="autoEmoteMode" ${s.autoEmoteEnabled ? '' : 'disabled'}>
+                <option value="quickbar" ${(s.autoEmoteMode || 'quickbar') === 'quickbar' ? 'selected' : ''}>快捷栏随机</option>
+                <option value="specific" ${s.autoEmoteMode === 'specific' ? 'selected' : ''}>指定表情</option>
+                <option value="library" ${s.autoEmoteMode === 'library' ? 'selected' : ''}>全部表情库随机</option>
+              </select>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">指定表情</div><div class="setting-sub">「表情来源」选择指定表情时生效</div></div>
+            <div class="setting-content">
+              <select class="select" id="autoEmoteId" style="max-width:260px" ${s.autoEmoteEnabled && s.autoEmoteMode === 'specific' ? '' : 'disabled'}>
+                <option value="0">请选择表情</option>
+              </select>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">自动敲击</div><div class="setting-sub">自动产生敲击并上传；建议不超过 10 次/秒</div></div>
+            <div class="switch ${s.autoClickEnabled ? 'on' : ''}" data-switch="autoClickEnabled"></div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">自动敲击频率</div><div class="setting-sub">每秒产生敲击次数，范围 1–10</div></div>
+            <div class="setting-content"><input class="input" id="autoClickRate" type="number" min="1" max="10" step="1" value="${s.autoClickPerSecond ?? 10}" style="width:86px" ${s.autoClickEnabled ? '' : 'disabled'} /><span class="muted">次/秒</span></div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">显示虚拟敲击动作</div><div class="setting-sub">关闭后只响应真实敲击；键位显示器始终不响应虚拟敲击</div></div>
+            <div class="switch ${s.autoClickAnimate !== false ? 'on' : ''}" data-switch="autoClickAnimate"></div>
+          </div>
+        </div>
+
+        <div class="section">
           <div class="section-title">通知</div>
           <div class="setting-item">
             <div><div class="setting-title">宝箱领取通知</div><div class="setting-sub">自动领取成功后发送 Windows 通知</div></div>
@@ -1967,6 +2026,7 @@
       renderSettings();
     });
     bindSettings();
+    loadAutoEmoteOptions().catch(() => { });
     const scroller = document.querySelector('.settings-scroll');
     if (scroller && prevScroll > 0) scroller.scrollTop = prevScroll;
   }
@@ -2085,7 +2145,7 @@
       try {
         await tryCall('settings.set', { [key]: next });
         await syncBoot();
-        if (key === 'rhythmMode') { renderSettings(); return; }
+        if (key === 'rhythmMode' || key === 'autoEmoteEnabled' || key === 'autoClickEnabled') { renderSettings(); return; }
         if (key === 'runAsAdmin') {
           const saved = !!state.boot?.settings?.runAsAdmin;
           const elevated = !!state.boot?.settings?.isElevated;

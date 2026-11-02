@@ -47,6 +47,8 @@ public sealed class RoomManager : IDisposable
 
     public long ServerConsume => Interlocked.Read(ref _serverConsume);
     public event Action ClicksChanged;
+    /// <summary>每次本地产生一次敲击（真实或自动）时触发，用于自动表情等本地联动。</summary>
+    public event Action LocalClick;
 
     public string State { get; private set; } = "idle";
     public string RoomNo { get; private set; } = "";
@@ -512,6 +514,7 @@ public sealed class RoomManager : IDisposable
     {
         Interlocked.Add(ref _pendingClicks, n);
         ClicksChanged?.Invoke();
+        LocalClick?.Invoke();
     }
 
     /// <summary>
@@ -545,6 +548,9 @@ public sealed class RoomManager : IDisposable
     }
 
     public void ResetPendingClicks() => Interlocked.Exchange(ref _pendingClicks, 0);
+
+    /// <summary>立即尝试上报当前待上传点击；自动敲击按秒合并调用。</summary>
+    public Task FlushClicksNowAsync() => FlushClicksAsync();
 
     /// <summary>--stress 压测：造 N 个假成员并标记为已进入房间（只影响本机显示，不联网）。</summary>
     public void DebugSeedMembers(int count, long skin, long part)

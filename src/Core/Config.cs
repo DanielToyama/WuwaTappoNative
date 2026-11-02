@@ -44,6 +44,20 @@ public sealed class Settings
     public int CaptureHeight { get; set; } = 700;
     public bool AlwaysShowChest { get; set; }
     public bool AutoChest { get; set; }
+    /// <summary>每次产生敲击时自动发送一个表情。</summary>
+    public bool AutoEmoteEnabled { get; set; }
+    /// <summary>自动表情每秒最多发送数量，范围 1-20。</summary>
+    public int AutoEmoteMaxPerSecond { get; set; } = 20;
+    /// <summary>自动表情来源：quickbar / specific / library。</summary>
+    public string AutoEmoteMode { get; set; } = "quickbar";
+    /// <summary>自动表情指定表情 id（mode=specific 时使用）。</summary>
+    public long AutoEmoteId { get; set; }
+    /// <summary>自动产生敲击并上传。</summary>
+    public bool AutoClickEnabled { get; set; }
+    /// <summary>自动敲击每秒次数，范围 1-10。</summary>
+    public int AutoClickPerSecond { get; set; } = 10;
+    /// <summary>自动敲击是否驱动自己的桌宠挥手；关闭后只响应真实敲击，键位显示器始终不响应虚拟敲击。</summary>
+    public bool AutoClickAnimate { get; set; } = true;
     /// <summary>自动领取宝箱成功后是否发 Windows 托盘通知。</summary>
     public bool NotifyChestClaimed { get; set; } = true;
     /// <summary>快捷键触发动作后是否发 Windows 托盘通知。</summary>
@@ -100,6 +114,9 @@ public static class ConfigStore
                     cfg.RhythmKeys = RhythmKeys.Normalize(cfg.RhythmKeys);
                     if (cfg.RhythmMode && cfg.KeyboardMode == "wuwa") cfg.KeyboardMode = "rhythm";
                     else if (!cfg.RhythmMode && cfg.KeyboardMode == "rhythm") cfg.KeyboardMode = "wuwa";
+                    cfg.AutoEmoteMaxPerSecond = Math.Clamp(cfg.AutoEmoteMaxPerSecond, 1, 20);
+                    cfg.AutoClickPerSecond = Math.Clamp(cfg.AutoClickPerSecond, 1, 10);
+                    if (cfg.AutoEmoteMode != "specific" && cfg.AutoEmoteMode != "library") cfg.AutoEmoteMode = "quickbar";
                     cfg.ServerRegion = NormalizeRegion(cfg.ServerRegion);
                     return cfg;
                 }

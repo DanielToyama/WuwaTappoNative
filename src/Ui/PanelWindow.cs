@@ -323,6 +323,13 @@ public sealed class PanelWindow : Form
             captureHeight = _app.Cfg.CaptureHeight,
             alwaysShowChest = _app.Cfg.AlwaysShowChest,
             autoChest = _app.Cfg.AutoChest,
+            autoEmoteEnabled = _app.Cfg.AutoEmoteEnabled,
+            autoEmoteMaxPerSecond = _app.Cfg.AutoEmoteMaxPerSecond,
+            autoEmoteMode = _app.Cfg.AutoEmoteMode,
+            autoEmoteId = _app.Cfg.AutoEmoteId,
+            autoClickEnabled = _app.Cfg.AutoClickEnabled,
+            autoClickPerSecond = _app.Cfg.AutoClickPerSecond,
+            autoClickAnimate = _app.Cfg.AutoClickAnimate,
             notifyChestClaimed = _app.Cfg.NotifyChestClaimed,
             notifyHotkeys = _app.Cfg.NotifyHotkeys,
             launchAtLogin = AutoStart.IsEnabled,
@@ -804,6 +811,19 @@ public sealed class PanelWindow : Form
                             cfg.AutoChest = ApiClient.ReadBool(kv.Value);
                             if (cfg.AutoChest) _app.CheckAutoChestNow();
                             break;
+                        case "autoEmoteEnabled": cfg.AutoEmoteEnabled = ApiClient.ReadBool(kv.Value); break;
+                        case "autoEmoteMaxPerSecond": cfg.AutoEmoteMaxPerSecond = Math.Clamp((int)ApiClient.ReadLong(kv.Value), 1, 20); break;
+                        case "autoEmoteMode":
+                        {
+                            string mode = ApiClient.ReadString(kv.Value);
+                            if (mode != "specific" && mode != "library") mode = "quickbar";
+                            cfg.AutoEmoteMode = mode;
+                            break;
+                        }
+                        case "autoEmoteId": cfg.AutoEmoteId = ApiClient.ReadLong(kv.Value); break;
+                        case "autoClickEnabled": cfg.AutoClickEnabled = ApiClient.ReadBool(kv.Value); break;
+                        case "autoClickPerSecond": cfg.AutoClickPerSecond = Math.Clamp((int)ApiClient.ReadLong(kv.Value), 1, 10); break;
+                        case "autoClickAnimate": cfg.AutoClickAnimate = ApiClient.ReadBool(kv.Value); break;
                         case "notifyChestClaimed": cfg.NotifyChestClaimed = ApiClient.ReadBool(kv.Value); break;
                         case "notifyHotkeys": cfg.NotifyHotkeys = ApiClient.ReadBool(kv.Value); break;
                         case "launchAtLogin":

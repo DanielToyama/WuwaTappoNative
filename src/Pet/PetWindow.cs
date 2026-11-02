@@ -361,10 +361,10 @@ public sealed class PetWindow : Form
     }
 
     /// <summary>每次按下：左右手交替落下，220ms 后若未抬起自动回位。</summary>
-    void HandDown()
+    void HandDown(bool log = true)
     {
         _handIsLeft = !_handIsLeft;
-        Log.Write("DBG hand down " + (_handIsLeft ? "left" : "right"));
+        if (log) Log.Write("DBG hand down " + (_handIsLeft ? "left" : "right"));
         SetBody(_handIsLeft ? 2 : 3);
         _handReset.Stop();
         _handReset.Start();
@@ -375,6 +375,14 @@ public sealed class PetWindow : Form
         Log.Write("DBG hand up");
         _handReset.Stop();
         SetBody(1);
+    }
+
+    /// <summary>自动敲击的桌宠动作；只驱动本地手部动画，不点亮键位显示器。</summary>
+    public void VirtualTap()
+    {
+        if (_hiddenByHotkey || _dragging) return;
+        HandDown(false);
+        Compose();
     }
 
     /// <summary>手柄按键：与键盘按下完全一致——计数 + 广播 + 挥手。</summary>
