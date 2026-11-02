@@ -31,7 +31,6 @@ public sealed class App : ApplicationContext
     readonly object _gameModeRuleGate = new();
     bool _gameModeRuleMatched;
     bool _gameModeRuleAuto;
-    long _lastAutoClickFlushMs;
     readonly object _autoEmoteGate = new();
     readonly Queue<long> _autoEmoteTimes = new();
     DateTime _nextLeftAttempt = DateTime.MinValue, _nextRightAttempt = DateTime.MinValue;
@@ -265,7 +264,11 @@ public sealed class App : ApplicationContext
             int period = Math.Max(50, (int)Math.Round(1000.0 / rate));
             _autoClickTimer.Change(50, period);
         }
-        else _autoClickTimer.Change(Timeout.Infinite, Timeout.Infinite);
+        else
+        {
+            _autoClickTimer.Change(Timeout.Infinite, Timeout.Infinite);
+            _ = Room.FlushClicksNowAsync();
+        }
     }
 
     /// <summary>
@@ -344,10 +347,6 @@ public sealed class App : ApplicationContext
             {
                 try { Pet.BeginInvoke(new Action(Pet.VirtualTap)); } catch { }
             }
-            long now = Environment.TickCount64;
-            long last = Interlocked.Read(ref _lastAutoClickFlushMs);
-            if (now - last >= 15000 && Interlocked.CompareExchange(ref _lastAutoClickFlushMs, now, last) == last)
-                _ = Room.FlushClicksNowAsync();
         }
         catch (Exception ex) { Log.Write("自动敲击失败 " + ex.Message); }
     }
@@ -466,7 +465,7 @@ public sealed class App : ApplicationContext
             long consume = ApiClient.ReadLong(resp?["click_consume"]);
             if (consume > 0) Room.AddConsume(consume);
             // 开箱请求已把本地未上报的点击包含在 click_num 里，服务器总额会吸收它们。
-            Room.ResetPendingClicks();
+            Room.AbsorbPendingClicks();
             await Auth.WhoAmIAsync();
             PushAuth();
             long id = ApiClient.ReadLong(resp?["asset_id"]);
