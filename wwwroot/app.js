@@ -551,15 +551,31 @@
   const BAG_TAB_COUNT = k => k === 'recent' ? (state.bagRecentIds || []).length : 0;
 
   function assetMeta(item) {
+    if (!item) return { role: '0', series: '' };
     const name = String(item.assetName || '').replace(/\.png$/i, '');
     let m;
-    if (item.type === 'character_skin' && (m = name.match(/^role_(\d+)_(\d+)$/i))) return { role: m[1], series: item.series || m[2] };
-    if (item.type === 'emote' && (m = name.match(/^emote_(\d+)_/i))) return { role: m[1], series: '' };
+    if ((item.type === 'character_skin' || !item.type) && (m = name.match(/^role_(\d+)(?:_(\d+))?/i))) {
+      return { role: m[1], series: item.series || m[2] || '' };
+    }
+    if ((item.type === 'emote' || !item.type) && (m = name.match(/^emote_(\d+)_/i))) {
+      return { role: m[1], series: '' };
+    }
+    if ((item.type === 'emote' || !item.type) && name.startsWith('emote_')) {
+      const n = String(item.name || '');
+      if (n.includes('阿布') || /^(?:angry|effort|happy|idle|pain|stunned|surprised|threaten|triumph)$/i.test(name.slice(6))) {
+        return { role: '2000', series: '' };
+      }
+    }
     return { role: '0', series: item.series || '' };
   }
   function roleLabelOf(item) {
-    const first = String(item.name || '').split('・')[0];
-    return first || (assetMeta(item).role === '0' ? '通用' : '角色 ' + item.roleId);
+    const raw = String(item?.name || '').trim();
+    if (!raw || /^role_\d+/i.test(raw) || /^emote_\d+/i.test(raw)) {
+      const r = assetMeta(item).role;
+      return (!r || r === '0') ? '通用' : '角色 ' + (item?.roleId || r);
+    }
+    const first = raw.split(/[・·]/)[0].trim();
+    return first || (assetMeta(item).role === '0' ? '通用' : '角色 ' + (item?.roleId || assetMeta(item).role));
   }
   const RECENT_KEY = 'wn_recent_assets';
   const UNSEEN_KEY = 'wn_unseen_assets';
@@ -661,9 +677,13 @@
 
     const seriesOptions = [...new Set(state.bag.filter(x => x.type === 'character_skin' && x.series).map(x => x.series))].sort((a, b) => String(a).localeCompare(String(b), 'zh'));
     const roleMap = new Map();
-    state.bag.filter(x => showRole).forEach(x => {
+    state.bag.filter(x => x.type === tab).forEach(x => {
       const r = assetMeta(x).role;
-      if (!roleMap.has(r)) roleMap.set(r, roleLabelOf(x));
+      if (!r || r === '0') return;
+      const lbl = roleLabelOf(x);
+      if (!roleMap.has(r) || (roleMap.get(r).startsWith('角色 ') && !lbl.startsWith('角色 '))) {
+        roleMap.set(r, lbl || r);
+      }
     });
     const roleOptions = [...roleMap.entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1]), 'zh'));
 
@@ -917,9 +937,12 @@
     const roleMap = new Map();
     if (showRole) {
       for (const x of items) {
-        const m = String(x.assetName || '').match(/^role_(\d+)_/i);
-        if (!m) continue;
-        if (!roleMap.has(m[1])) roleMap.set(m[1], String(x.name || '').split('・')[0] || m[1]);
+        const r = assetMeta(x).role;
+        if (!r || r === '0') continue;
+        const lbl = roleLabelOf(x);
+        if (!roleMap.has(r) || (roleMap.get(r).startsWith('角色 ') && !lbl.startsWith('角色 '))) {
+          roleMap.set(r, lbl || r);
+        }
       }
     }
     const roleOptions = [...roleMap.entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1]), 'zh'));
@@ -963,7 +986,7 @@
   function atlasFilteredItems(items, ownedNames) {
     let list = items;
     if (state.atlasSeries) list = list.filter(x => x.series === state.atlasSeries);
-    if (state.atlasRole) list = list.filter(x => (String(x.assetName || '').match(/^role_(\d+)_/i) || [])[1] === state.atlasRole);
+    if (state.atlasRole) list = list.filter(x => assetMeta(x).role === state.atlasRole);
     if (state.atlasRarity) list = list.filter(x => effRarity(x.rarity) === state.atlasRarity);
     if (state.atlasOwnedOnly) list = list.filter(x => ownedNames.has(x.assetName));
     return list.sort((a, b) => (RARITY_ORDER[effRarity(b.rarity)] || 0) - (RARITY_ORDER[effRarity(a.rarity)] || 0)
