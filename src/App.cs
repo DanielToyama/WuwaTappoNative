@@ -694,7 +694,7 @@ public sealed class App : ApplicationContext
     public object RoomState()
     {
         var members = new System.Collections.Generic.List<object>();
-        members.Add(new { id = Auth.UserId, nickname = Auth.Nickname, owner = true, online = true, self = true, visible = true, skin = Cfg.CharacterAssetId, part = Cfg.AccessoryAssetId });
+        members.Add(new { id = Auth.UserId, nickname = Auth.Nickname, owner = Room.SelfIsOwner, online = true, self = true, visible = true, skin = Cfg.CharacterAssetId, part = Cfg.AccessoryAssetId });
         foreach (var m in Room.Members.Values)
             members.Add(new { id = m.Id, nickname = m.Nickname, owner = m.IsOwner, online = m.Online, self = false, visible = m.Visible, skin = m.RoleKey, part = m.PartKey });
         return new

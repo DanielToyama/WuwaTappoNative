@@ -43,15 +43,26 @@ public sealed class RoomManager : IDisposable
     long _lastBoostMs;
     int _busy;
     int _generation;
+    bool _roomReady;
+    bool _awaitingSnapshot;
     int _flushingClicks;
 
-    /// <summary>累计总额：服务器已记录 + 本地未上报。上报 cr 与开宝箱的 click_num 都用它。</summary>
-    public long DisplayClicks => Interlocked.Read(ref _baseClicks) + Interlocked.Read(ref _pendingClicks);
+    /// <summary>累计总额：服务器已记录 + 本地未上报 + 正在上报的点击。上报 cr 与开宝箱的 click_num 都用它。</summary>
+    public long DisplayClicks
+    {
+        get { lock (_clicksLock) { return _baseClicks + _pendingClicks + _inflightClicks; } }
+    }
 
     /// <summary>可用余额：总额减去已消耗。原版桌宠计数条显示这个值，开箱也按它判断够不够。</summary>
-    public long AvailableClicks => Math.Max(0, DisplayClicks - Interlocked.Read(ref _serverConsume));
+    public long AvailableClicks
+    {
+        get { lock (_clicksLock) { return Math.Max(0, _baseClicks + _pendingClicks + _inflightClicks - _serverConsume); } }
+    }
 
-    public long ServerConsume => Interlocked.Read(ref _serverConsume);
+    public long ServerConsume
+    {
+        get { lock (_clicksLock) { return _serverConsume; } }
+    }
     public event Action ClicksChanged;
     /// <summary>每次本地产生一次敲击（真实或自动）时触发，用于自动表情等本地联动。</summary>
     public event Action LocalClick;
@@ -59,7 +70,10 @@ public sealed class RoomManager : IDisposable
     public string State { get; private set; } = "idle";
     public string RoomNo { get; private set; } = "";
     public long SelfId => _auth.UserId;
-    public bool IsConnected => _socket?.Connected == true;
+    /// <summary>只有 socket 握手成功且房间成员快照也成功，才算真正进入房间。</summary>
+    public bool IsConnected => _socket?.Connected == true && (string.IsNullOrEmpty(RoomNo) || _roomReady);
+    /// <summary>服务器成员快照中自己的房主标记。</summary>
+    public bool SelfIsOwner { get; private set; }
     public readonly ConcurrentDictionary<long, RoomMember> Members = new();
 
     public event Action StateChanged;
@@ -73,6 +87,8 @@ public sealed class RoomManager : IDisposable
     public event Action<long, string> MemberEmote;
     public event Action<int> ForcedDisconnect;
     public event Action<string> SocketClosed;
+    /// <summary>服务器拒绝进入房间（例如房间不存在/已解散），UI 可提示用户。</summary>
+    public event Action<string> JoinRejected;
 
     public RoomManager(AuthService auth, Settings cfg)
     {
@@ -177,7 +193,7 @@ public sealed class RoomManager : IDisposable
             if (!string.IsNullOrEmpty(desiredRoom))
             {
                 if (State == "joined" && IsConnected) return;
-                if (Volatile.Read(ref _busy) == 1) return;
+                if (_awaitingSnapshot || Volatile.Read(ref _busy) == 1) return;
                 try
                 {
                     Log.Write("自动重连房间 " + desiredRoom);
@@ -245,6 +261,9 @@ public sealed class RoomManager : IDisposable
 
         await CloseSocketAsync();
         State = "joined";
+        _roomReady = false;
+        _awaitingSnapshot = false;
+        SelfIsOwner = false;
         // 先让 UI 进入“连接中”，即使后面 WebSocket 连接失败也还有自动重试。
         StateChanged?.Invoke();
         await ConnectSocketAsync(roomNo);
@@ -263,6 +282,8 @@ public sealed class RoomManager : IDisposable
         {
             if (gen != _generation) return;
             bool wasJoined = State == "joined";
+            _roomReady = false;
+            _awaitingSnapshot = false;
             if (wasJoined)
             {
                 // 保留 joined 状态让 UI 显示“连接中…”，由后台定时器持续重连。
@@ -283,34 +304,76 @@ public sealed class RoomManager : IDisposable
         {
             if (string.IsNullOrEmpty(RoomNo))
             {
+                _awaitingSnapshot = false;
                 StateChanged?.Invoke();
                 return;
             }
+            _awaitingSnapshot = true;
             var payload = new JsonObject { ["r"] = RoomNo };
             var snap = await socket.EmitAsync("rm", payload, 8000);
-            ApplyMemberSnapshot(snap);
+            if (snap == null)
+            {
+                // 超时/连接中断：保持“连接中”，交给后台重连，不要误报成已连接。
+                Log.Write("房间快照超时 " + RoomNo);
+                return;
+            }
+            if (!ApplyMemberSnapshot(snap))
+            {
+                int code = snap is JsonObject o ? ApiClient.ReadInt(o["c"]) : -1;
+                if (code != 0 && code != 200)
+                    RejectRoom($"房间不存在或已解散（{code}）");
+                else
+                    RejectRoom("房间数据异常，已停止自动重连");
+                return;
+            }
+            _roomReady = true;
+            StateChanged?.Invoke();
             var appearanceSnap = await socket.EmitAsync("rd", new JsonObject { ["r"] = RoomNo }, 8000);
             ApplyAppearanceSnapshot(appearanceSnap);
             await AnnounceAppearanceAsync();
-            StateChanged?.Invoke();
         }
         catch (Exception ex) { Log.Write("房间快照失败 " + ex.Message); }
+        finally { _awaitingSnapshot = false; }
     }
 
-    void ApplyMemberSnapshot(JsonNode snap)
+    void RejectRoom(string message)
     {
-        if (snap is not JsonObject o) return;
+        _roomReady = false;
+        _awaitingSnapshot = false;
+        SelfIsOwner = false;
+        State = "idle";
+        RoomNo = "";
+        _cfg.RoomNo = "";
+        ConfigStore.Save(_cfg);
+        Members.Clear();
+        Log.Write(message);
+        JoinRejected?.Invoke(message);
+        StateChanged?.Invoke();
+        _ = CloseSocketAsync();
+    }
+
+    bool ApplyMemberSnapshot(JsonNode snap)
+    {
+        if (snap is not JsonObject o) return false;
         int code = ApiClient.ReadInt(o["c"]);
-        if (code != 0 && code != 200) return;
+        if (code != 0 && code != 200) return false;
         var list = o["d"]?["m"] as JsonArray;
-        if (list == null) return;
+        if (list == null) return false;
         var seen = new HashSet<long>();
         bool touched = false;
+        bool selfSeen = false;
         foreach (var item in list)
         {
             if (item is not JsonObject m) continue;
             long id = ApiClient.ReadLong(m["u"]);
-            if (id <= 0 || id == SelfId) continue;
+            if (id <= 0) continue;
+            if (id == SelfId)
+            {
+                // 服务器快照包含自己时，直接使用它的房主标记。
+                SelfIsOwner = ApiClient.ReadBool(m["o"]);
+                selfSeen = true;
+                continue;
+            }
             seen.Add(id);
             var member = Members.GetOrAdd(id, _ => new RoomMember { Id = id });
             member.Nickname = ApiClient.ReadString(m["n"]);
@@ -323,7 +386,10 @@ public sealed class RoomManager : IDisposable
         {
             if (Members.TryRemove(id, out _)) MemberRemoved?.Invoke(id);
         }
+        // 部分服务端快照不返回自己；这时若名单里没有其他房主，则自己就是房主。
+        if (!selfSeen) SelfIsOwner = !Members.Values.Any(m => m.IsOwner);
         if (touched) RosterChanged?.Invoke();
+        return true;
     }
 
     void OnEvent(string name, JsonNode payload)
