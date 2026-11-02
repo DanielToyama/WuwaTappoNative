@@ -1,17 +1,18 @@
 using System;
 using System.Net.Http;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 
 namespace WuwatappoNative.Core;
 
 public sealed class ReleaseInfo
 {
-    public string Tag { get; set; } = "";
-    public string Name { get; set; } = "";
-    public string Body { get; set; } = "";
-    public string Url { get; set; } = "";
-    public string PublishedAt { get; set; } = "";
+    [JsonPropertyName("tag")] public string Tag { get; set; } = "";
+    [JsonPropertyName("name")] public string Name { get; set; } = "";
+    [JsonPropertyName("body")] public string Body { get; set; } = "";
+    [JsonPropertyName("url")] public string Url { get; set; } = "";
+    [JsonPropertyName("publishedAt")] public string PublishedAt { get; set; } = "";
 }
 
 /// <summary>GitHub 最新 Release 检查。只读取公开 Release，不上传任何本机数据。</summary>

@@ -1717,8 +1717,11 @@
   function updateBannerHtml() {
     const u = state.update;
     if (!u || state.updateDismissed) return '';
-    const tag = u.tag || u.name || '新版本';
-    const date = u.publishedAt ? new Date(u.publishedAt).toLocaleDateString('zh-CN') : '';
+    // 兼容旧序列化：0.0.25 曾把 ReleaseInfo 的 PascalCase 属性直接推给前端，导致标题/内容为空。
+    const tag = u.tag || u.Tag || u.name || u.Name || '新版本';
+    const body = u.body || u.Body || '';
+    const dateValue = u.publishedAt || u.PublishedAt;
+    const date = dateValue ? new Date(dateValue).toLocaleDateString('zh-CN') : '';
     return `<section class="update-banner">
       <div class="update-banner-head">
         <div>
@@ -1727,9 +1730,9 @@
         </div>
         <button class="update-dismiss" id="updateDismiss" title="本次启动不再显示">×</button>
       </div>
-      <div class="update-notes">${releaseNotesHtml(u.body)}</div>
+      <div class="update-notes">${releaseNotesHtml(body)}</div>
       <div class="update-banner-actions">
-        <a class="btn" href="${esc(u.url || 'https://github.com/DanielToyama/WuwaTappoNative/releases/latest')}" target="_blank" rel="noreferrer">前往 GitHub 更新</a>
+        <a class="btn" href="${esc(u.url || u.Url || 'https://github.com/DanielToyama/WuwaTappoNative/releases/latest')}" target="_blank" rel="noreferrer">前往 GitHub 更新</a>
         <span class="update-qq">交流 QQ 群：<strong>1130030892</strong>，群文件也可下载</span>
       </div>
     </section>`;
