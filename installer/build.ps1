@@ -1,17 +1,22 @@
 ﻿param(
   [string]$Configuration = "Release",
-  [string]$Version = "0.0.33"
+  [string]$Version = "0.0.34",
+  [string]$PublishDir = ""
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
-$publishDir = "publish/app-$Version"
+if ([string]::IsNullOrWhiteSpace($PublishDir)) { $PublishDir = "publish/app-$Version" }
+$publishDir = $PublishDir
 $distDir = "dist"
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 
 Write-Host "== publish $Version (win-x64, self-contained single file) =="
-Remove-Item -Recurse -Force $publishDir -ErrorAction SilentlyContinue
+if (Test-Path -LiteralPath $publishDir) {
+  try { Remove-Item -LiteralPath $publishDir -Recurse -Force -ErrorAction Stop }
+  catch { throw "publish 目录被占用，请先退出正在运行的 WuwatappoNative：$publishDir" }
+}
 New-Item -ItemType Directory -Force -Path $publishDir | Out-Null
 dotnet publish -c $Configuration -r win-x64 --self-contained true `
   -p:PublishSingleFile=true `
@@ -34,7 +39,8 @@ $isccCandidates = @(
 $iscc = $isccCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 if (-not $iscc) { $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source }
 if (-not $iscc) { throw "缺少 Inno Setup 6 的 ISCC.exe，请先安装 Inno Setup 6" }
-& $iscc "/DMyVersion=$Version" (Join-Path $root 'installer\WuwatappoNative.iss')
+$sourceDir = (Resolve-Path -LiteralPath $publishDir).Path
+& $iscc "/DMyVersion=$Version" "/DMySourceDir=$sourceDir" (Join-Path $root 'installer\WuwatappoNative.iss')
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup 编译失败" }
 
 Write-Host "== portable zip =="

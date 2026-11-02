@@ -68,6 +68,8 @@ public sealed class Settings
     public bool LaunchAtLogin { get; set; }
     /// <summary>以管理员权限启动：管理员前台窗口下 Raw Input 才不会被 UIPI 拦截。</summary>
     public bool RunAsAdmin { get; set; }
+    /// <summary>游戏模式规则：检测到这些进程启动时自动开启鼠标穿透；进程退出后恢复。</summary>
+    public string[] GameModeRules { get; set; } = Array.Empty<string>();
 
     public int PetX { get; set; } = -1;
     public int PetY { get; set; } = -1;
@@ -119,6 +121,7 @@ public static class ConfigStore
                     cfg.AutoEmoteMaxPerSecond = Math.Clamp(cfg.AutoEmoteMaxPerSecond, 1, 20);
                     cfg.AutoClickPerSecond = Math.Clamp(cfg.AutoClickPerSecond, 1, 10);
                     cfg.HoverFadeOpacity = Math.Clamp(cfg.HoverFadeOpacity, 0.1, 1.0);
+                    cfg.GameModeRules = GameModeRules.Normalize(cfg.GameModeRules);
                     if (cfg.AutoEmoteMode != "specific" && cfg.AutoEmoteMode != "library") cfg.AutoEmoteMode = "quickbar";
                     cfg.ServerRegion = NormalizeRegion(cfg.ServerRegion);
                     return cfg;

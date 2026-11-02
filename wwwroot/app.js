@@ -2031,6 +2031,21 @@
             <div><div class="setting-title">以管理员权限启动</div><div class="setting-sub">${s.isElevated ? '当前已是管理员权限' : '当前为普通权限'}；用于统计以管理员权限运行的游戏/程序中的按键。开启会请求 UAC 并重启；开机自启由最高权限计划任务完成，登录时不再提示</div></div>
             <div class="switch ${s.runAsAdmin ? 'on' : ''}" data-switch="runAsAdmin"></div>
           </div>
+          <div class="setting-item" style="align-items:flex-start">
+            <div><div class="setting-title">游戏模式规则</div><div class="setting-sub">检测到以下进程启动时自动开启鼠标穿透，进程退出后恢复</div></div>
+            <div class="setting-content" style="flex-direction:column;align-items:stretch;gap:8px;min-width:280px">
+              <div style="display:flex;gap:8px">
+                <input class="input" id="gameRuleInput" placeholder="进程名，如 WutheringWaves.exe" style="flex:1;min-width:180px" />
+                <button class="btn ghost" id="gameRuleAdd">添加</button>
+              </div>
+              <div id="gameRuleList" class="rule-list">
+                ${(s.gameModeRules || []).length
+                  ? (s.gameModeRules || []).map(name => `<span class="rule-chip">${esc(name)}<button type="button" data-remove-rule="${esc(name)}" title="删除规则">×</button></span>`).join('')
+                  : '<span class="muted" style="font-size:12px">暂无规则</span>'}
+              </div>
+              <div class="setting-sub" style="margin-top:0">可填写任务管理器中的进程名，带不带 .exe 均可；匹配不区分大小写。</div>
+            </div>
+          </div>
           <div class="setting-item">
             <div><div class="setting-title">日志与数据</div><div class="setting-sub">%LOCALAPPDATA%\\WuwatappoNative</div></div>
             <div class="setting-content"><button class="btn ghost" id="openLog">打开日志目录</button></div>
@@ -2205,6 +2220,32 @@
     hp?.addEventListener('change', async () => {
       try { await tryCall('settings.set', { hoverFadeOpacity: Number(hp.value) / 100 }); await syncBoot(); } catch { }
     });
+    const gameRuleInput = document.getElementById('gameRuleInput');
+    const saveGameRules = async (rules) => {
+      try {
+        const boot = await tryCall('settings.set', { gameModeRules: rules });
+        if (boot?.settings) state.boot = boot;
+        renderSettings();
+      } catch { }
+    };
+    const addGameRule = () => {
+      const name = String(gameRuleInput?.value || '').trim();
+      if (!name) return;
+      const rules = [...(state.boot?.settings?.gameModeRules || []), name];
+      if (gameRuleInput) gameRuleInput.value = '';
+      saveGameRules(rules);
+    };
+    document.getElementById('gameRuleAdd')?.addEventListener('click', addGameRule);
+    gameRuleInput?.addEventListener('keydown', e => {
+      if (e.key === 'Enter') { e.preventDefault(); addGameRule(); }
+    });
+    document.querySelectorAll('[data-remove-rule]').forEach(el => {
+      el.addEventListener('click', () => {
+        const name = el.dataset.removeRule;
+        saveGameRules((state.boot?.settings?.gameModeRules || []).filter(x => x !== name));
+      });
+    });
+
     document.querySelectorAll('[data-switch]').forEach(el => el.onclick = async () => {
       const key = el.dataset.switch;
       const next = !el.classList.contains('on');

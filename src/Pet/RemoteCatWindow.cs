@@ -151,16 +151,22 @@ public sealed class RemoteCatWindow : Form
         double next = Math.Clamp(_opacityBase * factor, 0.1, 1.0);
         if (Math.Abs(next - _opacity) < 0.001) return;
         _opacity = next;
-        Compose();
+        // 只更新窗口常量 alpha，不重画整只猫。
+        if (_surface.Bitmap != null) _surface.Apply(this, _opacity);
     }
 
-    /// <summary>鼠标穿透时由主窗口轮询光标位置，判断是否命中的可见猫区域。</summary>
+    /// <summary>鼠标穿透时由主窗口轮询光标位置，判断是否命中可见猫像素；透明气泡净空不算。</summary>
     public bool ContainsScreenPoint(Point p)
     {
-        if (!Visible || IsDisposed) return false;
+        if (!Visible || IsDisposed || !IsHandleCreated) return false;
+        var pt = PointToClient(p);
+        if (pt.X < 0 || pt.Y < 0 || pt.X >= Width || pt.Y >= Height) return false;
         int head = (int)Math.Round(Headroom * _scale);
         int catH = (int)Math.Round(CatH * _scale);
-        return new Rectangle(Left, Top + head, Math.Max(1, Width), Math.Max(1, catH)).Contains(p);
+        if (pt.Y < head || pt.Y >= head + catH) return false;
+        var bmp = _surface.Bitmap;
+        if (bmp == null) return false;
+        try { return bmp.GetPixel(pt.X, pt.Y).A > 8; } catch { return false; }
     }
 
     void ApplyWindowStyles()
@@ -346,19 +352,9 @@ public sealed class RemoteCatWindow : Form
 
                 _bubbles.Draw(g, s, 100 * s, (Headroom + 100) * s);
             }
-            // 与主桌宠一致：不透明度通过整体 alpha 矩阵应用，避免每个绘制分支各写一遍。
-            if (_opacity < 0.999)
-            {
-                using var attrs = new ImageAttributes();
-                var matrix = new ColorMatrix { Matrix33 = (float)Math.Clamp(_opacity, 0.1, 1.0) };
-                attrs.SetColorMatrix(matrix, ColorMatrixFlag.Default, ColorAdjustType.Bitmap);
-                using var copy = new Bitmap(w, h, PixelFormat.Format32bppPArgb);
-                using (var cg = Graphics.FromImage(copy)) cg.DrawImage(surface, 0, 0);
-                g.Clear(Color.Transparent);
-                g.DrawImage(copy, new Rectangle(0, 0, w, h), 0, 0, w, h, GraphicsUnit.Pixel, attrs);
-            }
         }
-        _surface.Apply(this);
+        // 这里是全不透明内容；悬停/窗口透明度交给 UpdateLayeredWindow 的常量 alpha。
+        _surface.Apply(this, _opacity);
     }
 
     protected override CreateParams CreateParams
@@ -510,10 +506,15 @@ public sealed class LayeredSurface : IDisposable
         return _bitmap;
     }
 
-    public void Apply(Form form)
+    /// <summary>
+    /// 提交窗口。opacity 通过 UpdateLayeredWindow 的 SourceConstantAlpha 完成，
+    /// 不再为了淡出效果重画整张位图，鼠标频繁悬停时能明显降低 GDI+ 占用。
+    /// </summary>
+    public void Apply(Form form, double opacity = 1.0)
     {
         if (_bitmap == null) return;
-        Layered.Commit(form, _bitmap, _dc, _w, _h);
+        byte alpha = (byte)Math.Round(255 * Math.Clamp(opacity, 0.0, 1.0));
+        Layered.Commit(form, _bitmap, _dc, _w, _h, alpha);
     }
 
     void Release()
@@ -616,7 +617,7 @@ public static class Layered
 
     public static void Apply(Form form, Bitmap surface) => Commit(form, surface, IntPtr.Zero, surface.Width, surface.Height);
 
-    internal static void Commit(Form form, Bitmap surface, IntPtr cachedDc, int width, int height)
+    internal static void Commit(Form form, Bitmap surface, IntPtr cachedDc, int width, int height, byte constantAlpha = 255)
     {
         IntPtr screenDc = GetDC(IntPtr.Zero);
         bool ownDc = cachedDc == IntPtr.Zero;
@@ -632,7 +633,7 @@ public static class Layered
             var topLeft = new Point(form.Left, form.Top);
             var size = new Size(width, height);
             var source = new Point(0, 0);
-            var blend = new BlendFunction { Op = AcSrcOver, Flags = 0, ConstantAlpha = 255, Format = AcSrcAlpha };
+            var blend = new BlendFunction { Op = AcSrcOver, Flags = 0, ConstantAlpha = constantAlpha, Format = AcSrcAlpha };
             UpdateLayeredWindow(form.Handle, screenDc, ref topLeft, ref size, memDc, ref source, 0, ref blend, UlwAlpha);
         }
         finally

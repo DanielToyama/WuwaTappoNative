@@ -1,6 +1,9 @@
 #define MyAppName "Wuwatappo Native"
 #ifndef MyVersion
-  #define MyVersion "0.0.33"
+  #define MyVersion "0.0.34"
+#endif
+#ifndef MySourceDir
+  #define MySourceDir "..\publish\app-" + MyVersion
 #endif
 
 [Setup]
@@ -32,7 +35,7 @@ VersionInfoProductVersion={#MyVersion}
 VersionInfoDescription={#MyAppName} 安装包
 
 [Files]
-Source: "..\publish\app-{#MyVersion}\WuwatappoNative.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#MySourceDir}\WuwatappoNative.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\WuwatappoNative.exe"; WorkingDir: "{app}"

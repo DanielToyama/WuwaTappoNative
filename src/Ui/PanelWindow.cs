@@ -335,6 +335,7 @@ public sealed class PanelWindow : Form
             notifyHotkeys = _app.Cfg.NotifyHotkeys,
             launchAtLogin = AutoStart.IsEnabled,
             runAsAdmin = _app.Cfg.RunAsAdmin,
+            gameModeRules = _app.Cfg.GameModeRules,
             isElevated = Elevation.IsElevated,
             roomNo = _app.Cfg.RoomNo,
             lastRoom = _app.Cfg.LastRoom,
@@ -831,6 +832,12 @@ public sealed class PanelWindow : Form
                         case "autoClickAnimate": cfg.AutoClickAnimate = ApiClient.ReadBool(kv.Value); break;
                         case "notifyChestClaimed": cfg.NotifyChestClaimed = ApiClient.ReadBool(kv.Value); break;
                         case "notifyHotkeys": cfg.NotifyHotkeys = ApiClient.ReadBool(kv.Value); break;
+                        case "gameModeRules":
+                        {
+                            var arr = kv.Value as JsonArray;
+                            cfg.GameModeRules = GameModeRules.Normalize(arr?.Select(x => ApiClient.ReadString(x)));
+                            break;
+                        }
                         case "launchAtLogin":
                             cfg.LaunchAtLogin = AutoStart.Apply(ApiClient.ReadBool(kv.Value), cfg.RunAsAdmin);
                             break;

@@ -34,7 +34,7 @@ public sealed class PetWindow : Form
     Point _dragCursor, _dragOrigin;
     readonly EmoteBubbleLayer _bubbles = new();
     readonly EmoteWheelLayer _wheel = new();
-    System.Windows.Forms.Timer _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _hoverFadeTimer, _loadingTimer, _hoverFadeAnimTimer, _hoverPollTimer;
+    System.Windows.Forms.Timer _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _wheelShowTimer, _hoverFadeTimer, _loadingTimer, _hoverFadeAnimTimer, _hoverPollTimer;
     long _lastSkin = -1, _lastAcc = -1;
     Image _chestBtnArt, _chestBgArt;
     ContextMenuStrip _menu;
@@ -181,10 +181,9 @@ public sealed class PetWindow : Form
         var surface = _surface.Begin(Size.Width, Size.Height);
         if (_frames.Ready)
         {
-            double baseOpacity = Math.Clamp(_cfg.Opacity, 0.1, 1.0);
-            double hoverFactor = 1.0 - _hoverFadeAmount * (1.0 - Math.Clamp(_cfg.HoverFadeOpacity, 0.1, 1.0));
-            PetComposer.ComposeInto(surface, _frames, _bodyFrame, _headFrame, info,
-                _cfg.HoverFade ? baseOpacity * hoverFactor : baseOpacity);
+            // 窗口内容始终按全不透明绘制；实际透明度交给 UpdateLayeredWindow 常量 alpha。
+            // 这样悬停淡出不用每帧重画整张位图，鼠标频繁移动时 CPU 占用会低很多。
+            PetComposer.ComposeInto(surface, _frames, _bodyFrame, _headFrame, info, 1.0);
         }
         else
         {
@@ -195,8 +194,26 @@ public sealed class PetWindow : Form
                 PetComposer.CatX + PetComposer.CatSize / 2f,
                 PetComposer.CatY + PetComposer.CatSize / 2f);
         }
-        _surface.Apply(this);
+        _surface.Apply(this, EffectiveOpacity);
         CaptureChanged?.Invoke();
+    }
+
+    double EffectiveOpacity
+    {
+        get
+        {
+            double baseOpacity = Math.Clamp(_cfg.Opacity, 0.1, 1.0);
+            if (!_cfg.HoverFade) return baseOpacity;
+            double hoverFactor = 1.0 - _hoverFadeAmount * (1.0 - Math.Clamp(_cfg.HoverFadeOpacity, 0.1, 1.0));
+            return Math.Clamp(baseOpacity * hoverFactor, 0.01, 1.0);
+        }
+    }
+
+    /// <summary>只更新窗口常量 alpha，不重新绘制内容。</summary>
+    void ApplyOpacityOnly()
+    {
+        if (IsHandleCreated && !IsDisposed && _surface.Bitmap != null)
+            _surface.Apply(this, EffectiveOpacity);
     }
 
     PetComposer.Info BuildInfo(long now)
@@ -251,19 +268,7 @@ public sealed class PetWindow : Form
     bool _hovering, _hoverFadeTarget;
     double _hoverFadeAmount;
 
-    protected override void OnMouseEnter(EventArgs e)
-    {
-        base.OnMouseEnter(e);
-        SetHovering(true);
-    }
-    protected override void OnMouseLeave(EventArgs e)
-    {
-        base.OnMouseLeave(e);
-        SetHovering(false);
-        _wheelCloseTimer.Start();
-    }
-
-    /// <summary>鼠标穿透时窗口收不到 MouseEnter/Leave，由 PollHover 轮询光标位置。</summary>
+    /// <summary>统一用光标轮询判断悬停：穿透/非穿透行为一致，也避免窗口透明区域造成误触发。</summary>
     void SetHovering(bool hovering)
     {
         if (_hovering == hovering) return;
@@ -272,9 +277,18 @@ public sealed class PetWindow : Form
         if (hovering)
         {
             // 停留 500ms 才淡出：只是划过桌宠时不应该闪一下透明度。
+            _wheelCloseTimer.Stop();
             if (_cfg.HoverFade) _hoverFadeTimer.Start();
+            // 轮盘也延迟出现；鼠标只是在角色身上快速划过时，不反复启动展开动画。
+            if (!_cfg.ClickThrough)
+            {
+                _wheelShowTimer.Stop();
+                _wheelShowTimer.Start();
+            }
             return;
         }
+        _wheelShowTimer.Stop();
+        _wheelCloseTimer.Start();
         StartHoverFade(false);
     }
 
@@ -282,9 +296,20 @@ public sealed class PetWindow : Form
     {
         if (!IsHandleCreated || IsDisposed) return;
         var p = Cursor.Position;
-        SetHovering(Visible && !_hiddenByHotkey && Bounds.Contains(p));
+        SetHovering(Visible && !_hiddenByHotkey && ContainsPetPoint(p));
         foreach (var cat in _cats.Values)
             cat.SetHovered(cat.Visible && !_hiddenByHotkey && cat.ContainsScreenPoint(p));
+    }
+
+    /// <summary>按当前合成位图的 alpha 判断光标是否落在实际可见内容上，透明留白不触发悬停。</summary>
+    bool ContainsPetPoint(Point p)
+    {
+        if (!Visible || IsDisposed || !IsHandleCreated) return false;
+        var pt = PointToClient(p);
+        if (pt.X < 0 || pt.Y < 0 || pt.X >= Width || pt.Y >= Height) return false;
+        var bmp = _surface.Bitmap;
+        if (bmp == null) return false;
+        try { return bmp.GetPixel(pt.X, pt.Y).A > 8; } catch { return false; }
     }
 
     void StartHoverFade(bool on)
@@ -293,7 +318,7 @@ public sealed class PetWindow : Form
         {
             _hoverFadeAmount = 0;
             _hoverFadeAnimTimer.Stop();
-            Compose();
+            ApplyOpacityOnly();
             return;
         }
         _hoverFadeTarget = on;
@@ -319,24 +344,43 @@ public sealed class PetWindow : Form
             Compose();
             if (!active) _emoteTimer.Stop();
         };
-        _wheelTimer = new System.Windows.Forms.Timer { Interval = 16 };
+        // 表情轮盘展开是低频动画，30fps 足够；每次淡入都按 60fps 全量重绘会把 CPU 拉高。
+        _wheelTimer = new System.Windows.Forms.Timer { Interval = 33 };
         _wheelTimer.Tick += (s, e) =>
         {
             Compose();
             if (!_wheel.Animating) _wheelTimer.Stop();
         };
         _countdownTimer = new System.Windows.Forms.Timer { Interval = 1000 };
-        _countdownTimer.Tick += (s, e) => { if (_auth.IsLoggedIn) Compose(); };
+        _countdownTimer.Tick += (s, e) =>
+        {
+            if (!_auth.IsLoggedIn) return;
+            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            long left = ApiClient.ReadLong(_auth.UserInfo?["left_treasure_chest"]);
+            long right = ApiClient.ReadLong(_auth.UserInfo?["right_treasure_chest"]);
+            // 宝箱倒计时没显示时不需要每秒重画整只桌宠。
+            bool showLeft = left > 0 && (_cfg.AlwaysShowChest || _hovering || left <= now);
+            bool showRight = right > 0 && (_cfg.AlwaysShowChest || _hovering || right <= now);
+            if (showLeft || showRight) Compose();
+        };
         _countdownTimer.Start();
+        _wheelShowTimer = new System.Windows.Forms.Timer { Interval = 250 };
+        _wheelShowTimer.Tick += (s, e) =>
+        {
+            _wheelShowTimer.Stop();
+            if (_hovering && !_cfg.ClickThrough && !_hiddenByHotkey) ShowWheel();
+        };
         _wheelCloseTimer = new System.Windows.Forms.Timer { Interval = 500 };
         _wheelCloseTimer.Tick += (s, e) =>
         {
-            if (!Bounds.Contains(Cursor.Position))
+            if (!_hovering)
             {
+                bool wasOpen = _wheel.Open;
                 _wheel.Close();
-                Compose();
-                _wheelCloseTimer.Stop();
+                if (wasOpen) Compose();
             }
+            // 已经重新悬停到实际角色上（或轮盘已关闭）就停止，避免空转。
+            _wheelCloseTimer.Stop();
         };
         _hoverFadeTimer = new System.Windows.Forms.Timer { Interval = 500 };
         _hoverFadeTimer.Tick += (s, e) =>
@@ -356,9 +400,10 @@ public sealed class PetWindow : Form
                 _hoverFadeAnimTimer.Stop();
             }
             else _hoverFadeAmount += Math.Sign(diff) * 0.08;
-            Compose();
+            ApplyOpacityOnly();
         };
-        _hoverPollTimer = new System.Windows.Forms.Timer { Interval = 100 };
+        // 悬停有 500ms 停留判定，150ms 轮询足够；降低轮询频率可减少多开联机成员时的 UI 线程开销。
+        _hoverPollTimer = new System.Windows.Forms.Timer { Interval = 150 };
         _hoverPollTimer.Tick += (s, e) => PollHover();
         _hoverPollTimer.Start();
         _loadingTimer = new System.Windows.Forms.Timer { Interval = 80 };
@@ -372,7 +417,6 @@ public sealed class PetWindow : Form
             }
             Compose();
         };
-        MouseEnter += (s, e) => ShowWheel();
         _blink.Start();
     }
 
@@ -600,6 +644,16 @@ public sealed class PetWindow : Form
 
     protected override bool ShowWithoutActivation => true;
 
+    /// <summary>供游戏模式规则/外部控制切换鼠标穿透；会同步保存并刷新菜单与面板。</summary>
+    public void SetClickThrough(bool enabled)
+    {
+        if (_cfg.ClickThrough == enabled) return;
+        _cfg.ClickThrough = enabled;
+        Save();
+        ApplySettings();
+        NotifySettingsChanged();
+    }
+
     public void ApplySettings()
     {
         if (!_cfg.HoverFade)
@@ -614,6 +668,11 @@ public sealed class PetWindow : Form
             // 运行中打开悬停半透明时，也按正常停留时间开始淡出。
             _hoverFadeTimer.Stop();
             _hoverFadeTimer.Start();
+        }
+        if (_cfg.ClickThrough)
+        {
+            _wheelShowTimer?.Stop();
+            _wheel.Close();
         }
         Size = WindowSize();
         ApplyWindowStyles();
@@ -1371,7 +1430,7 @@ public sealed class PetWindow : Form
         _captureFrame?.Dispose();
         _captureFrame = null;
         _capture = null;
-        foreach (var t in new[] { _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _hoverFadeTimer, _hoverFadeAnimTimer, _hoverPollTimer, _loadingTimer, _composeTimer }) { try { t?.Stop(); t?.Dispose(); } catch { } }
+        foreach (var t in new[] { _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _wheelShowTimer, _hoverFadeTimer, _hoverFadeAnimTimer, _hoverPollTimer, _loadingTimer, _composeTimer }) { try { t?.Stop(); t?.Dispose(); } catch { } }
         foreach (var c in _cats.Values.ToList()) { try { c.Close(); c.Dispose(); } catch { } }
         _cats.Clear();
         _surface.Dispose();

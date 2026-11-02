@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
 using System.Threading;
@@ -26,6 +27,10 @@ public sealed class App : ApplicationContext
     System.Threading.Timer _autoChestTimer;
     System.Threading.Timer _clickRefreshTimer;
     System.Threading.Timer _autoClickTimer;
+    System.Threading.Timer _gameModeRuleTimer;
+    readonly object _gameModeRuleGate = new();
+    bool _gameModeRuleMatched;
+    bool _gameModeRuleAuto;
     long _lastAutoClickFlushMs;
     readonly object _autoEmoteGate = new();
     readonly Queue<long> _autoEmoteTimes = new();
@@ -108,6 +113,7 @@ public sealed class App : ApplicationContext
         _ = BootAsync();
         _autoChestTimer = new System.Threading.Timer(_ => _ = AutoChestTickAsync(), null, 30000, 30000);
         _clickRefreshTimer = new System.Threading.Timer(_ => _ = RefreshClicksAsync(), null, 60000, 60000);
+        _gameModeRuleTimer = new System.Threading.Timer(_ => CheckGameModeRules(), null, 1500, 2000);
         ApplyAutoClickTimer();
         StartStressHarness();
     }
@@ -260,6 +266,71 @@ public sealed class App : ApplicationContext
             _autoClickTimer.Change(700, period);
         }
         else _autoClickTimer.Change(Timeout.Infinite, Timeout.Infinite);
+    }
+
+    /// <summary>
+    /// 每 2 秒扫描一次进程名；命中规则时自动开启鼠标穿透，进程全部退出后恢复。
+    /// 只在匹配状态发生边沿变化时操作，避免反复覆盖用户手动切换的开关。
+    /// </summary>
+    void CheckGameModeRules()
+    {
+        try
+        {
+            string[] rules = Cfg.GameModeRules ?? Array.Empty<string>();
+            bool matched = false;
+            string matchedName = null;
+            if (rules.Length > 0)
+            {
+                foreach (var p in Process.GetProcesses())
+                {
+                    try
+                    {
+                        if (GameModeRules.Matches(p.ProcessName, rules))
+                        {
+                            matched = true;
+                            matchedName = p.ProcessName;
+                            break;
+                        }
+                    }
+                    catch { }
+                    finally { p.Dispose(); }
+                }
+            }
+
+            // 用户手动关掉穿透后不再把这次开关算作规则接管，避免游戏退出时误关。
+            if (matched && _gameModeRuleAuto && !Cfg.ClickThrough)
+                _gameModeRuleAuto = false;
+
+            bool becameMatched, becameUnmatched;
+            lock (_gameModeRuleGate)
+            {
+                becameMatched = matched && !_gameModeRuleMatched;
+                becameUnmatched = !matched && _gameModeRuleMatched;
+                _gameModeRuleMatched = matched;
+            }
+
+            if (becameMatched)
+            {
+                Log.Write("游戏模式规则命中：" + (matchedName ?? "?"));
+                Pet.BeginInvoke(new Action(() =>
+                {
+                    if (Cfg.ClickThrough) return;
+                    _gameModeRuleAuto = true;
+                    Pet.SetClickThrough(true);
+                }));
+            }
+            else if (becameUnmatched && _gameModeRuleAuto)
+            {
+                Log.Write("游戏模式规则进程已退出，恢复鼠标交互");
+                Pet.BeginInvoke(new Action(() =>
+                {
+                    if (!_gameModeRuleAuto) return;
+                    _gameModeRuleAuto = false;
+                    Pet.SetClickThrough(false);
+                }));
+            }
+        }
+        catch (Exception ex) { Log.Write("游戏模式规则检测失败 " + ex.Message); }
     }
 
     void AutoClickTick()
@@ -616,6 +687,7 @@ public sealed class App : ApplicationContext
             try { _autoChestTimer?.Dispose(); } catch { }
             try { _clickRefreshTimer?.Dispose(); } catch { }
             try { _autoClickTimer?.Dispose(); } catch { }
+            try { _gameModeRuleTimer?.Dispose(); } catch { }
             try { _clicksPushTimer?.Dispose(); } catch { }
             try { Room.Dispose(); } catch { }
             try { Store.Dispose(); } catch { }
