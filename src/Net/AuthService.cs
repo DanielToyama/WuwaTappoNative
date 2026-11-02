@@ -181,6 +181,16 @@ public sealed class AuthService
         }
     }
 
+    /// <summary>开箱响应成功后先本地把该侧宝箱时间戳清零，让 UI 立即消失；随后 user/me 会用真实冷却时间修正。</summary>
+    public void MarkChestOpened(string place)
+    {
+        if (UserInfo is not JsonObject me) return;
+        string key = string.Equals(place, "left", StringComparison.OrdinalIgnoreCase)
+            ? "left_treasure_chest"
+            : "right_treasure_chest";
+        me[key] = 0;
+    }
+
     /// <summary>轻量刷新：只同步点击数、宝箱时间戳等运行时字段，不回写本地外观。</summary>
     public async Task RefreshClicksAsync()
     {

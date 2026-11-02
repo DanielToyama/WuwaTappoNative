@@ -36,6 +36,7 @@ public sealed class App : ApplicationContext
     readonly Queue<long> _autoEmoteTimes = new();
     DateTime _nextLeftAttempt = DateTime.MinValue, _nextRightAttempt = DateTime.MinValue;
     int _chestBusy;
+    int _autoChestTickBusy;
 
     public App()
     {
@@ -111,8 +112,10 @@ public sealed class App : ApplicationContext
             Pet.BeginInvoke(new Action(OpenPanel));
 
         _ = BootAsync();
-        _autoChestTimer = new System.Threading.Timer(_ => _ = AutoChestTickAsync(), null, 30000, 30000);
-        _clickRefreshTimer = new System.Threading.Timer(_ => _ = RefreshClicksAsync(), null, 60000, 60000);
+        // 宝箱到点后最多等 5 秒就开始尝试，而不是等下一个 30 秒周期。
+        _autoChestTimer = new System.Threading.Timer(_ => _ = AutoChestTickAsync(), null, 5000, 5000);
+        // 网络恢复后最多 30 秒重新同步一次点击/宝箱等服务器状态。
+        _clickRefreshTimer = new System.Threading.Timer(_ => _ = RefreshClicksAsync(), null, 30000, 30000);
         _gameModeRuleTimer = new System.Threading.Timer(_ => CheckGameModeRules(), null, 1500, 2000);
         ApplyAutoClickTimer();
         StartStressHarness();
@@ -393,9 +396,10 @@ public sealed class App : ApplicationContext
 
     async Task AutoChestTickAsync()
     {
+        if (Interlocked.Exchange(ref _autoChestTickBusy, 1) == 1) return;
         try
         {
-            if (!Auth.IsLoggedIn || Auth.UserInfo is not System.Text.Json.Nodes.JsonObject me) return;
+            if (!Auth.IsLoggedIn || !Cfg.AutoChest || Auth.UserInfo is not System.Text.Json.Nodes.JsonObject me) return;
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             long left = ApiClient.ReadLong(me["left_treasure_chest"]);
             long right = ApiClient.ReadLong(me["right_treasure_chest"]);
@@ -414,11 +418,11 @@ public sealed class App : ApplicationContext
                 right = ApiClient.ReadLong(me["right_treasure_chest"]);
             }
 
-            if (!Cfg.AutoChest) return;
             await TryOpenChestAsync("left", left, now, false);
             await TryOpenChestAsync("right", right, now, true);
         }
         catch (Exception ex) { Log.Write("自动宝箱失败 " + ex.Message); }
+        finally { Interlocked.Exchange(ref _autoChestTickBusy, 0); }
     }
 
     async Task TryOpenChestAsync(string place, long unlockAt, long now, bool right)
@@ -467,8 +471,11 @@ public sealed class App : ApplicationContext
             if (consume > 0) Room.AddConsume(consume);
             // 开箱请求已把本地未上报的点击包含在 click_num 里，服务器总额会吸收它们。
             Room.ResetPendingClicks();
-            await Auth.WhoAmIAsync();
+            // 先本地清掉该侧宝箱并立即刷新 UI；user/me 只做后台校正，不能让慢请求拖住奖励提示。
+            Auth.MarkChestOpened(place);
             PushAuth();
+            try { Pet.BeginInvoke(new Action(Pet.RefreshHud)); } catch { }
+            _ = RefreshAfterChestAsync();
             long id = ApiClient.ReadLong(resp?["asset_id"]);
             string type = ApiClient.ReadString(resp?["asset_type"]);
             Log.Write("开宝箱成功 " + place + " asset=" + id + " type=" + type + " consume=" + consume);
@@ -492,6 +499,19 @@ public sealed class App : ApplicationContext
             return resp;
         }
         finally { Interlocked.Exchange(ref _chestBusy, 0); }
+    }
+
+    /// <summary>开箱成功后后台校准服务器时间戳；失败只记日志，不影响已经到手的宝箱结果。</summary>
+    async Task RefreshAfterChestAsync()
+    {
+        try
+        {
+            await Auth.WhoAmIAsync();
+            Room.SyncServerClicks(Auth.TotalClickCount, Auth.TotalClickConsume);
+            PushAuth();
+            try { Pet.BeginInvoke(new Action(Pet.RefreshHud)); } catch { }
+        }
+        catch (Exception ex) { Log.Write("开宝箱后刷新账号失败 " + ex.Message); }
     }
 
     string GuessAssetType(long id)
