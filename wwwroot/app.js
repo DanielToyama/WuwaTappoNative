@@ -48,6 +48,7 @@
     atlasRole: '',
     atlasRarity: '',
     atlasHidden: new Set(),
+    atlasAllCount: 0,
     atlasOwnedOnly: false,
     atlasSelected: null,
     synthMode: 'up',
@@ -873,6 +874,7 @@
       const lists = await Promise.all(['character_skin', 'accessory', 'emote'].map(t => ensureAtlasOne(t).catch(() => [])));
       const all = lists.flat();
       if (!all.length) throw new Error('目录为空');
+      state.atlasAllCount = all.length;
       return all;
     }
     return ensureAtlasOne(type);
@@ -925,7 +927,7 @@
     setPage(`
       <div class="seg-tabs">
         ${ATLAS_TABS.map(([k, label]) => {
-          const count = k === 'all' ? (items.length || '') : (state.atlas[k]?.length ?? '');
+          const count = k === 'all' ? (state.atlasAllCount || '') : (state.atlas[k]?.length ?? '');
           return `<button class="seg-tab ${type === k ? 'active' : ''}" data-atab="${k}">${label} ${count}</button>`;
         }).join('')}
       </div>
