@@ -263,7 +263,7 @@ public sealed class App : ApplicationContext
         if (Cfg.AutoClickEnabled)
         {
             int period = Math.Max(50, (int)Math.Round(1000.0 / rate));
-            _autoClickTimer.Change(700, period);
+            _autoClickTimer.Change(50, period);
         }
         else _autoClickTimer.Change(Timeout.Infinite, Timeout.Infinite);
     }
@@ -346,7 +346,7 @@ public sealed class App : ApplicationContext
             }
             long now = Environment.TickCount64;
             long last = Interlocked.Read(ref _lastAutoClickFlushMs);
-            if (now - last >= 1000 && Interlocked.CompareExchange(ref _lastAutoClickFlushMs, now, last) == last)
+            if (now - last >= 15000 && Interlocked.CompareExchange(ref _lastAutoClickFlushMs, now, last) == last)
                 _ = Room.FlushClicksNowAsync();
         }
         catch (Exception ex) { Log.Write("自动敲击失败 " + ex.Message); }
