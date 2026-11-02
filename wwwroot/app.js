@@ -1942,12 +1942,12 @@
           </div>
           <div class="setting-item">
             <div><div class="setting-title">自动表情频率上限</div><div class="setting-sub">滚动一秒内最多发送数量，范围 1–20</div></div>
-            <div class="setting-content"><input class="input" id="autoEmoteRate" type="number" min="1" max="20" step="1" value="${s.autoEmoteMaxPerSecond ?? 20}" style="width:86px" ${s.autoEmoteEnabled ? '' : 'disabled'} /><span class="muted">个/秒</span></div>
+            <div class="setting-content"><input class="input" id="autoEmoteRate" type="number" min="1" max="20" step="1" value="${s.autoEmoteMaxPerSecond ?? 20}" style="width:86px" /><span class="muted">个/秒</span></div>
           </div>
           <div class="setting-item">
             <div><div class="setting-title">表情来源</div><div class="setting-sub">快捷栏随机：只从自己的 5 个快捷表情中挑选</div></div>
             <div class="setting-content">
-              <select class="select" id="autoEmoteMode" ${s.autoEmoteEnabled ? '' : 'disabled'}>
+              <select class="select" id="autoEmoteMode">
                 <option value="quickbar" ${(s.autoEmoteMode || 'quickbar') === 'quickbar' ? 'selected' : ''}>快捷栏随机</option>
                 <option value="specific" ${s.autoEmoteMode === 'specific' ? 'selected' : ''}>指定表情</option>
                 <option value="library" ${s.autoEmoteMode === 'library' ? 'selected' : ''}>全部表情库随机</option>
@@ -1957,7 +1957,7 @@
           <div class="setting-item">
             <div><div class="setting-title">指定表情</div><div class="setting-sub">「表情来源」选择指定表情时生效</div></div>
             <div class="setting-content">
-              <select class="select" id="autoEmoteId" style="max-width:260px" ${s.autoEmoteEnabled && s.autoEmoteMode === 'specific' ? '' : 'disabled'}>
+              <select class="select" id="autoEmoteId" style="max-width:260px">
                 <option value="0">请选择表情</option>
               </select>
             </div>
@@ -1968,7 +1968,7 @@
           </div>
           <div class="setting-item">
             <div><div class="setting-title">自动敲击频率</div><div class="setting-sub">每秒产生敲击次数，范围 1–10</div></div>
-            <div class="setting-content"><input class="input" id="autoClickRate" type="number" min="1" max="10" step="1" value="${s.autoClickPerSecond ?? 10}" style="width:86px" ${s.autoClickEnabled ? '' : 'disabled'} /><span class="muted">次/秒</span></div>
+            <div class="setting-content"><input class="input" id="autoClickRate" type="number" min="1" max="10" step="1" value="${s.autoClickPerSecond ?? 10}" style="width:86px" /><span class="muted">次/秒</span></div>
           </div>
           <div class="setting-item">
             <div><div class="setting-title">显示虚拟敲击动作</div><div class="setting-sub">关闭后只响应真实敲击；键位显示器始终不响应虚拟敲击</div></div>
@@ -2159,22 +2159,28 @@
     document.querySelectorAll('[data-kb]').forEach(el => el.onclick = async () => {
       try { await tryCall('settings.set', { keyboardMode: el.dataset.kb }); await syncBoot(); renderSettings(); } catch { }
     });
-    document.getElementById('autoEmoteRate')?.addEventListener('change', async e => {
-      const value = Math.max(1, Math.min(20, Math.round(Number(e.target.value) || 20)));
-      e.target.value = value;
-      try { await tryCall('settings.set', { autoEmoteMaxPerSecond: value }); await syncBoot(); } catch { }
-    });
+    const bindAutoRate = (id, max, key, fallback) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      let timer = 0;
+      const save = async () => {
+        clearTimeout(timer);
+        const value = Math.max(1, Math.min(max, Math.round(Number(el.value) || fallback)));
+        el.value = value;
+        try { await tryCall('settings.set', { [key]: value }); await syncBoot(); } catch { }
+      };
+      el.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(save, 400); });
+      el.addEventListener('change', save);
+      el.addEventListener('blur', save);
+    };
+    bindAutoRate('autoEmoteRate', 20, 'autoEmoteMaxPerSecond', 20);
     document.getElementById('autoEmoteMode')?.addEventListener('change', async e => {
       try { await tryCall('settings.set', { autoEmoteMode: e.target.value }); await syncBoot(); renderSettings(); } catch { }
     });
     document.getElementById('autoEmoteId')?.addEventListener('change', async e => {
       try { await tryCall('settings.set', { autoEmoteId: Number(e.target.value) || 0 }); await syncBoot(); } catch { }
     });
-    document.getElementById('autoClickRate')?.addEventListener('change', async e => {
-      const value = Math.max(1, Math.min(10, Math.round(Number(e.target.value) || 10)));
-      e.target.value = value;
-      try { await tryCall('settings.set', { autoClickPerSecond: value }); await syncBoot(); } catch { }
-    });
+    bindAutoRate('autoClickRate', 10, 'autoClickPerSecond', 10);
     document.querySelectorAll('[data-nudge]').forEach(el => el.onclick = async () => {
       const [dx, dy] = String(el.dataset.nudge || '0,0').split(',').map(Number);
       try {
