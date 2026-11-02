@@ -2159,6 +2159,22 @@
     document.querySelectorAll('[data-kb]').forEach(el => el.onclick = async () => {
       try { await tryCall('settings.set', { keyboardMode: el.dataset.kb }); await syncBoot(); renderSettings(); } catch { }
     });
+    document.getElementById('autoEmoteRate')?.addEventListener('change', async e => {
+      const value = Math.max(1, Math.min(20, Math.round(Number(e.target.value) || 20)));
+      e.target.value = value;
+      try { await tryCall('settings.set', { autoEmoteMaxPerSecond: value }); await syncBoot(); } catch { }
+    });
+    document.getElementById('autoEmoteMode')?.addEventListener('change', async e => {
+      try { await tryCall('settings.set', { autoEmoteMode: e.target.value }); await syncBoot(); renderSettings(); } catch { }
+    });
+    document.getElementById('autoEmoteId')?.addEventListener('change', async e => {
+      try { await tryCall('settings.set', { autoEmoteId: Number(e.target.value) || 0 }); await syncBoot(); } catch { }
+    });
+    document.getElementById('autoClickRate')?.addEventListener('change', async e => {
+      const value = Math.max(1, Math.min(10, Math.round(Number(e.target.value) || 10)));
+      e.target.value = value;
+      try { await tryCall('settings.set', { autoClickPerSecond: value }); await syncBoot(); } catch { }
+    });
     document.querySelectorAll('[data-nudge]').forEach(el => el.onclick = async () => {
       const [dx, dy] = String(el.dataset.nudge || '0,0').split(',').map(Number);
       try {
