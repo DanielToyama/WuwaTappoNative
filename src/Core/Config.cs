@@ -29,6 +29,8 @@ public sealed class Settings
     public bool Topmost { get; set; } = true;
     public bool ClickThrough { get; set; }
     public bool HoverFade { get; set; }
+    /// <summary>悬停隐藏时的不透明度倍数（0.1-1.0，默认 0.4）。</summary>
+    public double HoverFadeOpacity { get; set; } = 0.4;
     public string KeyboardMode { get; set; } = "hidden"; // hidden | letters | wuwa | rhythm | controller
     public bool ShowMappingControls { get; set; } = true;
     public bool HideOtherPets { get; set; }
@@ -116,6 +118,7 @@ public static class ConfigStore
                     else if (!cfg.RhythmMode && cfg.KeyboardMode == "rhythm") cfg.KeyboardMode = "wuwa";
                     cfg.AutoEmoteMaxPerSecond = Math.Clamp(cfg.AutoEmoteMaxPerSecond, 1, 20);
                     cfg.AutoClickPerSecond = Math.Clamp(cfg.AutoClickPerSecond, 1, 10);
+                    cfg.HoverFadeOpacity = Math.Clamp(cfg.HoverFadeOpacity, 0.1, 1.0);
                     if (cfg.AutoEmoteMode != "specific" && cfg.AutoEmoteMode != "library") cfg.AutoEmoteMode = "quickbar";
                     cfg.ServerRegion = NormalizeRegion(cfg.ServerRegion);
                     return cfg;

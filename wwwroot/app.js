@@ -1760,6 +1760,8 @@
     const auth = state.boot?.auth || {};
     const acc = state.boot?.appearance || {};
     const accId = Number(acc.accessoryAssetId || 0);
+    const scalePct = Math.max(25, Math.min(200, Math.round((Number(s.scale) || 1) * 100)));
+    const scalePreset = [25, 50, 75, 100, 125, 150, 200].includes(scalePct);
     const accX = Number(acc.accessoryOffsetX || 0);
     const accY = Number(acc.accessoryOffsetY || 0);
     // 快捷键/菜单改设置会触发 boot 重推；保留滚动位置，别把用户顶回顶部。
@@ -1815,11 +1817,14 @@
         <div class="section">
           <div class="section-title">窗口与桌宠</div>
           <div class="setting-item">
-            <div><div class="setting-title">桌宠大小</div><div class="setting-sub">缩放以猫底部中心为锚点</div></div>
+            <div><div class="setting-title">桌宠大小</div><div class="setting-sub">拖动滑条以 1% 细调，或选择常用档位；缩放以猫底部中心为锚点</div></div>
             <div class="setting-content">
-              <select class="select" id="setScale">
-                ${[0.25, 0.5, 0.75, 1, 1.25, 1.5, 2].map(v => `<option value="${v}" ${Math.abs((s.scale || 1) - v) < 0.01 ? 'selected' : ''}>${Math.round(v * 100)}%</option>`).join('')}
+              <select class="select" id="setScale" style="width:96px">
+                ${[0.25, 0.5, 0.75, 1, 1.25, 1.5, 2].map(v => `<option value="${v}" ${Math.abs((s.scale || 1) - v) < 0.005 ? 'selected' : ''}>${Math.round(v * 100)}%</option>`).join('')}
+                <option value="custom" disabled ${scalePreset ? '' : 'selected'}>自定义</option>
               </select>
+              <input type="range" min="25" max="200" step="1" value="${scalePct}" id="setScaleRange" style="width:180px" />
+              <span id="scaleVal">${scalePct}%</span>
             </div>
           </div>
           <div class="setting-item">
@@ -1840,6 +1845,13 @@
           <div class="setting-item">
             <div><div class="setting-title">鼠标悬停时半透明</div><div class="setting-sub">便于看清桌宠后的内容</div></div>
             <div class="switch ${s.hoverFade ? 'on' : ''}" data-switch="hoverFade"></div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">悬停隐藏程度</div><div class="setting-sub">鼠标停留后降到正常不透明度的百分比，默认 40%</div></div>
+            <div class="setting-content">
+              <input type="range" min="10" max="100" value="${Math.round((s.hoverFadeOpacity ?? 0.4) * 100)}" id="setHoverOpacity" style="width:180px" />
+              <span id="hoverOpacityVal">${Math.round((s.hoverFadeOpacity ?? 0.4) * 100)}%</span>
+            </div>
           </div>
           <div class="setting-item">
             <div><div class="setting-title">允许角色重叠</div><div class="setting-sub">默认开启；关闭后检测到重叠的联机桌宠会自动挪到旁边</div></div>
@@ -1999,11 +2011,11 @@
         <div class="section">
           <div class="section-title">其他</div>
           <div class="setting-item">
-            <div><div class="setting-title">开机自动启动</div><div class="setting-sub">登录 Windows 后自动运行桌宠（仅当前用户，不写系统级启动项）</div></div>
+            <div><div class="setting-title">开机自动启动</div><div class="setting-sub">登录 Windows 后自动运行桌宠（仅当前用户；管理员模式使用最高权限计划任务）</div></div>
             <div class="switch ${s.launchAtLogin ? 'on' : ''}" data-switch="launchAtLogin"></div>
           </div>
           <div class="setting-item">
-            <div><div class="setting-title">以管理员权限启动</div><div class="setting-sub">${s.isElevated ? '当前已是管理员权限' : '当前为普通权限'}；用于统计以管理员权限运行的游戏/程序中的按键。开启会请求 UAC 并重启（开机启动时也会请求）</div></div>
+            <div><div class="setting-title">以管理员权限启动</div><div class="setting-sub">${s.isElevated ? '当前已是管理员权限' : '当前为普通权限'}；用于统计以管理员权限运行的游戏/程序中的按键。开启会请求 UAC 并重启；开机自启由最高权限计划任务完成，登录时不再提示</div></div>
             <div class="switch ${s.runAsAdmin ? 'on' : ''}" data-switch="runAsAdmin"></div>
           </div>
           <div class="setting-item">
@@ -2118,8 +2130,46 @@
 
   function bindSettings() {
     const val = (id) => document.getElementById(id)?.value;
-    document.getElementById('setScale')?.addEventListener('change', async e => {
-      try { await tryCall('settings.set', { scale: Number(e.target.value) }); await syncBoot(); } catch { }
+    const scaleSel = document.getElementById('setScale');
+    const scaleRange = document.getElementById('setScaleRange');
+    const scaleVal = document.getElementById('scaleVal');
+    const scalePresets = [25, 50, 75, 100, 125, 150, 200];
+    let lastScaleSent = 0;
+    const syncScaleSelect = (pct) => {
+      if (!scaleSel) return;
+      scaleSel.value = scalePresets.includes(pct) ? String(pct / 100) : 'custom';
+    };
+    const applyScale = async (pct, final = false) => {
+      pct = Math.max(25, Math.min(200, Math.round(Number(pct) || 100)));
+      if (scaleVal) scaleVal.textContent = pct + '%';
+      if (scaleRange) scaleRange.value = String(pct);
+      syncScaleSelect(pct);
+      if (state.boot?.settings) state.boot.settings.scale = pct / 100;
+      try {
+        const boot = await tryCall('settings.set', { scale: pct / 100 });
+        if (boot?.settings) state.boot = boot;
+        if (final) renderChrome();
+      } catch { }
+    };
+    scaleSel?.addEventListener('change', e => {
+      if (e.target.value === 'custom') return;
+      lastScaleSent = performance.now();
+      applyScale(Number(e.target.value) * 100, true);
+    });
+    scaleRange?.addEventListener('input', () => {
+      const pct = Number(scaleRange.value);
+      if (scaleVal) scaleVal.textContent = pct + '%';
+      syncScaleSelect(pct);
+      // 拖动时约每 80ms 应用一次，既能实时缩放，也不会每移动 1% 就写一次配置。
+      const now = performance.now();
+      if (now - lastScaleSent >= 80) {
+        lastScaleSent = now;
+        applyScale(pct, false);
+      }
+    });
+    scaleRange?.addEventListener('change', () => {
+      lastScaleSent = performance.now();
+      applyScale(Number(scaleRange.value), true);
     });
     const captureW = document.getElementById('captureW');
     const captureH = document.getElementById('captureH');
@@ -2136,6 +2186,11 @@
     op?.addEventListener('input', () => { document.getElementById('opacityVal').textContent = op.value + '%'; });
     op?.addEventListener('change', async () => {
       try { await tryCall('settings.set', { opacity: Number(op.value) / 100 }); await syncBoot(); } catch { }
+    });
+    const hp = document.getElementById('setHoverOpacity');
+    hp?.addEventListener('input', () => { document.getElementById('hoverOpacityVal').textContent = hp.value + '%'; });
+    hp?.addEventListener('change', async () => {
+      try { await tryCall('settings.set', { hoverFadeOpacity: Number(hp.value) / 100 }); await syncBoot(); } catch { }
     });
     document.querySelectorAll('[data-switch]').forEach(el => el.onclick = async () => {
       const key = el.dataset.switch;

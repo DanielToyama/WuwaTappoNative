@@ -24,7 +24,7 @@ public sealed class RemoteCatWindow : Form
 
     PetFrames _frames;
     readonly EmoteBubbleLayer _bubbles = new();
-    System.Windows.Forms.Timer _emoteTimer, _handReset, _hoverFadeTimer;
+    System.Windows.Forms.Timer _emoteTimer, _handReset, _hoverFadeTimer, _hoverFadeAnimTimer;
     int _bodyFrame = 1;
     string _lastAction = "";
     long _lastSkin = -1, _lastPart = -1;
@@ -61,8 +61,20 @@ public sealed class RemoteCatWindow : Form
         _hoverFadeTimer.Tick += (s, e) =>
         {
             _hoverFadeTimer.Stop();
-            if (!_hovered || !_hoverFade || _hoverFadeOn) return;
-            _hoverFadeOn = true;
+            if (!_hovered || !_hoverFade) return;
+            StartHoverFade(true);
+        };
+        _hoverFadeAnimTimer = new System.Windows.Forms.Timer { Interval = 16 };
+        _hoverFadeAnimTimer.Tick += (s, e) =>
+        {
+            double target = _hoverFadeOn ? 1.0 : 0.0;
+            double diff = target - _hoverFadeAmount;
+            if (Math.Abs(diff) < 0.06)
+            {
+                _hoverFadeAmount = target;
+                _hoverFadeAnimTimer.Stop();
+            }
+            else _hoverFadeAmount += Math.Sign(diff) * 0.08;
             UpdateHoverOpacity();
         };
         Reload();
@@ -72,20 +84,24 @@ public sealed class RemoteCatWindow : Form
 
     double _opacity = 1.0, _opacityBase = 1.0;
     bool _clickThrough, _hoverFade, _hovered, _hoverFadeOn, _topmost = true;
+    double _hoverFadeOpacity = 0.4, _hoverFadeAmount;
 
     /// <summary>
     /// 与主桌宠保持一致的窗口选项：不透明度 / 悬停淡出 / 鼠标穿透 / 置顶。
     /// 原版里这些是全局设置，联机成员的窗口也必须跟着变，否则会出现“只有主角能穿透”的割裂感。
     /// </summary>
-    public void SetWindowOptions(double opacity, bool hoverFade, bool clickThrough, bool topmost)
+    public void SetWindowOptions(double opacity, bool hoverFade, bool clickThrough, bool topmost, double hoverFadeOpacity = 0.4)
     {
         _opacityBase = Math.Clamp(opacity, 0.1, 1.0);
+        _hoverFadeOpacity = Math.Clamp(hoverFadeOpacity, 0.1, 1.0);
         bool fadeWasOn = _hoverFade;
         _hoverFade = hoverFade;
         if (!_hoverFade)
         {
             _hoverFadeTimer?.Stop();
+            _hoverFadeAnimTimer?.Stop();
             _hoverFadeOn = false;
+            _hoverFadeAmount = 0;
         }
         else if (!fadeWasOn && _hovered && !_hoverFadeOn)
         {
@@ -100,7 +116,7 @@ public sealed class RemoteCatWindow : Form
         UpdateHoverOpacity();
     }
 
-    /// <summary>鼠标进入/离开：停留 500ms 后才淡出，离开立即恢复。</summary>
+    /// <summary>鼠标进入/离开：停留 500ms 后才淡出，离开时平滑恢复。</summary>
     public void SetHovered(bool hovered)
     {
         if (hovered == _hovered) return;
@@ -109,6 +125,7 @@ public sealed class RemoteCatWindow : Form
         if (!_hoverFade)
         {
             _hoverFadeOn = false;
+            _hoverFadeAmount = 0;
             UpdateHoverOpacity();
             return;
         }
@@ -119,19 +136,32 @@ public sealed class RemoteCatWindow : Form
             return;
         }
         _hoverFadeOn = false;
-        UpdateHoverOpacity();
+        StartHoverFade(false);
+    }
+
+    void StartHoverFade(bool on)
+    {
+        _hoverFadeOn = on;
+        if (!_hoverFadeAnimTimer.Enabled) _hoverFadeAnimTimer.Start();
     }
 
     void UpdateHoverOpacity()
     {
-        double next = EffectiveOpacity(_opacityBase, _hoverFadeOn);
+        double factor = 1.0 - _hoverFadeAmount * (1.0 - _hoverFadeOpacity);
+        double next = Math.Clamp(_opacityBase * factor, 0.1, 1.0);
         if (Math.Abs(next - _opacity) < 0.001) return;
         _opacity = next;
         Compose();
     }
 
-    static double EffectiveOpacity(double baseOpacity, bool hovered)
-        => Math.Clamp(hovered ? baseOpacity * 0.4 : baseOpacity, 0.1, 1.0);
+    /// <summary>鼠标穿透时由主窗口轮询光标位置，判断是否命中的可见猫区域。</summary>
+    public bool ContainsScreenPoint(Point p)
+    {
+        if (!Visible || IsDisposed) return false;
+        int head = (int)Math.Round(Headroom * _scale);
+        int catH = (int)Math.Round(CatH * _scale);
+        return new Rectangle(Left, Top + head, Math.Max(1, Width), Math.Max(1, catH)).Contains(p);
+    }
 
     void ApplyWindowStyles()
     {
@@ -400,6 +430,7 @@ public sealed class RemoteCatWindow : Form
         _emoteTimer.Dispose();
         _handReset.Dispose();
         _hoverFadeTimer.Dispose();
+        _hoverFadeAnimTimer.Dispose();
         _surface.Dispose();
         base.OnClosed(e);
     }

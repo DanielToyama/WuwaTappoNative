@@ -312,6 +312,7 @@ public sealed class PanelWindow : Form
             topmost = _app.Cfg.Topmost,
             clickThrough = _app.Cfg.ClickThrough,
             hoverFade = _app.Cfg.HoverFade,
+            hoverFadeOpacity = _app.Cfg.HoverFadeOpacity,
             keyboardMode = _app.Cfg.KeyboardMode,
             showMappingControls = _app.Cfg.ShowMappingControls,
             hideOtherPets = _app.Cfg.HideOtherPets,
@@ -436,7 +437,10 @@ public sealed class PanelWindow : Form
                 cfg.RunAsAdmin = true;
                 ConfigStore.Save(cfg);
                 if (Elevation.IsElevated)
+                {
+                    AutoStart.Apply(cfg.LaunchAtLogin, true);
                     return new { granted = true, elevated = true, restarting = false, cancelled = false };
+                }
 
                 // 先释放单实例锁，提权后的新进程才能正常启动并读取上面的配置。
                 SingleInstance.ReleaseForRelaunch();
@@ -776,6 +780,7 @@ public sealed class PanelWindow : Form
                         case "topmost": cfg.Topmost = ApiClient.ReadBool(kv.Value); break;
                         case "clickThrough": cfg.ClickThrough = ApiClient.ReadBool(kv.Value); break;
                         case "hoverFade": cfg.HoverFade = ApiClient.ReadBool(kv.Value); break;
+                        case "hoverFadeOpacity": cfg.HoverFadeOpacity = Math.Clamp(ReadDouble(kv.Value), 0.1, 1.0); break;
                         case "keyboardMode":
                         {
                             string mode = ApiClient.ReadString(kv.Value);
@@ -827,7 +832,7 @@ public sealed class PanelWindow : Form
                         case "notifyChestClaimed": cfg.NotifyChestClaimed = ApiClient.ReadBool(kv.Value); break;
                         case "notifyHotkeys": cfg.NotifyHotkeys = ApiClient.ReadBool(kv.Value); break;
                         case "launchAtLogin":
-                            cfg.LaunchAtLogin = AutoStart.Apply(ApiClient.ReadBool(kv.Value));
+                            cfg.LaunchAtLogin = AutoStart.Apply(ApiClient.ReadBool(kv.Value), cfg.RunAsAdmin);
                             break;
                         case "serverRegion":
                         {
@@ -860,6 +865,8 @@ public sealed class PanelWindow : Form
                                 return BootPayload();
                             }
                             cfg.RunAsAdmin = enable;
+                            ConfigStore.Save(cfg);
+                            AutoStart.Apply(cfg.LaunchAtLogin, cfg.RunAsAdmin);
                             break;
                         }
                     }

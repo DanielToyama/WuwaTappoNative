@@ -34,12 +34,12 @@ public sealed class PetWindow : Form
     Point _dragCursor, _dragOrigin;
     readonly EmoteBubbleLayer _bubbles = new();
     readonly EmoteWheelLayer _wheel = new();
-    System.Windows.Forms.Timer _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _hoverFadeTimer, _loadingTimer;
+    System.Windows.Forms.Timer _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _hoverFadeTimer, _loadingTimer, _hoverFadeAnimTimer, _hoverPollTimer;
     long _lastSkin = -1, _lastAcc = -1;
     Image _chestBtnArt, _chestBgArt;
     ContextMenuStrip _menu;
     NotifyIcon _tray;
-    ToolStripMenuItem _topmostItem, _passthroughItem, _passthroughOffItem, _hoverItem;
+    ToolStripMenuItem _topmostItem, _passthroughItem, _passthroughOffItem, _hoverItem, _scaleMenuItem, _opacityMenuItem;
     Icon _icon;
 
     bool _hiddenByHotkey;
@@ -181,8 +181,10 @@ public sealed class PetWindow : Form
         var surface = _surface.Begin(Size.Width, Size.Height);
         if (_frames.Ready)
         {
+            double baseOpacity = Math.Clamp(_cfg.Opacity, 0.1, 1.0);
+            double hoverFactor = 1.0 - _hoverFadeAmount * (1.0 - Math.Clamp(_cfg.HoverFadeOpacity, 0.1, 1.0));
             PetComposer.ComposeInto(surface, _frames, _bodyFrame, _headFrame, info,
-                _cfg.HoverFade && _hoverFadeOn ? 0.4 : Math.Clamp(_cfg.Opacity, 0.1, 1.0));
+                _cfg.HoverFade ? baseOpacity * hoverFactor : baseOpacity);
         }
         else
         {
@@ -246,28 +248,56 @@ public sealed class PetWindow : Form
         return (x, y);
     }
 
-    bool _hovering, _hoverFadeOn;
+    bool _hovering, _hoverFadeTarget;
+    double _hoverFadeAmount;
 
     protected override void OnMouseEnter(EventArgs e)
     {
         base.OnMouseEnter(e);
-        _hovering = true;
-        if (_cfg.HoverFade)
-        {
-            // 停留 500ms 才淡出：只是划过桌宠时不应该闪一下透明度。
-            _hoverFadeTimer.Stop();
-            _hoverFadeTimer.Start();
-        }
-        Compose();
+        SetHovering(true);
     }
     protected override void OnMouseLeave(EventArgs e)
     {
         base.OnMouseLeave(e);
-        _hovering = false;
-        _hoverFadeTimer.Stop();
-        _hoverFadeOn = false;
-        Compose();
+        SetHovering(false);
         _wheelCloseTimer.Start();
+    }
+
+    /// <summary>鼠标穿透时窗口收不到 MouseEnter/Leave，由 PollHover 轮询光标位置。</summary>
+    void SetHovering(bool hovering)
+    {
+        if (_hovering == hovering) return;
+        _hovering = hovering;
+        _hoverFadeTimer.Stop();
+        if (hovering)
+        {
+            // 停留 500ms 才淡出：只是划过桌宠时不应该闪一下透明度。
+            if (_cfg.HoverFade) _hoverFadeTimer.Start();
+            return;
+        }
+        StartHoverFade(false);
+    }
+
+    void PollHover()
+    {
+        if (!IsHandleCreated || IsDisposed) return;
+        var p = Cursor.Position;
+        SetHovering(Visible && !_hiddenByHotkey && Bounds.Contains(p));
+        foreach (var cat in _cats.Values)
+            cat.SetHovered(cat.Visible && !_hiddenByHotkey && cat.ContainsScreenPoint(p));
+    }
+
+    void StartHoverFade(bool on)
+    {
+        if (!_cfg.HoverFade)
+        {
+            _hoverFadeAmount = 0;
+            _hoverFadeAnimTimer.Stop();
+            Compose();
+            return;
+        }
+        _hoverFadeTarget = on;
+        if (!_hoverFadeAnimTimer.Enabled) _hoverFadeAnimTimer.Start();
     }
 
     // ---------- 动画 ----------
@@ -312,10 +342,25 @@ public sealed class PetWindow : Form
         _hoverFadeTimer.Tick += (s, e) =>
         {
             _hoverFadeTimer.Stop();
-            if (!_hovering || !_cfg.HoverFade || _hoverFadeOn) return;
-            _hoverFadeOn = true;
+            if (!_hovering || !_cfg.HoverFade) return;
+            StartHoverFade(true);
+        };
+        _hoverFadeAnimTimer = new System.Windows.Forms.Timer { Interval = 16 };
+        _hoverFadeAnimTimer.Tick += (s, e) =>
+        {
+            double target = _hoverFadeTarget ? 1.0 : 0.0;
+            double diff = target - _hoverFadeAmount;
+            if (Math.Abs(diff) < 0.06)
+            {
+                _hoverFadeAmount = target;
+                _hoverFadeAnimTimer.Stop();
+            }
+            else _hoverFadeAmount += Math.Sign(diff) * 0.08;
             Compose();
         };
+        _hoverPollTimer = new System.Windows.Forms.Timer { Interval = 100 };
+        _hoverPollTimer.Tick += (s, e) => PollHover();
+        _hoverPollTimer.Start();
         _loadingTimer = new System.Windows.Forms.Timer { Interval = 80 };
         _loadingTimer.Tick += (s, e) =>
         {
@@ -535,7 +580,15 @@ public sealed class PetWindow : Form
         if (!_cfg.HoverFade)
         {
             _hoverFadeTimer?.Stop();
-            _hoverFadeOn = false;
+            _hoverFadeAnimTimer?.Stop();
+            _hoverFadeTarget = false;
+            _hoverFadeAmount = 0;
+        }
+        else if (_hovering && !_hoverFadeTarget)
+        {
+            // 运行中打开悬停半透明时，也按正常停留时间开始淡出。
+            _hoverFadeTimer.Stop();
+            _hoverFadeTimer.Start();
         }
         Size = WindowSize();
         ApplyWindowStyles();
@@ -838,23 +891,38 @@ public sealed class PetWindow : Form
         _passthroughOffItem = new ToolStripMenuItem("取消鼠标穿透", null, (s, e) => { _cfg.ClickThrough = false; Save(); ApplySettings(); NotifySettingsChanged(); });
         _menu.Items.Add(_passthroughOffItem);
 
-        var scale = new ToolStripMenuItem("桌宠大小");
+        _scaleMenuItem = new ToolStripMenuItem("桌宠大小");
         foreach (var v in new[] { 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0 })
         {
-            var item = new ToolStripMenuItem((int)(v * 100) + "%") { Checked = Math.Abs(_cfg.Scale - v) < 0.01 };
-            item.Click += (s, e) => { _cfg.Scale = v; Save(); foreach (ToolStripItem x in scale.DropDownItems) ((ToolStripMenuItem)x).Checked = x == item; ApplySettings(); };
-            scale.DropDownItems.Add(item);
+            var item = new ToolStripMenuItem((int)(v * 100) + "%") { Tag = v };
+            double value = v;
+            item.Click += (s, e) =>
+            {
+                _cfg.Scale = value;
+                Save();
+                ApplySettings();
+                // 面板里的滑条要跟着右键菜单的预设档位更新。
+                NotifySettingsChanged();
+            };
+            _scaleMenuItem.DropDownItems.Add(item);
         }
-        _menu.Items.Add(scale);
+        _menu.Items.Add(_scaleMenuItem);
 
-        var opacity = new ToolStripMenuItem("桌宠透明度");
+        _opacityMenuItem = new ToolStripMenuItem("桌宠透明度");
         foreach (var v in new[] { 1.0, 0.9, 0.75, 0.5 })
         {
-            var item = new ToolStripMenuItem((int)(v * 100) + "%") { Checked = Math.Abs(_cfg.Opacity - v) < 0.01 };
-            item.Click += (s, e) => { _cfg.Opacity = v; Save(); foreach (ToolStripItem x in opacity.DropDownItems) ((ToolStripMenuItem)x).Checked = x == item; ApplySettings(); };
-            opacity.DropDownItems.Add(item);
+            var item = new ToolStripMenuItem((int)(v * 100) + "%") { Tag = v };
+            double value = v;
+            item.Click += (s, e) =>
+            {
+                _cfg.Opacity = value;
+                Save();
+                ApplySettings();
+                NotifySettingsChanged();
+            };
+            _opacityMenuItem.DropDownItems.Add(item);
         }
-        _menu.Items.Add(opacity);
+        _menu.Items.Add(_opacityMenuItem);
 
         var kb = new ToolStripMenuItem("桌面键盘");
         foreach (var (key, label) in new[] { ("hidden", "不显示"), ("letters", "26 键"), ("wuwa", "鸣潮专属"), ("rhythm", "音游模式"), ("controller", "手柄") })
@@ -879,6 +947,26 @@ public sealed class PetWindow : Form
         _hoverItem.Checked = _cfg.HoverFade;
         _passthroughOffItem.Visible = _cfg.ClickThrough;
         _passthroughItem.Enabled = !_cfg.ClickThrough;
+        if (_scaleMenuItem != null)
+        {
+            int scalePct = (int)Math.Round(Math.Clamp(_cfg.Scale, 0.25, 2.0) * 100);
+            _scaleMenuItem.Text = $"桌宠大小（{scalePct}%）";
+            foreach (ToolStripItem sub in _scaleMenuItem.DropDownItems)
+            {
+                if (sub is ToolStripMenuItem scaleItem && scaleItem.Tag is double preset)
+                    scaleItem.Checked = Math.Abs(_cfg.Scale - preset) < 0.005;
+            }
+        }
+        if (_opacityMenuItem != null)
+        {
+            int opacityPct = (int)Math.Round(Math.Clamp(_cfg.Opacity, 0.2, 1.0) * 100);
+            _opacityMenuItem.Text = $"桌宠透明度（{opacityPct}%）";
+            foreach (ToolStripItem sub in _opacityMenuItem.DropDownItems)
+            {
+                if (sub is ToolStripMenuItem opacityItem && opacityItem.Tag is double preset)
+                    opacityItem.Checked = Math.Abs(_cfg.Opacity - preset) < 0.005;
+            }
+        }
         foreach (ToolStripItem item in _menu.Items)
         {
             if (item is not ToolStripMenuItem mi || mi.Text != "桌面键盘") continue;
@@ -954,14 +1042,14 @@ public sealed class PetWindow : Form
             if (_cats.TryGetValue(id, out var existing))
             {
                 existing.SetScale(DpiScale * (float)_cfg.Scale);
-                existing.SetWindowOptions(_cfg.Opacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost);
+                existing.SetWindowOptions(_cfg.Opacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
                 existing.RefreshMember();
             }
             else
             {
                 var cat = new RemoteCatWindow(m, _loader, _catalog, _store);
                 cat.SetScale(DpiScale * (float)_cfg.Scale);
-                cat.SetWindowOptions(_cfg.Opacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost);
+                cat.SetWindowOptions(_cfg.Opacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
                 cat.Location = StoredCatPoint(id) ?? DefaultCatPoint();
                 cat.Moved += p =>
                 {
@@ -1203,7 +1291,7 @@ public sealed class PetWindow : Form
         foreach (var c in _cats.Values)
         {
             c.SetScale(s);
-            c.SetWindowOptions(_cfg.Opacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost);
+            c.SetWindowOptions(_cfg.Opacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
         }
     }
 
@@ -1258,7 +1346,7 @@ public sealed class PetWindow : Form
         _captureFrame?.Dispose();
         _captureFrame = null;
         _capture = null;
-        foreach (var t in new[] { _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _hoverFadeTimer, _loadingTimer, _composeTimer }) { try { t?.Stop(); t?.Dispose(); } catch { } }
+        foreach (var t in new[] { _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _hoverFadeTimer, _hoverFadeAnimTimer, _hoverPollTimer, _loadingTimer, _composeTimer }) { try { t?.Stop(); t?.Dispose(); } catch { } }
         foreach (var c in _cats.Values.ToList()) { try { c.Close(); c.Dispose(); } catch { } }
         _cats.Clear();
         _surface.Dispose();

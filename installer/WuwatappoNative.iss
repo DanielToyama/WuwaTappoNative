@@ -1,6 +1,6 @@
 #define MyAppName "Wuwatappo Native"
 #ifndef MyVersion
-  #define MyVersion "0.0.29"
+  #define MyVersion "0.0.31"
 #endif
 
 [Setup]
@@ -40,6 +40,10 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\WuwatappoNative.exe"; Worki
 
 [Run]
 Filename: "{app}\WuwatappoNative.exe"; Description: "启动 {#MyAppName}"; Flags: nowait postinstall skipifsilent
+
+[UninstallRun]
+Filename: "{sys}\schtasks.exe"; Parameters: "/Delete /TN ""WuwatappoNative"" /F"; Flags: runhidden; RunOnceId: "DeleteAutoStartTask"
+Filename: "{sys}\reg.exe"; Parameters: "delete ""HKCU\Software\Microsoft\Windows\CurrentVersion\Run"" /v WuwatappoNative /f"; Flags: runhidden; RunOnceId: "DeleteRunValue"
 
 [Code]
 function InitializeSetup(): Boolean;
