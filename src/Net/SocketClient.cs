@@ -27,13 +27,17 @@ public sealed class SocketClient : IDisposable
     public event Action<string> Closed;
     public event Action<string, JsonNode> Event;
 
-    public async Task ConnectAsync(string token, string roomNo)
+    public async Task ConnectAsync(string token, string roomNo, string apiBaseUrl = null)
     {
         _ws = new ClientWebSocket();
         _ws.Options.CollectHttpResponseDetails = true;
         _cts = new CancellationTokenSource();
-        var uri = new Uri("wss://api-mc-wuwatappo.kurogames-global.com/socket.io/?EIO=4&transport=websocket"
-            + "&token=" + Uri.EscapeDataString(token) + "&rm=" + Uri.EscapeDataString(roomNo ?? ""));
+        string baseUrl = string.IsNullOrWhiteSpace(apiBaseUrl) ? ApiClient.DefaultBaseUrl : apiBaseUrl;
+        var baseUri = new Uri(baseUrl);
+        var uri = new UriBuilder("wss", baseUri.Host, baseUri.Port, "socket.io/")
+        {
+            Query = "EIO=4&transport=websocket&token=" + Uri.EscapeDataString(token) + "&rm=" + Uri.EscapeDataString(roomNo ?? "")
+        }.Uri;
         await _ws.ConnectAsync(uri, _cts.Token).ConfigureAwait(false);
         Log.Write("socket 已连接 " + roomNo);
         _pump = Task.Run(PumpAsync);

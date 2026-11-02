@@ -198,6 +198,46 @@ public sealed class App : ApplicationContext
         }
     }
 
+    /// <summary>切换服务器区服（cn / global）：登出账号、换 BaseUrl、重载目录与外观。</summary>
+    public async Task SwitchServerRegionAsync(string region)
+    {
+        region = string.Equals(region, "global", StringComparison.OrdinalIgnoreCase) ? "global" : "cn";
+        if (Cfg.ServerRegion == region && Auth.Api.BaseUrl == ApiClient.ResolveBaseUrl(region))
+            return;
+
+        Log.Write($"正在切换服务器区服至：{region}");
+        Cfg.ServerRegion = region;
+        ConfigStore.Save(Cfg);
+
+        try { await Room.LeaveAsync(); } catch { }
+        try { await Auth.LogoutAsync(); } catch { }
+
+        Auth.UpdateBaseUrl(ApiClient.ResolveBaseUrl(region));
+
+        try
+        {
+            await Catalog.LoadAsync(Auth.Api, msg => Log.Write("目录：" + msg));
+            Pet.BeginInvoke(new Action(() => { Pet.ReloadAppearance(); Pet.RefreshMembers(); }));
+        }
+        catch (Exception ex)
+        {
+            Log.Write("切换区服后加载目录失败：" + ex.Message);
+        }
+
+        try
+        {
+            if (Panel != null && Panel.IsHandleCreated)
+            {
+                Panel.BeginInvoke(new Action(() =>
+                {
+                    Panel.PushBoot();
+                    Panel.Push("toast", new { text = $"已切换至{(region == "global" ? "国际服" : "国服")}，请重新登录", kind = "ok" });
+                }));
+            }
+        }
+        catch { }
+    }
+
     /// <summary>登录/启动/重新开启自动宝箱后立刻检查一次，不等 30 秒周期。</summary>
     public void CheckAutoChestNow() => _ = AutoChestTickAsync();
 
@@ -458,7 +498,7 @@ public sealed class App : ApplicationContext
             loggedIn = Auth.IsLoggedIn,
             nickname = Auth.Nickname,
             cuid = Auth.Cuid,
-            uid = Auth.UserId,
+            uid = Auth.PlayerId > 0 ? Auth.PlayerId : Auth.UserId,
             clicks = Room.AvailableClicks,
             clickTotal = Room.DisplayClicks,
             clickConsume = Room.ServerConsume,

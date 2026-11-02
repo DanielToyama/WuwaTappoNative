@@ -16,19 +16,33 @@ namespace WuwatappoNative.Net;
 
 public sealed class TokenEntry
 {
-    public TokenEntry(string name, string value)
+    public TokenEntry(string name, string value, string region = "", string sourcePath = "")
     {
         Name = name;
         Value = value;
+        Region = region;
+        SourcePath = sourcePath;
     }
 
     public string Name { get; }
     public string Value { get; }
+    public string Region { get; set; }
+    public string SourcePath { get; set; }
+}
+
+public sealed class ForeignSessionInfo
+{
+    public string AccessToken { get; set; } = "";
+    public string Cuid { get; set; } = "";
+    public string Puid { get; set; } = "";
+    public string UserId { get; set; } = "";
+    public string UserName { get; set; } = "";
 }
 
 public sealed class ExtractionResult
 {
     public List<TokenEntry> Tokens { get; } = new();
+    public ForeignSessionInfo? ForeignSession { get; set; }
     public int CookieCount { get; set; }
     public bool SawV20 { get; set; }
     public bool TokenDecryptFailed { get; set; }
@@ -52,7 +66,7 @@ public sealed class TokenExtractionException : Exception
 /// </summary>
 public static class OfficialTokenReader
 {
-    static readonly string[] ClientProcessNames = { "WuwaTappo" };
+    static readonly string[] ClientProcessNames = { "WuwaTappo", "WuwaTappoGlobal", "WuwaTappo-global" };
 
     /// <summary>清理以前异常退出留下的 cookie 副本，避免敏感数据长期留在临时目录。</summary>
     public static void CleanupStaleDumps(TimeSpan? olderThan = null)
@@ -133,7 +147,7 @@ public static class OfficialTokenReader
     /// 提取 token。传入 dataRoot 仅用于自动化测试（一个包含 Local State 和 Default\Network\Cookies
     /// 或直接包含 Cookies 的临时目录）；正常使用传 null。
     /// </summary>
-    public static ExtractionResult Extract(Action<string>? log = null, string? dataRoot = null)
+    public static ExtractionResult Extract(Action<string>? log = null, string? dataRoot = null, string? preferredRegion = null)
     {
         if (dataRoot == null)
         {
@@ -149,7 +163,7 @@ public static class OfficialTokenReader
             }
         }
 
-        string root = dataRoot ?? FindDataRoot()
+        string root = (!string.IsNullOrWhiteSpace(dataRoot) ? dataRoot : FindDataRoot(preferredRegion))
             ?? throw new TokenExtractionException(
                 "没有找到官方客户端数据。请先启动并登录官方 WuwaTappo 客户端一次，然后关闭它再试。");
 
@@ -159,7 +173,8 @@ public static class OfficialTokenReader
         if (!File.Exists(localState))
             throw new TokenExtractionException("缺少 Local State，无法解密。请确认使用的是同一 Windows 用户。");
 
-        log?.Invoke("已找到官方客户端数据。");
+        string dirName = Path.GetFileName(Path.GetDirectoryName(root) ?? root);
+        log?.Invoke($"已找到官方客户端数据（{dirName}）。");
         string dump = Path.Combine(Path.GetTempPath(), "WuwatappoTokenExtractor-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dump);
         var result = new ExtractionResult();
@@ -176,8 +191,11 @@ public static class OfficialTokenReader
 
             log?.Invoke("正在解密本地登录数据…");
             byte[] key = LoadKey(Path.Combine(dump, "Local State"));
-            ReadTokens(cookieCopy, key, result);
-            log?.Invoke($"读取到 {result.CookieCount} 条 cookie，找到 {result.Tokens.Count} 个 token。");
+            string region = Path.GetFileName(root).Contains("global", StringComparison.OrdinalIgnoreCase) ? "global" : "cn";
+            ReadTokens(cookieCopy, key, result, region, cookies);
+            result.ForeignSession = ReadForeignSession(root);
+            log?.Invoke($"读取到 {result.CookieCount} 条 cookie，找到 {result.Tokens.Count} 个 token" +
+                (result.ForeignSession != null ? "，找到官方通行证会话" : "") + "。");
             return result;
         }
         finally
@@ -195,9 +213,24 @@ public static class OfficialTokenReader
         }
     }
 
-    public static string? FindDataRoot()
+    public static string? FindDataRoot(string? preferredRegion = null)
     {
-        string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var localDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            string special = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            if (!string.IsNullOrWhiteSpace(special) && Directory.Exists(special))
+                localDirs.Add(special);
+        }
+        catch { }
+        try
+        {
+            string? env = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+            if (!string.IsNullOrWhiteSpace(env) && Directory.Exists(env))
+                localDirs.Add(env);
+        }
+        catch { }
+
         var candidates = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -208,19 +241,47 @@ public static class OfficialTokenReader
                 candidates.Add(root);
         }
 
-        AddCandidate(Path.Combine(local, "com.kuro.wuwatappo.cn"));
-        try
+        foreach (var local in localDirs)
         {
-            foreach (var dir in Directory.EnumerateDirectories(local))
+            if (string.Equals(preferredRegion, "global", StringComparison.OrdinalIgnoreCase))
             {
-                string name = Path.GetFileName(dir);
-                if (name.StartsWith("com.kuro", StringComparison.OrdinalIgnoreCase) ||
-                    name.Contains("wuwatappo", StringComparison.OrdinalIgnoreCase) ||
-                    name.Contains("wuwa", StringComparison.OrdinalIgnoreCase))
-                    AddCandidate(dir);
+                AddCandidate(Path.Combine(local, "com.kuro.wuwatappo.global"));
+                AddCandidate(Path.Combine(local, "com.kuro.wuwatappo.cn"));
             }
+            else if (string.Equals(preferredRegion, "cn", StringComparison.OrdinalIgnoreCase))
+            {
+                AddCandidate(Path.Combine(local, "com.kuro.wuwatappo.cn"));
+                AddCandidate(Path.Combine(local, "com.kuro.wuwatappo.global"));
+            }
+            else
+            {
+                bool hasGlobal = Directory.Exists(Path.Combine(local, "com.kuro.wuwatappo.global"));
+                bool hasCn = Directory.Exists(Path.Combine(local, "com.kuro.wuwatappo.cn"));
+                if (hasGlobal && !hasCn)
+                {
+                    AddCandidate(Path.Combine(local, "com.kuro.wuwatappo.global"));
+                    AddCandidate(Path.Combine(local, "com.kuro.wuwatappo.cn"));
+                }
+                else
+                {
+                    AddCandidate(Path.Combine(local, "com.kuro.wuwatappo.cn"));
+                    AddCandidate(Path.Combine(local, "com.kuro.wuwatappo.global"));
+                }
+            }
+
+            try
+            {
+                foreach (var dir in Directory.EnumerateDirectories(local))
+                {
+                    string name = Path.GetFileName(dir);
+                    if (name.StartsWith("com.kuro", StringComparison.OrdinalIgnoreCase) ||
+                        name.Contains("wuwatappo", StringComparison.OrdinalIgnoreCase) ||
+                        name.Contains("wuwa", StringComparison.OrdinalIgnoreCase))
+                        AddCandidate(dir);
+                }
+            }
+            catch { }
         }
-        catch { }
 
         return candidates.FirstOrDefault();
     }
@@ -283,7 +344,7 @@ public static class OfficialTokenReader
         }
     }
 
-    static void ReadTokens(string cookieDbPath, byte[] key, ExtractionResult result)
+    static void ReadTokens(string cookieDbPath, byte[] key, ExtractionResult result, string region = "", string sourcePath = "")
     {
         using var conn = new SqliteConnection("Data Source=" + cookieDbPath + ";Pooling=False");
         conn.Open();
@@ -300,7 +361,7 @@ public static class OfficialTokenReader
             byte[]? encrypted = reader.IsDBNull(2) ? null : reader.GetValue(2) as byte[];
             if (encrypted == null || encrypted.Length == 0)
             {
-                if (!string.IsNullOrEmpty(plain)) result.Tokens.Add(new TokenEntry(name, plain));
+                if (!string.IsNullOrEmpty(plain)) result.Tokens.Add(new TokenEntry(name, plain, region, sourcePath));
                 continue;
             }
 
@@ -310,8 +371,86 @@ public static class OfficialTokenReader
                 result.TokenDecryptFailed |= !v20;
                 continue;
             }
-            result.Tokens.Add(new TokenEntry(name, text));
+            result.Tokens.Add(new TokenEntry(name, text, region, sourcePath));
         }
+    }
+
+    public static ForeignSessionInfo? ReadForeignSession(string root)
+    {
+        try
+        {
+            string leveldbDir = Path.Combine(root, "Default", "Local Storage", "leveldb");
+            if (!Directory.Exists(leveldbDir)) return null;
+
+            byte[] needle = Encoding.UTF8.GetBytes("__KrSDK_USER_INFO__");
+            foreach (var file in Directory.EnumerateFiles(leveldbDir)
+                         .OrderByDescending(f => { try { return File.GetLastWriteTimeUtc(f); } catch { return DateTime.MinValue; } }))
+            {
+                string ext = Path.GetExtension(file).ToLowerInvariant();
+                if (ext != ".log" && ext != ".ldb") continue;
+                try { if (new FileInfo(file).Length > 64L * 1024 * 1024) continue; } catch { continue; }
+
+                byte[] data;
+                try { data = File.ReadAllBytes(file); } catch { continue; }
+
+                int idx = IndexOfBytes(data, needle);
+                if (idx < 0) continue;
+
+                int jstart = -1;
+                for (int i = idx + needle.Length; i < Math.Min(data.Length, idx + needle.Length + 50); i++)
+                {
+                    if (data[i] == (byte)'{') { jstart = i; break; }
+                }
+                if (jstart < 0) continue;
+
+                int depth = 0;
+                int jend = -1;
+                for (int i = jstart; i < Math.Min(data.Length, jstart + 1500); i++)
+                {
+                    if (data[i] == (byte)'{') depth++;
+                    else if (data[i] == (byte)'}')
+                    {
+                        depth--;
+                        if (depth == 0) { jend = i; break; }
+                    }
+                }
+                if (jend < 0) continue;
+
+                string json = Encoding.UTF8.GetString(data, jstart, jend - jstart + 1);
+                using var doc = JsonDocument.Parse(json);
+                var elem = doc.RootElement;
+                string at = elem.TryGetProperty("access_token", out var pAt) ? pAt.GetString() ?? "" : "";
+                string cuid = elem.TryGetProperty("cuid", out var pCuid) ? pCuid.GetString() ?? "" : "";
+                if (!string.IsNullOrEmpty(at) && !string.IsNullOrEmpty(cuid))
+                {
+                    return new ForeignSessionInfo
+                    {
+                        AccessToken = at,
+                        Cuid = cuid,
+                        Puid = elem.TryGetProperty("puid", out var pPuid) ? pPuid.GetString() ?? cuid : cuid,
+                        UserId = elem.TryGetProperty("userId", out var pUid) ? pUid.GetString() ?? cuid : cuid,
+                        UserName = elem.TryGetProperty("userName", out var pUname) ? pUname.GetString() ?? "" : ""
+                    };
+                }
+            }
+        }
+        catch { }
+        return null;
+    }
+
+    static int IndexOfBytes(byte[] source, byte[] pattern)
+    {
+        if (source.Length < pattern.Length) return -1;
+        for (int i = 0; i <= source.Length - pattern.Length; i++)
+        {
+            bool match = true;
+            for (int j = 0; j < pattern.Length; j++)
+            {
+                if (source[i + j] != pattern[j]) { match = false; break; }
+            }
+            if (match) return i;
+        }
+        return -1;
     }
 
     static bool TryDecrypt(byte[] key, byte[] encrypted, out string? text, out bool v20)

@@ -66,7 +66,7 @@ pwsh -File token-extractor/build.ps1
 
 ## 实现摘要
 
-1. 官方客户端是 WebView2 应用，数据在 `%LOCALAPPDATA%\com.kuro.wuwatappo.cn\EBWebView`。
+1. 官方客户端是 WebView2 应用，数据在 `%LOCALAPPDATA%\com.kuro.wuwatappo.cn\EBWebView`（国服）或 `%LOCALAPPDATA%\com.kuro.wuwatappo.global\EBWebView`（国际服）。
 2. `Local State` 中的 `os_crypt.encrypted_key` 由 Windows DPAPI 保护：Base64 → 去掉 `DPAPI` 前缀 → `CryptUnprotectData`。
 3. `Default\Network\Cookies` 是 SQLite 数据库；`v10/v11` 为 AES-256-GCM：`nonce=[3:15]`、`ciphertext=[15:-16]`、`tag=[-16:]`。
 4. 解密明文前 32 字节是域名哈希，去掉后取 cookie 值。
