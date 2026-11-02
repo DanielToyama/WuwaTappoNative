@@ -1,6 +1,6 @@
 #define MyAppName "Wuwatappo Native"
 #ifndef MyVersion
-  #define MyVersion "0.0.28"
+  #define MyVersion "0.0.29"
 #endif
 
 [Setup]
