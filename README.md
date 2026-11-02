@@ -39,7 +39,9 @@ WuwaTappo 1.0.2（库洛《鸣潮》官方桌宠）的 Windows 原生复刻实�
 > 本项目与库洛游戏无任何关联。游戏素材（角色、配件、表情、UI 图标）版权归库洛游戏所有。
 > 仓库随附的少量素材仅用于保证构建结果一致，不构成本项目对素材的任何授权，详见 [NOTICE.md](NOTICE.md)。
 
-本版本（0.0.27）亮点：
+本版本（0.0.28）亮点：
+
+- **单文件与 Inno Setup 安装包**：发布产物改为单个自包含 `WuwatappoNative.exe`，不再有外层启动器和 `app\` DLL 目录；安装包使用 Inno Setup，安装前会检测 Native 是否正在运行，并提示确认关闭后继续。
 
 - **国际服支持**：可在登录页/设置中切换国服（CN）与国际服（Global），REST/Socket/素材目录跟随区服切换；国际服支持继承官方客户端通行证登录，官方客户端 Cookie token 失效时会自动用通行证换取新 token。切换区服会退出当前账号并要求重新登录。
 
@@ -88,10 +90,10 @@ WuwaTappo 1.0.2（库洛《鸣潮》官方桌宠）的 Windows 原生复刻实�
 - **国际服 / 国服切换**：登录页和设置中可选择区服；切换后使用对应官方 API、Socket 与素材域名。国际服优先使用官方通行证继承登录，Cookie token 不可用时自动换取新 token。
 - **配件/头饰**：点击当前已佩戴的头饰可取消；配件页签右侧新增「摘下头饰」按钮，同时清除本地与云端配件。设置最底部新增「检查更新」。
 - **头饰位置微调**：设置 → 头饰位置微调，上下左右按钮每次移动 1 逻辑像素；按头饰 id 分别保存，支持一键归零。
-- **单一启动入口**：绿色版/MSI 安装目录最外层只保留一个 `WuwatappoNative.exe` 启动器；真正的自包含程序和 DLL 位于 `app\` 子目录，用户不会再误点成百上千个 DLL 里的文件。
+- **单文件发布**：绿色版和安装目录都只有一个 `WuwatappoNative.exe`，运行时把内置素材解压到临时目录；不再有外层启动器和 `app\` DLL 目录。
 - **面板可真正关闭**：标题栏新增关闭按钮；关闭会销毁 WebView2 并解除房间/账号事件订阅；已移除 `OnFormClosing` 里“用户关闭一律改成 Hide”的旧逻辑，X 会真正关闭。
 - **一键选择跨分类**：合成页「一键选择」不再只看当前类型页签，会搜索角色/配件/表情三类材料；已有槽位时按槽位的类型与稀有度填满，并自动切换页签到实际选中的材料。
-- **Release 说明更完整**：tag 发布时自动把本版本 commit 列表和资产说明写入 Release 页面（MSI=安装包、portable=绿色版、token 提取器=官方登录凭证）。
+- **Release 说明更完整**：tag 发布时自动把本版本 commit 列表和资产说明写入 Release 页面（Setup=安装包、portable=绿色版、token 提取器=官方登录凭证）。
 - **设置页 +10000**：对齐原版 Helper 的点击数补充按钮；本地先记账并立即尝试 `cr` 上报，500ms 防连点保护。
 - **图标统一**：app.ico 按 16/24/32/48/64/128/256 分别绘制，设置面板的任务栏图标和托盘图标都与系统图标同尺寸，不再是一颗被透明边缩小的头像。
 - **设置全会同步**：不透明度、悬停半透明、置顶、鼠标穿透对所有联机成员桌宠一起生效。
@@ -116,21 +118,17 @@ dotnet build -c Release
 发布/打包自包含版本（不要求目标机器安装 .NET Runtime）：
 
 ```powershell
-pwsh -File installer/build.ps1 -Version 0.0.27
+pwsh -File installer/build.ps1 -Version 0.0.28
 ```
 
-发布目录从 0.0.15 起采用“外层启动器 + 内部程序”结构：
+发布目录采用单文件结构：
 
 ```text
-publish/app-0.0.27/
-  WuwatappoNative.exe      ← 双击这个（外层启动器）
-  app/
-    WuwatappoNative.exe    ← 真正的自包含程序
-    *.dll / assets / data / wwwroot
+publish/app-0.0.28/
+  WuwatappoNative.exe      ← 单文件自包含程序（内置素材）
 ```
 
-> 直接对主项目执行 `dotnet publish` 只会得到 `app/` 里的内部程序；外层启动器、MSI 和绿色版由
-> `installer/build.ps1` 一起生成。外层启动器使用 Windows 10/11 自带的 .NET Framework 4.x，内部程序仍是自包含 .NET 8。
+> `installer/build.ps1` 会把主程序发布为单个自包含 exe，并用 Inno Setup 生成安装包和绿色版 ZIP。
 > `bin\Release\net8.0-windows\win-x64\` 是 RID 中间产物，可以直接删除。
 
 ### 随仓库分发的素材
@@ -234,18 +232,17 @@ tappoNativeGit/
 ├── wwwroot/                      面板前端：index.html、style.css、app.js
 ├── assets/                       默认角色帧、宝箱 UI 底图、app.ico（随仓库分发）
 ├── data/appearance_asset.json    外观目录离线副本（随仓库分发）
-├── launcher/                     外层单 exe 启动器（.NET Framework，仅负责启动 app\ 内程序）
 ├── token-extractor/              独立单文件 token 提取器（C#/WinForms）
 └── installer/
-    ├── build.ps1                 发布 + 生成 WiX 源 + 打包 MSI/ZIP + token 工具 ZIP
-    └── gen-wxs.py                按 publish 目录生成 product.wxs
+    ├── build.ps1                 发布单文件 + 生成 Inno Setup 安装包/绿色版 + token 工具 ZIP
+    └── WuwatappoNative.iss       Inno Setup 安装脚本（检测 Native 运行并提示关闭）
 ```
 
 主要实现细节（渲染几何、合成规则、联机事件语义）见源码注释。
 
 ---
 
-## 本版本特色（0.0.27）
+## 本版本特色（0.0.28）
 
 ### 面板分辨率、单实例与首次启动
 

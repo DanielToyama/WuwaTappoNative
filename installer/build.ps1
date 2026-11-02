@@ -1,66 +1,41 @@
 ﻿param(
   [string]$Configuration = "Release",
-  [string]$Version = "0.0.27"
+  [string]$Version = "0.0.28"
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
 $publishDir = "publish/app-$Version"
-$appDir = "$publishDir/app"
 $distDir = "dist"
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 
-Write-Host "== publish $Version (win-x64, self-contained) =="
+Write-Host "== publish $Version (win-x64, self-contained single file) =="
 Remove-Item -Recurse -Force $publishDir -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $publishDir | Out-Null
 dotnet publish -c $Configuration -r win-x64 --self-contained true `
-  -p:DebugType=none -p:DebugSymbols=false -o $appDir -v q --nologo
+  -p:PublishSingleFile=true `
+  -p:IncludeNativeLibrariesForSelfExtract=true `
+  -p:IncludeAllContentForSelfExtract=true `
+  -p:EnableCompressionInSingleFile=true `
+  -p:DebugType=none -p:DebugSymbols=false -o $publishDir -v q --nologo
 
-if (-not (Test-Path "$appDir/WuwatappoNative.exe")) { throw "publish 未生成内部 exe" }
-$size = (Get-Item "$appDir/WuwatappoNative.exe").Length
-if ($size -lt 100KB) { throw "内部 exe 异常偏小: $size" }
+$exe = Join-Path $publishDir 'WuwatappoNative.exe'
+if (-not (Test-Path -LiteralPath $exe)) { throw "publish 未生成 WuwatappoNative.exe" }
+$size = (Get-Item -LiteralPath $exe).Length
+if ($size -lt 10MB) { throw "单文件 exe 异常偏小: $size" }
 
-Write-Host "== build outer launcher =="
-$cscCandidates = @(
-  (Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'),
-  (Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe')
+Write-Host "== build Inno Setup installer =="
+$isccCandidates = @(
+  (Join-Path $env:LOCALAPPDATA 'Programs\Inno Setup 6\ISCC.exe'),
+  (Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe'),
+  (Join-Path ${env:ProgramFiles(x86)} 'Inno Setup 6\ISCC.exe')
 )
-$csc = $cscCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
-if (-not $csc) { throw "缺少 .NET Framework 4.x csc.exe，无法生成外层启动器" }
-$launcher = Join-Path $publishDir 'WuwatappoNative.exe'
-$launcherSource = Join-Path $root 'launcher\Launcher.cs'
-$versionInfo = Join-Path $env:TEMP "WuwatappoNativeLauncher-$Version.cs"
-$icon = Join-Path $root 'assets\app.ico'
-$versionInfoText = @"
-using System.Reflection;
-[assembly: AssemblyTitle("Wuwatappo Native Launcher")]
-[assembly: AssemblyProduct("Wuwatappo Native")]
-[assembly: AssemblyCompany("Wuwatappo Native")]
-[assembly: AssemblyVersion("$($Version).0")]
-[assembly: AssemblyFileVersion("$($Version).0")]
-"@
-[IO.File]::WriteAllText($versionInfo, $versionInfoText, [Text.UTF8Encoding]::new($false))
-try {
-  & $csc /nologo /target:winexe /optimize+ /platform:x64 /codepage:65001 `
-    "/win32icon:$icon" "/out:$launcher" `
-    /reference:System.dll /reference:System.Windows.Forms.dll `
-    $launcherSource $versionInfo
-  if ($LASTEXITCODE -ne 0) { throw "外层启动器编译失败" }
-}
-finally {
-  Remove-Item -Force $versionInfo -ErrorAction SilentlyContinue
-}
-if (-not (Test-Path -LiteralPath $launcher)) { throw "外层启动器未生成" }
-if ((Get-Item -LiteralPath $launcher).Length -gt 1MB) { throw "外层启动器异常偏大" }
-
-Write-Host "== generate WiX source =="
-python installer/gen-wxs.py $Version
-
-Write-Host "== build MSI =="
-$wix = ".wix/wix.exe"
-if (-not (Test-Path $wix)) { throw "缺少 WiX：先运行 dotnet tool install --tool-path .wix wix --version 5.0.2" }
-& $wix build installer/product.wxs -o "$distDir/WuwatappoNative-$Version-x64.msi"
+$iscc = $isccCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+if (-not $iscc) { $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source }
+if (-not $iscc) { throw "缺少 Inno Setup 6 的 ISCC.exe，请先安装 Inno Setup 6" }
+& $iscc "/DMyVersion=$Version" (Join-Path $root 'installer\WuwatappoNative.iss')
+if ($LASTEXITCODE -ne 0) { throw "Inno Setup 编译失败" }
 
 Write-Host "== portable zip =="
 $zip = "$distDir/WuwatappoNative-$Version-portable.zip"
