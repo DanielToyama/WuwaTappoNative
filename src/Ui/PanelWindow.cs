@@ -26,6 +26,8 @@ public sealed class PanelWindow : Form
     bool _ready;
     bool _fitting;
     bool _detached;
+    ReleaseInfo _updateInfo;
+    bool _updateChecked;
 
     public PanelWindow(App app)
     {
@@ -209,6 +211,16 @@ public sealed class PanelWindow : Form
         try { _web.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(new { evt, data })); } catch { }
     }
 
+    async Task CheckUpdateAsync()
+    {
+        if (_updateChecked) return;
+        _updateChecked = true;
+        var current = typeof(PanelWindow).Assembly.GetName().Version ?? new Version(0, 0, 0);
+        var info = await UpdateChecker.CheckAsync(current);
+        if (info == null) return;
+        _updateInfo = info;
+        Push("update", info);
+    }
     async void BuildWebView()
     {
         _web = new WebView2 { Dock = DockStyle.Fill, DefaultBackgroundColor = Color.FromArgb(251, 237, 213) };
@@ -238,7 +250,11 @@ public sealed class PanelWindow : Form
             core.NavigationCompleted += (s, e) =>
             {
                 _ready = e.IsSuccess;
-                if (_ready) Push("boot", BootPayload());
+                if (_ready)
+                {
+                    Push("boot", BootPayload());
+                    _ = CheckUpdateAsync();
+                }
             };
             // 带版本号查询串，避免升级后 WebView2 仍使用旧 index.html/app.js 缓存。
             string panelVersion = typeof(PanelWindow).Assembly.GetName().Version?.ToString(3) ?? "0";
@@ -287,6 +303,7 @@ public sealed class PanelWindow : Form
         room = _app.RoomState(),
         disclaimerShown = _app.Cfg.DisclaimerShown,
         uacPromptShown = _app.Cfg.UacPromptShown,
+        update = _updateInfo,
         settings = new
         {
             scale = _app.Cfg.Scale,
@@ -839,6 +856,15 @@ public sealed class PanelWindow : Form
 
             case "presets.delete":
                 return await auth.Api.DeleteAsync("api/frontend/presets", new { preset_id = ApiClient.ReadLong(data["id"]) });
+
+            case "update.check":
+            {
+                var current = typeof(PanelWindow).Assembly.GetName().Version ?? new Version(0, 0, 0);
+                var info = await UpdateChecker.CheckAsync(current, true);
+                _updateInfo = info;
+                Push("update", info);
+                return new { available = info != null, update = info, currentVersion = current.ToString(3) };
+            }
 
             case "open.log":
                 System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("explorer.exe", "/select,\"" + Paths.LogFile + "\""));

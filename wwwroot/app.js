@@ -38,6 +38,8 @@
     bagRecentIds: [],
     disclaimerOpen: false,
     uacPromptOpen: false,
+    update: null,
+    updateDismissed: false,
     favors: new Set(),
     catalog: {},
     atlas: {},
@@ -165,6 +167,7 @@
     try {
       const b = await call('boot');
       state.boot = b;
+      state.update = b.update || state.update;
       renderChrome();
       renderPage();
       maybeShowDisclaimer();
@@ -285,8 +288,14 @@
           <p>${link('https://github.com/Fantasicrap/', '@Fantasicrap')}</p>
         </div>
         <div class="about-sec">
+          <div class="about-sec-title">演示视频</div>
+          <p>${link('https://www.bilibili.com/video/BV1nRxk6dERS/', 'Bilibili 演示视频')}</p>
+          <p>如果可以请给我一键三连，这对我非常重要。</p>
+        </div>
+        <div class="about-sec">
           <div class="about-sec-title">项目地址</div>
           <p>GitHub：${link('https://github.com/DanielToyama/WuwaTappoNative', 'DanielToyama/WuwaTappoNative')}</p>
+          <p>希望收到你的 Star！⭐</p>
         </div>
         <button class="btn ghost" id="mCloseAbout" style="align-self:center;min-width:120px">关闭</button>
       </div>`, host => {
@@ -337,7 +346,12 @@
   }
 
   function handleEvent(evt, data) {
-    if (evt === 'boot') { state.boot = data; renderChrome(); renderPage(); maybeShowDisclaimer(); maybeShowUacPrompt(); maybeOpenEmoteEditor(); return; }
+    if (evt === 'boot') { state.boot = data; state.update = data.update || state.update; renderChrome(); renderPage(); maybeShowDisclaimer(); maybeShowUacPrompt(); maybeOpenEmoteEditor(); return; }
+    if (evt === 'update') {
+      state.update = data;
+      if (state.page === 'settings') renderSettings();
+      return;
+    }
     if (evt === 'auth') { if (state.boot) state.boot.auth = { ...state.boot.auth, ...data }; renderChrome(); renderPage(); return; }
     if (evt === 'room') {
       if (!state.boot) return;
@@ -578,6 +592,7 @@
     const tab = state.bagTab;
     const isChar = tab === 'character_skin';
     const showRole = tab === 'character_skin' || tab === 'emote';
+    const equippedAccessoryId = Number(state.boot?.appearance?.accessoryAssetId || 0);
 
     const seriesOptions = [...new Set(state.bag.filter(x => x.type === 'character_skin' && x.series).map(x => x.series))].sort((a, b) => String(a).localeCompare(String(b), 'zh'));
     const roleMap = new Map();
@@ -604,6 +619,7 @@
             <button class="btn ghost" id="bagRefresh">刷新</button>
             ${tab === 'recent' ? '<button class="btn ghost" id="bagClearRecent">清空记录</button>' : ''}
             <button class="btn" id="bagSync">同步角色/配件</button>
+            ${tab === 'accessory' ? `<button class="btn ghost" id="bagRemoveAccessory" ${equippedAccessoryId ? '' : 'disabled'} title="从本地和云端摘除当前头饰">摘下头饰</button>` : ''}
           </div>
           <div class="bag-groups" id="bagGroups"></div>
         </div>
@@ -629,6 +645,16 @@
     document.getElementById('bagSync').onclick = async () => {
       try { await tryCall('appearance.sync'); toast('角色/配件已同步到云端（表情栏仅本地）'); } catch { }
     };
+    document.getElementById('bagRemoveAccessory')?.addEventListener('click', async () => {
+      try {
+        await tryCall('appearance.set', { type: 'accessory', id: 0 });
+        await tryCall('appearance.sync');
+        state.boot = await call('boot');
+        renderChrome();
+        renderBag();
+        toast('已摘下头饰并同步云端');
+      } catch { }
+    });
     renderBagList();
     renderBagDetail();
   }
@@ -729,14 +755,19 @@
     </div>`;
   }
 
+  function isAccessoryEquipped(id) {
+    return Number(state.boot?.appearance?.accessoryAssetId || 0) === Number(id);
+  }
+
   function renderBagDetail() {
     const box = document.getElementById('bagDetail');
     if (!box) return;
     const x = state.bagSelected;
     if (!x) {
-      box.innerHTML = `<div class="detail-empty">选择一件收集物<br><span style="font-size:13px">双击可直接装备</span></div>`;
+      box.innerHTML = `<div class="detail-empty">选择一件收集物<br><span style="font-size:13px">双击可直接装备；再次点击已佩戴的头饰可取消</span></div>`;
       return;
     }
+    const accessoryEquipped = x.type === 'accessory' && isAccessoryEquipped(x.id);
     box.innerHTML = `
       <div class="detail-preview">${img(x.thumb, '', x.name)}</div>
       <div class="detail-name">${esc(x.name)}</div>
@@ -745,8 +776,8 @@
       <div class="detail-row"><span>系列</span><span>${esc(x.series || '—')}</span></div>
       <div class="detail-row"><span>数量</span><span>${x.quantity ?? 1}</span></div>
       <div class="spacer"></div>
-      <button class="btn" id="equipBtn">装备（本地显示）</button>
-      <button class="btn ghost" id="equipSyncBtn">装备并同步云端</button>`;
+      <button class="btn" id="equipBtn">${accessoryEquipped ? '取消头饰（本地显示）' : '装备（本地显示）'}</button>
+      <button class="btn ghost" id="equipSyncBtn">${accessoryEquipped ? '取消头饰并同步云端' : '装备并同步云端'}</button>`;
     document.getElementById('equipBtn').onclick = () => equip(x, false);
     document.getElementById('equipSyncBtn').onclick = () => equip(x, true);
   }
@@ -754,11 +785,14 @@
   async function equip(item, sync = false) {
     if (!item) return;
     try {
-      await tryCall('appearance.set', { type: item.type, id: item.id });
+      const unequipAccessory = item.type === 'accessory' && isAccessoryEquipped(item.id);
+      await tryCall('appearance.set', { type: item.type, id: unequipAccessory ? 0 : item.id });
       if (sync) await tryCall('appearance.sync');
-      toast(sync ? '已装备并同步到云端' : '已装备到本地显示');
+      toast(unequipAccessory ? (sync ? '已取消头饰并同步云端' : '已取消头饰（本地显示）')
+        : (sync ? '已装备并同步到云端' : '已装备到本地显示'));
       state.boot = await call('boot');
       renderChrome();
+      if (state.page === 'bag') renderBagDetail();
     } catch { }
   }
 
@@ -909,6 +943,7 @@
         const x = byKey.get(el.dataset.key);
         if (!x) return;
         const bagItem = (state.bag || []).find(v => v.assetName === x.assetName);
+        const accessoryEquipped = x.type === 'accessory' && isAccessoryEquipped(x.mainId);
         const currentSlots = [...(state.boot?.appearance?.emoteAssetIds || [])];
         while (currentSlots.length < 5) currentSlots.push(0);
         let pickSlot = currentSlots.findIndex(v => !v);
@@ -930,8 +965,8 @@
             ${slotPicker}
             <div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap">
               <button class="btn ghost" id="mClose">关闭</button>
-              <button class="btn" id="mLocal">应用到本地</button>
-              ${bagItem && x.type !== 'emote' ? '<button class="btn ghost" id="mEquip">装备并同步云端</button>' : ''}
+              <button class="btn" id="mLocal">${accessoryEquipped ? '取消头饰（本地）' : '应用到本地'}</button>
+              ${bagItem && x.type !== 'emote' ? `<button class="btn ghost" id="mEquip">${accessoryEquipped ? '取消头饰并同步云端' : '装备并同步云端'}</button>` : ''}
             </div>
           </div>`, h => {
           h.querySelector('#mClose').onclick = closeModal;
@@ -941,6 +976,11 @@
           });
           h.querySelector('#mLocal').onclick = async () => {
             try {
+              if (accessoryEquipped && bagItem) {
+                await equip(bagItem, false);
+                closeModal();
+                return;
+              }
               const data = { type: x.type, id: x.mainId };
               if (x.type === 'emote') data.slot = pickSlot;
               state.boot = await tryCall('appearance.applyLocal', data);
@@ -1584,6 +1624,54 @@
   }
 
   /* ---------------- 设置 ---------------- */
+  function releaseNotesHtml(markdown) {
+    const inline = s => esc(s)
+      .replace(/`([^`]+)`/g, '<code>$1</code>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    const lines = String(markdown || '').split(/\r?\n/);
+    const out = [];
+    let inList = false;
+    const closeList = () => { if (inList) { out.push('</ul>'); inList = false; } };
+    for (const raw of lines) {
+      const line = raw.trim();
+      if (!line) { closeList(); continue; }
+      let m;
+      if ((m = line.match(/^#{1,4}\s+(.*)$/))) {
+        closeList();
+        out.push(`<div class="update-h">${inline(m[1])}</div>`);
+      } else if ((m = line.match(/^[-*]\s+(.*)$/))) {
+        if (!inList) { out.push('<ul>'); inList = true; }
+        out.push(`<li>${inline(m[1])}</li>`);
+      } else {
+        closeList();
+        out.push(`<p>${inline(line)}</p>`);
+      }
+    }
+    closeList();
+    return out.join('');
+  }
+
+  function updateBannerHtml() {
+    const u = state.update;
+    if (!u || state.updateDismissed) return '';
+    const tag = u.tag || u.name || '新版本';
+    const date = u.publishedAt ? new Date(u.publishedAt).toLocaleDateString('zh-CN') : '';
+    return `<section class="update-banner">
+      <div class="update-banner-head">
+        <div>
+          <div class="update-banner-title">发现新版本 ${esc(tag)}</div>
+          <div class="update-banner-sub">当前版本 ${esc(state.boot?.version || '')}${date ? ' · ' + esc(date) : ''}</div>
+        </div>
+        <button class="update-dismiss" id="updateDismiss" title="本次启动不再显示">×</button>
+      </div>
+      <div class="update-notes">${releaseNotesHtml(u.body)}</div>
+      <div class="update-banner-actions">
+        <a class="btn" href="${esc(u.url || 'https://github.com/DanielToyama/WuwaTappoNative/releases/latest')}" target="_blank" rel="noreferrer">前往 GitHub 更新</a>
+        <span class="update-qq">交流 QQ 群：<strong>1130030892</strong>，群文件也可下载</span>
+      </div>
+    </section>`;
+  }
+
   function renderSettings() {
     const s = state.boot?.settings || {};
     const auth = state.boot?.auth || {};
@@ -1591,6 +1679,7 @@
     const prevScroll = document.querySelector('.settings-scroll')?.scrollTop || 0;
     setPage(`
       <div class="settings-scroll">
+        ${updateBannerHtml()}
         <div class="section">
           <div class="section-title">账号</div>
           <div class="panel-box" style="display:flex;flex-direction:column;gap:12px">
@@ -1766,8 +1855,16 @@
             <div class="setting-content"><button class="btn ghost" id="aboutBtn">关于本程序</button></div>
           </div>
         </div>
+        <div class="settings-footer">
+          <button class="btn ghost" id="checkUpdateBtn">检查更新</button>
+          <span class="muted" id="updateCheckStatus"></span>
+        </div>
       </div>`);
 
+    document.getElementById('updateDismiss')?.addEventListener('click', () => {
+      state.updateDismissed = true;
+      renderSettings();
+    });
     bindSettings();
     const scroller = document.querySelector('.settings-scroll');
     if (scroller && prevScroll > 0) scroller.scrollTop = prevScroll;
@@ -1920,6 +2017,26 @@
     });
     document.getElementById('openLog')?.addEventListener('click', () => call('open.log'));
     document.getElementById('aboutBtn')?.addEventListener('click', showAbout);
+    document.getElementById('checkUpdateBtn')?.addEventListener('click', async () => {
+      const btn = document.getElementById('checkUpdateBtn');
+      btn.disabled = true;
+      btn.textContent = '检查中…';
+      try {
+        const r = await tryCall('update.check');
+        state.update = r?.update || null;
+        state.updateDismissed = false;
+        renderSettings();
+        if (state.update) {
+          toast('发现新版本 ' + (state.update.tag || ''));
+          requestAnimationFrame(() => { const scroller = document.querySelector('.settings-scroll'); if (scroller) scroller.scrollTop = 0; });
+        } else {
+          toast('当前已经是最新版本');
+        }
+      } catch {
+        btn.disabled = false;
+        btn.textContent = '检查更新';
+      }
+    });
     bindHotkeys();
     document.getElementById('redeemBtn')?.addEventListener('click', async () => {
       const code = document.getElementById('redeemCode').value.trim();
