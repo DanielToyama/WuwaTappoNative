@@ -12,6 +12,7 @@ public sealed class Settings
     public long TokenExpireMs { get; set; }
     public string Cuid { get; set; } = "";
     public long UserId { get; set; }
+    public long PlayerId { get; set; }
     public string Nickname { get; set; } = "";
     public long RoleId { get; set; }
     public long CharacterAssetId { get; set; }
@@ -58,6 +59,8 @@ public sealed class Settings
     public string LastRoom { get; set; } = "";
     public string[] RoomHistory { get; set; } = Array.Empty<string>();
     public Dictionary<string, int[]> MemberPositions { get; set; } = new();
+    /// <summary>服务器区服：cn（国服） | global（国际服），默认 cn。</summary>
+    public string ServerRegion { get; set; } = "cn";
     public string Locale { get; set; } = "zh";
     /// <summary>全局快捷键：动作 id → 组合键描述；空串表示禁用。缺省项使用原版默认键位。</summary>
     public Dictionary<string, string> Hotkeys { get; set; } = new();
@@ -95,12 +98,35 @@ public static class ConfigStore
                     cfg.RhythmKeys = RhythmKeys.Normalize(cfg.RhythmKeys);
                     if (cfg.RhythmMode && cfg.KeyboardMode == "wuwa") cfg.KeyboardMode = "rhythm";
                     else if (!cfg.RhythmMode && cfg.KeyboardMode == "rhythm") cfg.KeyboardMode = "wuwa";
+                    cfg.ServerRegion = NormalizeRegion(cfg.ServerRegion);
                     return cfg;
                 }
             }
         }
         catch (Exception ex) { Log.Write("配置读取失败 " + ex.Message); }
-        return new Settings();
+        var def = new Settings();
+        def.ServerRegion = AutoDetectRegion();
+        return def;
+    }
+
+    static string NormalizeRegion(string region)
+    {
+        if (string.Equals(region, "global", StringComparison.OrdinalIgnoreCase)) return "global";
+        if (string.Equals(region, "cn", StringComparison.OrdinalIgnoreCase)) return "cn";
+        return AutoDetectRegion();
+    }
+
+    static string AutoDetectRegion()
+    {
+        try
+        {
+            string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            bool hasGlobal = Directory.Exists(Path.Combine(local, "com.kuro.wuwatappo.global"));
+            bool hasCn = Directory.Exists(Path.Combine(local, "com.kuro.wuwatappo.cn"));
+            if (hasGlobal && !hasCn) return "global";
+        }
+        catch { }
+        return "cn";
     }
 
     public static void Save(Settings cfg)

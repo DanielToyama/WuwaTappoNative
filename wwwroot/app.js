@@ -281,7 +281,7 @@
         </div>
         <div class="about-sec">
           <div class="about-sec-title">特别鸣谢</div>
-          <p>${link('https://download-mc-wuwatappo.kurogames-global.com/download/', '库洛游戏')}</p>
+          <p>${link(state.boot?.settings?.serverRegion === 'global' ? 'https://download-wutheringwaves-wuwatappo.kurogames-global.com/download/en/' : 'https://download-mc-wuwatappo.kurogames-global.com/download/', '库洛游戏')}</p>
           <p>${link('https://github.com/Fantasicrap/', '@Fantasicrap')}</p>
         </div>
         <div class="about-sec">
@@ -409,17 +409,48 @@
 
   /* ---------------- 登录 ---------------- */
   function renderLogin() {
+    const reg = state.boot?.settings?.serverRegion || 'cn';
+    const isGlobal = reg === 'global';
     return `<div class="login-wrap"><div class="login-card">
       <h2>登录 Wuwa Tappo</h2>
-      <div class="hint">使用游戏 UID 登录；如果无法完成验证码登录，请使用官方登录状态。</div>
-      <input class="input" id="loginUid" placeholder="游戏 UID（9-10 位）" inputmode="numeric" maxlength="10" />
-      <div style="display:flex;gap:10px">
-        <input class="input" id="loginCode" placeholder="6 位验证码" style="flex:1" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
-        <button class="btn ghost" id="sendCodeBtn">发送验证码</button>
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <span style="font-size:13px;color:var(--text-sub,#888);white-space:nowrap">区服：</span>
+        <select class="select" id="loginRegion" style="flex:1">
+          <option value="cn" ${!isGlobal ? 'selected' : ''}>国服（CN）</option>
+          <option value="global" ${isGlobal ? 'selected' : ''}>国际服（Global）</option>
+        </select>
       </div>
-      <button class="btn" id="loginBtn">登录</button>
-      <div class="hint">如果无法完成 UID 验证码登录，请先在官方客户端登录，再点击下方按钮继承官方登录状态。</div>
-      <button class="btn ghost" id="loginInherit">继承官方程序登录状态</button>
+
+      ${isGlobal ? `
+        <div class="hint" style="color:var(--text-sub,#888);line-height:1.6;margin-bottom:14px;background:rgba(0,0,0,0.03);padding:10px 12px;border-radius:6px;border:1px solid var(--border,#e0d4c3)">
+          <strong>国际服提示：</strong>国际服不支持游戏内 UID 邮件验证码。请先在电脑上登录官方 WuwaTappo 国际服客户端，再点击下方按钮继承登录状态。
+        </div>
+
+        <button class="btn" id="loginInherit" style="margin-bottom:14px;width:100%">继承官方程序登录状态</button>
+
+        <div style="font-size:12px;color:var(--text-sub,#888);margin-bottom:6px">或手动输入 Token 登录：</div>
+        <div style="display:flex;gap:10px">
+          <input class="input" id="loginTokenInput" placeholder="输入 kuro_infoToken / infoToken" style="flex:1" />
+          <button class="btn ghost" id="loginTokenBtn">Token 登录</button>
+        </div>
+      ` : `
+        <div class="hint">使用游戏 UID 登录；如果无法完成验证码登录，请使用官方登录状态。</div>
+        <input class="input" id="loginUid" placeholder="游戏 UID（9-10 位）" inputmode="numeric" maxlength="10" />
+        <div style="display:flex;gap:10px">
+          <input class="input" id="loginCode" placeholder="6 位验证码" style="flex:1" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
+          <button class="btn ghost" id="sendCodeBtn">发送验证码</button>
+        </div>
+        <button class="btn" id="loginBtn">登录</button>
+        <div class="hint">如果无法完成 UID 验证码登录，请先在官方客户端登录，再点击下方按钮继承官方登录状态。</div>
+        <button class="btn ghost" id="loginInherit">继承官方程序登录状态</button>
+
+        <div style="margin-top:12px;border-top:1px dashed var(--border,#e0d4c3);padding-top:10px">
+          <div style="display:flex;gap:10px">
+            <input class="input" id="loginTokenInput" placeholder="手动输入 Token 登录" style="flex:1" />
+            <button class="btn ghost" id="loginTokenBtn">Token 登录</button>
+          </div>
+        </div>
+      `}
     </div></div>`;
   }
 
@@ -428,8 +459,21 @@
     const go = document.getElementById('loginBtn');
     const uidEl = document.getElementById('loginUid');
     const codeEl = document.getElementById('loginCode');
+    const regEl = document.getElementById('loginRegion');
+    if (regEl) {
+      regEl.onchange = async () => {
+        const val = regEl.value;
+        if (val !== (state.boot?.settings?.serverRegion || 'cn')) {
+          if (!state.boot) state.boot = {};
+          if (!state.boot.settings) state.boot.settings = {};
+          state.boot.settings.serverRegion = val;
+          await tryCall('settings.set', { serverRegion: val });
+          renderPage();
+        }
+      };
+    }
     // 原版只允许输入数字，这里保持一致，避免把非数字发给服务端。
-    const digitsOnly = el => el.addEventListener('input', () => {
+    const digitsOnly = el => el && el.addEventListener('input', () => {
       const v = el.value.replace(/[^0-9]/g, '');
       if (el.value !== v) el.value = v;
     });
@@ -437,26 +481,45 @@
 
     // 手机号登录已移除，只接受 9-10 位游戏 UID。
     const uidValid = v => /^[0-9]{9,10}$/.test(v);
-    send.onclick = async () => {
-      const uid = uidEl.value.trim();
-      if (!uid) return toast('请输入游戏 UID', 'err');
-      if (!uidValid(uid)) return toast('请输入 9-10 位游戏 UID', 'err');
-      try { await tryCall('login.sendCode', { uid }); toast('验证码已发送'); } catch { }
-    };
-    go.onclick = async () => {
-      const uid = uidEl.value.trim();
-      const code = codeEl.value.trim();
-      if (!uid) return toast('请输入游戏 UID', 'err');
-      if (!uidValid(uid)) return toast('请输入 9-10 位游戏 UID', 'err');
-      if (!/^[0-9]{6}$/.test(code)) return toast('请输入 6 位数字验证码', 'err');
-      try {
-        await tryCall('login.submit', { uid, code });
-        toast('登录成功');
-        state.boot = await call('boot');
-        renderChrome();
-        navigate('bag');
-      } catch { }
-    };
+    if (send) {
+      send.onclick = async () => {
+        const uid = uidEl?.value.trim();
+        if (!uid) return toast('请输入游戏 UID', 'err');
+        if (!uidValid(uid)) return toast('请输入 9-10 位游戏 UID', 'err');
+        try { await tryCall('login.sendCode', { uid }); toast('验证码已发送'); } catch { }
+      };
+    }
+    if (go) {
+      go.onclick = async () => {
+        const uid = uidEl?.value.trim();
+        const code = codeEl?.value.trim();
+        if (!uid) return toast('请输入游戏 UID', 'err');
+        if (!uidValid(uid)) return toast('请输入 9-10 位游戏 UID', 'err');
+        if (!/^[0-9]{6}$/.test(code)) return toast('请输入 6 位数字验证码', 'err');
+        try {
+          await tryCall('login.submit', { uid, code });
+          toast('登录成功');
+          state.boot = await call('boot');
+          renderChrome();
+          navigate('bag');
+        } catch { }
+      };
+    }
+    const tokenBtn = document.getElementById('loginTokenBtn');
+    const tokenInput = document.getElementById('loginTokenInput');
+    if (tokenBtn && tokenInput) {
+      tokenBtn.onclick = async () => {
+        const tok = tokenInput.value.trim();
+        if (!tok) return toast('请输入 Token', 'err');
+        try {
+          await tryCall('login.token', { token: tok });
+          toast('登录成功');
+          state.boot = await call('boot');
+          renderChrome();
+          navigate('bag');
+        } catch { }
+      };
+    }
     document.getElementById('loginInherit')?.addEventListener('click', showInheritLogin);
   }
 
@@ -1594,6 +1657,15 @@
         <div class="section">
           <div class="section-title">账号</div>
           <div class="panel-box" style="display:flex;flex-direction:column;gap:12px">
+            <div class="setting-item" style="padding:0 0 10px 0;border-bottom:1px solid var(--border,#eee)">
+              <div><div class="setting-title">服务器区服</div><div class="setting-sub">选择官方桌宠所在的区服（切换后需重新登录）</div></div>
+              <div class="setting-content">
+                <select class="select" id="setServerRegion">
+                  <option value="cn" ${(s.serverRegion || 'cn') === 'cn' ? 'selected' : ''}>国服（CN）</option>
+                  <option value="global" ${(s.serverRegion || 'cn') === 'global' ? 'selected' : ''}>国际服（Global）</option>
+                </select>
+              </div>
+            </div>
             ${isLogged() ? `
               <div class="detail-row"><span>昵称</span><span>${esc(auth.nickname || '—')}</span></div>
               <div class="detail-row"><span>UID</span><span>${auth.uid || '—'}</span></div>
@@ -1603,6 +1675,11 @@
               <div style="display:flex;gap:10px">
                 <button class="btn ghost" id="userRefresh">刷新账号信息</button>
                 <button class="btn danger" id="logoutBtn">退出登录</button>
+              </div>` : ((s.serverRegion || 'cn') === 'global' ? `
+              <div class="detail-row"><span>登录</span><span class="muted">国际服请使用下方继承官方登录状态，或导入 Token</span></div>
+              <div style="display:flex;gap:10px">
+                <input class="input" id="setToken" placeholder="粘贴官方客户端 infoToken" style="flex:1" />
+                <button class="btn ghost" id="setTokenBtn">导入 token</button>
               </div>` : `
               <div class="detail-row"><span>登录</span><span class="muted">UID + 验证码（也可继承官方登录状态）</span></div>
               <div style="display:flex;gap:10px">
@@ -1614,7 +1691,7 @@
               <div style="display:flex;gap:10px">
                 <input class="input" id="setToken" placeholder="粘贴官方客户端 infoToken" style="flex:1" />
                 <button class="btn ghost" id="setTokenBtn">导入 token</button>
-              </div>`}
+              </div>`)}
             <div class="inherit-login">
               <div class="setting-sub">建议在获取前先关闭本家程序的开机自动启动，以免下次开机因为 token 冲突导致掉线。</div>
               <button class="btn ghost" id="inheritLogin">继承官方程序登录状态</button>
@@ -1957,6 +2034,12 @@
         }, wait);
       };
     }
+    document.getElementById('setServerRegion')?.addEventListener('change', async e => {
+      const val = e.target.value;
+      if (val !== (state.boot?.settings?.serverRegion || 'cn')) {
+        await tryCall('settings.set', { serverRegion: val });
+      }
+    });
     document.getElementById('setSend')?.addEventListener('click', async () => {
       const uid = val('setUid');
       if (!uid) return toast('请输入游戏 UID', 'err');

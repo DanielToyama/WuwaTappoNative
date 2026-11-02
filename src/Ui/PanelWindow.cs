@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -277,7 +278,7 @@ public sealed class PanelWindow : Form
             loggedIn = _app.Auth.IsLoggedIn,
             nickname = _app.Auth.Nickname,
             cuid = _app.Auth.Cuid,
-            uid = _app.Auth.UserId,
+            uid = _app.Auth.PlayerId > 0 ? _app.Auth.PlayerId : _app.Auth.UserId,
             clicks = _app.Room.AvailableClicks,
             clickTotal = _app.Room.DisplayClicks,
             clickConsume = _app.Room.ServerConsume,
@@ -312,6 +313,7 @@ public sealed class PanelWindow : Form
             isElevated = Elevation.IsElevated,
             roomNo = _app.Cfg.RoomNo,
             lastRoom = _app.Cfg.LastRoom,
+            serverRegion = _app.Cfg.ServerRegion,
             hotkeys = Hotkeys.FromSettings(_app.Cfg.Hotkeys),
         },
         appearance = new
@@ -466,28 +468,60 @@ public sealed class PanelWindow : Form
                     {
                         foreach (var process in clients) process.Dispose();
                     }
-                    return OfficialTokenReader.Extract(Log.Write);
+                    return OfficialTokenReader.Extract(Log.Write, preferredRegion: _app.Cfg.ServerRegion);
                 });
 
                 var token = extracted.PreferredToken;
-                if (token == null || string.IsNullOrWhiteSpace(token.Value))
+                string detectedRegion = token?.Region;
+                if (string.IsNullOrEmpty(detectedRegion) && extracted.ForeignSession != null)
+                    detectedRegion = "global";
+
+                if (!string.IsNullOrEmpty(detectedRegion) && !string.Equals(_app.Cfg.ServerRegion, detectedRegion, StringComparison.OrdinalIgnoreCase))
                 {
-                    if (extracted.SawV20)
-                        throw new ApiException(-1, "官方客户端使用了 v20 App-Bound Encryption，无法读取 token，请改用 UID + 验证码登录。");
-                    if (extracted.TokenDecryptFailed)
-                        throw new ApiException(-1, "找到 token 但解密失败；请确认官方客户端与本程序使用同一 Windows 用户，并在客户端重新登录后再试。");
-                    throw new ApiException(-1, "官方客户端中没有找到登录 token，请先在官方客户端完成登录。");
+                    await _app.SwitchServerRegionAsync(detectedRegion);
                 }
 
-                auth.SetTokenManually(token.Value);
-                if (!await auth.TryRestoreAsync())
-                    throw new ApiException(-1, "读取到 token，但服务器验证失败；请重新登录官方客户端后再试。");
+                bool restored = false;
+                if (token != null && !string.IsNullOrWhiteSpace(token.Value))
+                {
+                    auth.SetTokenManually(token.Value);
+                    restored = await auth.TryRestoreAsync();
+                }
 
-                _app.Pet.BeginInvoke(new Action(() => _app.Pet.ApplySettings()));
-                await _app.Room.EnsureLobbyAsync();
-                await _app.ResumeLastRoomAsync();
-                _app.CheckAutoChestNow();
-                return new { loggedIn = true, nickname = auth.Nickname };
+                // 若 Cookie token 失效/过期，但提取到了海外通行证会话，则自动调用接口重新签发新 Token
+                if (!restored && extracted.ForeignSession != null)
+                {
+                    try
+                    {
+                        var fs = extracted.ForeignSession;
+                        await auth.LoginWithForeignSessionAsync(fs.Cuid, fs.Puid, fs.UserId, fs.UserName, fs.AccessToken);
+                        restored = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Write("使用官方海外通行证刷新登录失败：" + ex.Message);
+                    }
+                }
+
+                if (restored)
+                {
+                    _app.Pet.BeginInvoke(new Action(() => _app.Pet.ApplySettings()));
+                    await _app.Room.EnsureLobbyAsync();
+                    await _app.ResumeLastRoomAsync();
+                    _app.CheckAutoChestNow();
+                    return new { loggedIn = true, nickname = auth.Nickname };
+                }
+
+                if (token == null && extracted.ForeignSession == null)
+                {
+                    if (extracted.SawV20)
+                        throw new ApiException(-1, "官方客户端使用了 v20 App-Bound Encryption，无法直接解密 Cookie。");
+                    if (extracted.TokenDecryptFailed)
+                        throw new ApiException(-1, "找到登录数据但解密失败；请确认官方客户端与本程序使用同一 Windows 用户，并在客户端重新登录后再试。");
+                    throw new ApiException(-1, "官方客户端中没有找到登录凭据，请先在官方客户端完成登录。");
+                }
+
+                throw new ApiException(-1, "读取到登录凭据，但服务器验证失败；请在官方客户端内重新登录一次后再试。");
             }
 
             case "logout":
@@ -704,6 +738,7 @@ public sealed class PanelWindow : Form
             }
 
             case "settings.set":
+            case "settings.update":
             {
                 bool hideOthersChanged = false;
                 foreach (var kv in data)
@@ -755,6 +790,16 @@ public sealed class PanelWindow : Form
                         case "launchAtLogin":
                             cfg.LaunchAtLogin = AutoStart.Apply(ApiClient.ReadBool(kv.Value));
                             break;
+                        case "serverRegion":
+                        {
+                            string reg = ApiClient.ReadString(kv.Value).Trim().ToLowerInvariant();
+                            if (reg != "cn" && reg != "global") reg = "cn";
+                            if (cfg.ServerRegion != reg)
+                            {
+                                await _app.SwitchServerRegionAsync(reg);
+                            }
+                            break;
+                        }
                         case "runAsAdmin":
                         {
                             bool enable = ApiClient.ReadBool(kv.Value);

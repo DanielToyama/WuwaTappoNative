@@ -29,7 +29,17 @@ public sealed class ApiException : Exception
 /// </summary>
 public sealed class ApiClient : IDisposable
 {
-    public const string BaseUrl = "https://api-mc-wuwatappo.kurogames-global.com";
+    public const string DefaultBaseUrl = "https://api-mc-wuwatappo.kurogames-global.com";
+    public const string GlobalBaseUrl = "https://api-wutheringwaves-wuwatappo.kurogames-global.com";
+
+    public static string ResolveBaseUrl(string region)
+    {
+        if (string.Equals(region, "global", StringComparison.OrdinalIgnoreCase))
+            return GlobalBaseUrl;
+        return DefaultBaseUrl;
+    }
+
+    public string BaseUrl { get; }
     static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = false };
 
     readonly HttpClient _http;
@@ -39,8 +49,9 @@ public sealed class ApiClient : IDisposable
     public string LastCid { get; private set; } = "";
     public event Action<string> TokenRefreshed;
 
-    public ApiClient(string cid)
+    public ApiClient(string cid, string baseUrl = null)
     {
+        BaseUrl = string.IsNullOrWhiteSpace(baseUrl) ? DefaultBaseUrl : baseUrl.TrimEnd('/');
         LastCid = string.IsNullOrWhiteSpace(cid) ? Guid.NewGuid().ToString("N") : cid;
         var handler = new HttpClientHandler
         {
@@ -53,7 +64,7 @@ public sealed class ApiClient : IDisposable
         _http.DefaultRequestHeaders.UserAgent.ParseAdd(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36");
         _http.DefaultRequestHeaders.Accept.ParseAdd("application/json, text/plain, */*");
-        _http.DefaultRequestHeaders.AcceptLanguage.ParseAdd("zh-CN,zh;q=0.9");
+        _http.DefaultRequestHeaders.AcceptLanguage.ParseAdd("zh-CN,zh;q=0.9,en;q=0.8");
     }
 
     public void SetToken(string token) => _token = token ?? "";
@@ -107,10 +118,10 @@ public sealed class ApiClient : IDisposable
         {
             10001 => "参数无效（请确认 UID 与验证码都是数字）",
             10002 or 10003 => "登录已失效，请重新登录",
-            10023 => "手机号登录通道暂不可用，请改用游戏 UID 登录",
-            10025 => "查询不到该 UID 对应的游戏角色",
+            10023 => "验证通道暂不可用，请改用游戏 UID 或继承官方客户端登录",
+            10025 => "查询不到该 UID 对应的游戏角色（请确认当前区服与 UID 正确）",
             10031 => "验证码发送过于频繁，请稍后再试",
-            10032 => "验证码发送失败，请稍后再试，或改用游戏 UID 登录",
+            10032 => "验证码发送失败，请稍后再试，或改用继承官方登录",
             10035 => "验证码不正确或已过期",
             601 => "当前服务正在维护中，请稍后再试",
             70005 => "可用点击数不足",

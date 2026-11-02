@@ -10,12 +10,13 @@ namespace WuwatappoNative.Net;
 public sealed class AuthService
 {
     readonly Settings _cfg;
-    public ApiClient Api { get; }
+    public ApiClient Api { get; private set; }
     public event Action Changed;
 
     public string Token => _cfg.Token;
     public bool IsLoggedIn => !string.IsNullOrEmpty(_cfg.Token);
     public long UserId => _cfg.UserId;
+    public long PlayerId => _cfg.PlayerId > 0 ? _cfg.PlayerId : _cfg.UserId;
     public string Cuid => _cfg.Cuid;
     public string Nickname => _cfg.Nickname;
     public long RoleId => _cfg.RoleId;
@@ -28,13 +29,27 @@ public sealed class AuthService
     public AuthService(Settings cfg)
     {
         _cfg = cfg;
-        Api = new ApiClient(Guid.NewGuid().ToString("N"));
+        Api = new ApiClient(Guid.NewGuid().ToString("N"), ApiClient.ResolveBaseUrl(cfg.ServerRegion));
         Api.SetToken(cfg.Token);
-        Api.TokenRefreshed += t =>
+        Api.TokenRefreshed += OnTokenRefreshed;
+    }
+
+    void OnTokenRefreshed(string t)
+    {
+        _cfg.Token = t;
+        ConfigStore.Save(_cfg);
+    }
+
+    public void UpdateBaseUrl(string newBaseUrl)
+    {
+        if (Api != null)
         {
-            _cfg.Token = t;
-            ConfigStore.Save(_cfg);
-        };
+            Api.TokenRefreshed -= OnTokenRefreshed;
+            try { Api.Dispose(); } catch { }
+        }
+        Api = new ApiClient(Guid.NewGuid().ToString("N"), newBaseUrl);
+        Api.SetToken(_cfg.Token);
+        Api.TokenRefreshed += OnTokenRefreshed;
     }
 
     public async Task<bool> TryRestoreAsync()
@@ -83,8 +98,76 @@ public sealed class AuthService
         if (trimmed.Length != 6) throw new ApiException(-1, "UID 验证码为 6 位数字");
 
         long codeNum = long.Parse(trimmed);
+        _cfg.PlayerId = uid;
         var data = await Api.PostAsync("api/auth/uid-login", new { playerId = uid, code = codeNum });
         ApplyAuthToken(data);
+        await WhoAmIAsync();
+    }
+
+    /// <summary>
+    /// 国际服凭海外通行证会话（Kuro Passport OAuth）登录。
+    /// 服务端不支持国际服 UID 邮件验证码，采用官方通行证的 cuid + accessToken 登录。
+    /// </summary>
+    public async Task LoginWithForeignSessionAsync(
+        string cuid,
+        string puid,
+        string userId,
+        string userName,
+        string accessToken,
+        long? targetPlayerId = null,
+        string targetServerId = null)
+    {
+        if (string.IsNullOrWhiteSpace(cuid)) throw new ApiException(-1, "缺少 cuid");
+        if (string.IsNullOrWhiteSpace(accessToken)) throw new ApiException(-1, "缺少 accessToken");
+
+        // 1. 查询该 cuid 下的角色列表
+        var queryResp = await Api.PostAsync("api/auth/player/query", new { cuid = cuid, is_domestic = 0 });
+        if (queryResp is not JsonObject queryObj)
+            throw new ApiException(-1, "查询国际服角色失败");
+
+        long channelId = ApiClient.ReadLong(queryObj["channelId"]);
+        if (channelId <= 0) channelId = 18;
+
+        if (queryObj["items"] is not JsonArray items || items.Count == 0)
+            throw new ApiException(-1, "未在国际服找到游戏角色，请先进入游戏创建角色");
+
+        JsonObject selectedRole = null;
+        if (targetPlayerId.HasValue && targetPlayerId.Value > 0)
+        {
+            selectedRole = items.OfType<JsonObject>().FirstOrDefault(r => ApiClient.ReadLong(r["playerId"]) == targetPlayerId.Value);
+        }
+        if (selectedRole == null && !string.IsNullOrWhiteSpace(targetServerId))
+        {
+            selectedRole = items.OfType<JsonObject>().FirstOrDefault(r => string.Equals(ApiClient.ReadString(r["serverId"]), targetServerId, StringComparison.OrdinalIgnoreCase));
+        }
+        if (selectedRole == null)
+        {
+            selectedRole = items[0] as JsonObject;
+        }
+
+        if (selectedRole == null)
+            throw new ApiException(-1, "未找到可用游戏角色");
+
+        long playerId = ApiClient.ReadLong(selectedRole["playerId"]);
+        string serverId = ApiClient.ReadString(selectedRole["serverId"]);
+        _cfg.PlayerId = playerId;
+
+        // 2. 调用 SDK 登录
+        var loginData = await Api.PostAsync("api/auth/login", new
+        {
+            cuid = cuid,
+            puid = string.IsNullOrEmpty(puid) ? cuid : puid,
+            channelId = channelId,
+            userid = string.IsNullOrEmpty(userId) ? cuid : userId,
+            cname = string.IsNullOrEmpty(userName) ? (userId ?? cuid) : userName,
+            accessToken = accessToken,
+            source = "sdk",
+            playerId = playerId,
+            serverId = serverId,
+            is_domestic = 0
+        });
+
+        ApplyAuthToken(loginData);
         await WhoAmIAsync();
     }
 
@@ -122,6 +205,9 @@ public sealed class AuthService
             _cfg.LocalEmoteSlots = false;
         }
         _cfg.UserId = ApiClient.ReadLong(me["id"]);
+        long pid = ApiClient.ReadLong(me["player_id"]);
+        if (pid <= 0) pid = ApiClient.ReadLong(me["playerId"]);
+        if (pid > 0) _cfg.PlayerId = pid;
         _cfg.Cuid = serverCuid;
         _cfg.Nickname = ApiClient.ReadString(me["nickname"]);
         _cfg.RoleId = ApiClient.ReadLong(me["role_id"]);
@@ -167,6 +253,7 @@ public sealed class AuthService
         _cfg.TokenExpireMs = 0;
         _cfg.RoomNo = "";
         _cfg.UserId = 0;
+        _cfg.PlayerId = 0;
         _cfg.Nickname = "";
         Api.SetToken("");
         ConfigStore.Save(_cfg);

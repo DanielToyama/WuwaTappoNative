@@ -251,7 +251,7 @@ public sealed class RoomManager : IDisposable
             if (wasJoined && !string.IsNullOrEmpty(room)) _ = RejoinRoomLaterAsync(room);
             else if (!string.IsNullOrEmpty(_auth.Token)) _ = ReconnectLobbyLaterAsync();
         };
-        await _socket.ConnectAsync(_auth.Token, roomNo ?? "");
+        await _socket.ConnectAsync(_auth.Token, roomNo ?? "", _auth.Api.BaseUrl);
         Log.Write("socket 已连接 " + (string.IsNullOrEmpty(roomNo) ? "(大厅)" : roomNo));
     }
 
