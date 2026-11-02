@@ -48,6 +48,7 @@
     atlasRole: '',
     atlasRarity: '',
     atlasHidden: new Set(),
+    atlasOwnedOnly: false,
     atlasSelected: null,
     synthMode: 'up',
     synthType: 'character_skin',
@@ -903,8 +904,9 @@
       document.getElementById('atlasRetry').onclick = renderAtlas;
       return;
     }
+    // 图鉴的“已拥有”状态来自背包；必须先等背包加载完，否则首屏会把全部条目判成未拥有。
+    await ensureBag().catch(() => { });
     const ownedNames = new Set((state.bag || []).map(x => x.assetName));
-    ensureBag().catch(() => { });
     ensureEmotes().catch(() => { });
     const showSeries = type === 'character_skin';
     const showRole = type !== 'accessory';
@@ -934,8 +936,9 @@
           <option value="">稀有度：全部</option>
           ${['epic', 'rare', 'uncommon', 'common'].map(r => `<option value="${r}" ${state.atlasRarity === r ? 'selected' : ''}>稀有度：${RARITY_TEXT[r]}</option>`).join('')}
         </select>
+        <button class="pill ${state.atlasOwnedOnly ? 'active' : ''}" id="atlasOwnedOnly" title="只显示已经拥有的图鉴">仅拥有</button>
         <span class="spacer"></span>
-        <span class="muted" style="font-size:13px">共 ${items.length} 件 · 已拥有会显示标记</span>
+        <span class="muted" id="atlasCount" style="font-size:13px">共 ${items.length} 件 · 已拥有会显示标记</span>
       </div>
       <div class="bag-groups" id="atlasGroups"></div>`);
 
@@ -947,14 +950,20 @@
     document.getElementById('atlasSeries')?.addEventListener('change', e => { state.atlasSeries = e.target.value; renderAtlasList(items, ownedNames); });
     document.getElementById('atlasRole')?.addEventListener('change', e => { state.atlasRole = e.target.value; renderAtlasList(items, ownedNames); });
     document.getElementById('atlasRarity').addEventListener('change', e => { state.atlasRarity = e.target.value; renderAtlasList(items, ownedNames); });
+    document.getElementById('atlasOwnedOnly')?.addEventListener('click', e => {
+      state.atlasOwnedOnly = !state.atlasOwnedOnly;
+      e.currentTarget.classList.toggle('active', state.atlasOwnedOnly);
+      renderAtlasList(items, ownedNames);
+    });
     renderAtlasList(items, ownedNames);
   }
 
-  function atlasFilteredItems(items) {
+  function atlasFilteredItems(items, ownedNames) {
     let list = items;
     if (state.atlasSeries) list = list.filter(x => x.series === state.atlasSeries);
     if (state.atlasRole) list = list.filter(x => (String(x.assetName || '').match(/^role_(\d+)_/i) || [])[1] === state.atlasRole);
     if (state.atlasRarity) list = list.filter(x => effRarity(x.rarity) === state.atlasRarity);
+    if (state.atlasOwnedOnly) list = list.filter(x => ownedNames.has(x.assetName));
     return list.sort((a, b) => (RARITY_ORDER[effRarity(b.rarity)] || 0) - (RARITY_ORDER[effRarity(a.rarity)] || 0)
       || String(a.series).localeCompare(String(b.series), 'zh')
       || String(a.name).localeCompare(String(b.name), 'zh'));
@@ -973,7 +982,11 @@
   function renderAtlasList(items, ownedNames) {
     const host = document.getElementById('atlasGroups');
     if (!host) return;
-    const list = atlasFilteredItems(items);
+    const list = atlasFilteredItems(items, ownedNames);
+    const count = document.getElementById('atlasCount');
+    if (count) count.textContent = state.atlasOwnedOnly
+      ? `仅拥有 ${list.length} 件`
+      : `共 ${list.length} 件 · 已拥有会显示标记`;
     if (!list.length) { host.innerHTML = `<div class="empty-state">没有符合条件的图鉴条目</div>`; return; }
     const byKey = new Map(list.map(x => [x.type + ':' + x.mainId, x]));
     if (state.atlasType !== 'all') {

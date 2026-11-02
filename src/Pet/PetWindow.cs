@@ -529,6 +529,7 @@ public sealed class PetWindow : Form
         if (!_moved && Math.Abs(dx) + Math.Abs(dy) < 3) return;
         _moved = true;
         Location = new Point(_dragOrigin.X + dx, _dragOrigin.Y + dy);
+        SnapToWorkingArea(now);
         if (dx < 0) SetBody(2); else if (dx > 0) SetBody(3);
         _moveReset.Stop();
         _moveReset.Start();
@@ -542,11 +543,35 @@ public sealed class PetWindow : Form
         }
     }
 
+    /// <summary>拖动到屏幕/任务栏边缘附近时自动贴边，松手后位置照常保存。</summary>
+    void SnapToWorkingArea(Point cursor)
+    {
+        var wa = Screen.FromPoint(cursor).WorkingArea;
+        int threshold = Math.Max(8, (int)Math.Round(28 * DpiScale));
+        float s = Width / (float)PetComposer.WindowW;
+        int contentLeftOffset = (int)Math.Round(PetComposer.CatX * s);
+        int contentRightOffset = (int)Math.Round(Math.Max(PetComposer.ToolbarX + PetComposer.ToolbarW, PetComposer.ChestRightRect.Right) * s);
+        int left = Left, top = Top;
+
+        // 左右按角色/HUD 的可见范围判断，避免窗口透明边距导致看起来没有贴住。
+        if (Math.Abs(Left + contentLeftOffset - wa.Left) <= threshold)
+            left = wa.Left - contentLeftOffset;
+        else if (Math.Abs(Left + contentRightOffset - wa.Right) <= threshold)
+            left = wa.Right - contentRightOffset;
+
+        // 下方窗口底边就是计数条底边，正好落在任务栏上沿；上方保留气泡净空。
+        if (Math.Abs(Top - wa.Top) <= threshold) top = wa.Top;
+        else if (Math.Abs(Top + Height - wa.Bottom) <= threshold) top = wa.Bottom - Height;
+
+        if (left != Left || top != Top) Location = new Point(left, top);
+    }
+
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
         if (e.Button == MouseButtons.Left)
         {
+            if (_moved) SnapToWorkingArea(Cursor.Position);
             _dragging = false;
             _cfg.PetX = Left;
             _cfg.PetY = Top;

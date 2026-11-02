@@ -414,12 +414,28 @@ public sealed class RemoteCatWindow : Form
         int dx = p.X - _dragCursor.X, dy = p.Y - _dragCursor.Y;
         if (Math.Abs(dx) + Math.Abs(dy) > 2) _movedDuringDrag = true;
         Location = new Point(_dragOrigin.X + dx, _dragOrigin.Y + dy);
+        SnapToWorkingArea(p);
+    }
+
+    /// <summary>联机成员桌宠与主角一样，拖到屏幕/任务栏边缘附近时自动贴边。</summary>
+    void SnapToWorkingArea(Point cursor)
+    {
+        var wa = Screen.FromPoint(cursor).WorkingArea;
+        float dpi = DeviceDpi / 96f;
+        int threshold = Math.Max(8, (int)Math.Round(28 * dpi));
+        int left = Left, top = Top;
+        if (Math.Abs(Left - wa.Left) <= threshold) left = wa.Left;
+        else if (Math.Abs(Left + Width - wa.Right) <= threshold) left = wa.Right - Width;
+        if (Math.Abs(Top - wa.Top) <= threshold) top = wa.Top;
+        else if (Math.Abs(Top + Height - wa.Bottom) <= threshold) top = wa.Bottom - Height;
+        if (left != Left || top != Top) Location = new Point(left, top);
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
         if (e.Button != MouseButtons.Left) return;
+        if (_movedDuringDrag) SnapToWorkingArea(Cursor.Position);
         _dragging = false;
         if (_movedDuringDrag) Moved?.Invoke(Location);
     }
