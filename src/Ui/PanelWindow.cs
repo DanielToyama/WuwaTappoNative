@@ -335,6 +335,8 @@ public sealed class PanelWindow : Form
         {
             characterAssetId = _app.Cfg.CharacterAssetId,
             accessoryAssetId = _app.Cfg.AccessoryAssetId,
+            accessoryOffsetX = _app.Pet.AccessoryOffsetFor(_app.Cfg.AccessoryAssetId).x,
+            accessoryOffsetY = _app.Pet.AccessoryOffsetFor(_app.Cfg.AccessoryAssetId).y,
             emoteAssetIds = _app.Cfg.EmoteAssetIds,
         },
         catalog = new
@@ -864,6 +866,16 @@ public sealed class PanelWindow : Form
                 _updateInfo = info;
                 Push("update", info);
                 return new { available = info != null, update = info, currentVersion = current.ToString(3) };
+            }
+
+            case "appearance.offset":
+            {
+                int dx = (int)ApiClient.ReadLong(data["dx"]);
+                int dy = (int)ApiClient.ReadLong(data["dy"]);
+                bool reset = ApiClient.ReadBool(data["reset"]);
+                var p = _app.Pet.NudgeAccessory(dx, dy, reset);
+                var boot = BootPayload();
+                return new { x = p.x, y = p.y, accessoryId = _app.Cfg.AccessoryAssetId, boot };
             }
 
             case "open.log":

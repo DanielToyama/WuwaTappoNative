@@ -1675,6 +1675,10 @@
   function renderSettings() {
     const s = state.boot?.settings || {};
     const auth = state.boot?.auth || {};
+    const acc = state.boot?.appearance || {};
+    const accId = Number(acc.accessoryAssetId || 0);
+    const accX = Number(acc.accessoryOffsetX || 0);
+    const accY = Number(acc.accessoryOffsetY || 0);
     // 快捷键/菜单改设置会触发 boot 重推；保留滚动位置，别把用户顶回顶部。
     const prevScroll = document.querySelector('.settings-scroll')?.scrollTop || 0;
     setPage(`
@@ -1754,6 +1758,23 @@
               <input class="input" id="captureW" type="number" min="160" max="1600" step="10" value="${s.captureWidth ?? 400}" style="width:86px" />
               <span class="muted">×</span>
               <input class="input" id="captureH" type="number" min="160" max="1600" step="10" value="${s.captureHeight ?? 700}" style="width:86px" />
+            </div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">头饰位置微调</div>
+          <div class="setting-item">
+            <div><div class="setting-title">当前头饰</div><div class="setting-sub">${accId ? '按方向微调当前头饰相对角色的位置，每个头饰独立保存' : '当前未佩戴头饰，先在背包 → 配件中选择一件'}</div></div>
+            <div class="setting-content" style="align-items:center">
+              <div class="nudge-pad">
+                <button class="btn ghost nudge-btn" data-nudge="0,-1" ${accId ? '' : 'disabled'} title="上移">↑</button>
+                <button class="btn ghost nudge-btn" data-nudge="-1,0" ${accId ? '' : 'disabled'} title="左移">←</button>
+                <button class="btn ghost nudge-btn" data-nudge="0,1" ${accId ? '' : 'disabled'} title="下移">↓</button>
+                <button class="btn ghost nudge-btn" data-nudge="1,0" ${accId ? '' : 'disabled'} title="右移">→</button>
+              </div>
+              <span class="muted" style="font-size:12px">X ${accX} · Y ${accY}</span>
+              <button class="btn ghost" id="resetAccessoryOffset" ${accId && (accX || accY) ? '' : 'disabled'}>归零</button>
             </div>
           </div>
         </div>
@@ -1997,6 +2018,23 @@
     });
     document.querySelectorAll('[data-kb]').forEach(el => el.onclick = async () => {
       try { await tryCall('settings.set', { keyboardMode: el.dataset.kb }); await syncBoot(); renderSettings(); } catch { }
+    });
+    document.querySelectorAll('[data-nudge]').forEach(el => el.onclick = async () => {
+      const [dx, dy] = String(el.dataset.nudge || '0,0').split(',').map(Number);
+      try {
+        const r = await tryCall('appearance.offset', { dx, dy });
+        if (r?.boot) state.boot = r.boot;
+        renderChrome();
+        renderSettings();
+      } catch { }
+    });
+    document.getElementById('resetAccessoryOffset')?.addEventListener('click', async () => {
+      try {
+        const r = await tryCall('appearance.offset', { reset: true });
+        if (r?.boot) state.boot = r.boot;
+        renderChrome();
+        renderSettings();
+      } catch { }
     });
     const rhythmInputs = [...document.querySelectorAll('[data-rhythm-key]')];
     rhythmInputs.forEach(input => {

@@ -65,6 +65,8 @@ public sealed class Settings
     public bool DisclaimerShown { get; set; }
     /// <summary>首次启动的 UAC 管理员权限询问是否已经回答过。</summary>
     public bool UacPromptShown { get; set; }
+    /// <summary>当前头饰相对默认位置的用户微调偏移（key = 配件 asset id，value = [x,y] 逻辑像素）。</summary>
+    public Dictionary<string, int[]> AccessoryOffsets { get; set; } = new();
 }
 
 public static class ConfigStore

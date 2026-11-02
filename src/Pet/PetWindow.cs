@@ -201,6 +201,7 @@ public sealed class PetWindow : Form
     {
         long leftTs = ApiClient.ReadLong(_auth.UserInfo?["left_treasure_chest"]);
         long rightTs = ApiClient.ReadLong(_auth.UserInfo?["right_treasure_chest"]);
+        var accOffset = AccessoryOffsetFor(_cfg.AccessoryAssetId);
         return new PetComposer.Info
         {
             Clicks = _room.AvailableClicks,
@@ -211,12 +212,38 @@ public sealed class PetWindow : Form
             ChestLeftTs = leftTs,
             ChestRightTs = rightTs,
             NowMs = now,
+            AccOffsetX = accOffset.x,
+            AccOffsetY = accOffset.y,
             // 关闭"总是显示宝箱"时：可领取按钮常显；鼠标悬停桌宠时像表情 UI 一样露出倒计时
             ShowChestLeft = leftTs > 0 && (_cfg.AlwaysShowChest || _hovering || leftTs <= now),
             ShowChestRight = rightTs > 0 && (_cfg.AlwaysShowChest || _hovering || rightTs <= now),
             ChestButton = _chestBtnArt,
             ChestCountdown = _chestBgArt,
         };
+    }
+
+    /// <summary>取当前头饰的用户微调偏移（逻辑像素）。</summary>
+    public (int x, int y) AccessoryOffsetFor(long accessoryId)
+    {
+        if (accessoryId <= 0) return (0, 0);
+        if (_cfg.AccessoryOffsets.TryGetValue(accessoryId.ToString(), out var arr) &&
+            arr != null && arr.Length >= 2)
+            return (Math.Clamp(arr[0], -160, 160), Math.Clamp(arr[1], -160, 160));
+        return (0, 0);
+    }
+
+    /// <summary>微调当前头饰位置；reset=true 时回到 0,0。返回调整后的逻辑坐标。</summary>
+    public (int x, int y) NudgeAccessory(int dx, int dy, bool reset = false)
+    {
+        long id = _cfg.AccessoryAssetId;
+        if (id <= 0) return (0, 0);
+        var current = AccessoryOffsetFor(id);
+        int x = reset ? 0 : Math.Clamp(current.x + dx, -160, 160);
+        int y = reset ? 0 : Math.Clamp(current.y + dy, -160, 160);
+        _cfg.AccessoryOffsets[id.ToString()] = new[] { x, y };
+        ConfigStore.Save(_cfg);
+        Compose();
+        return (x, y);
     }
 
     bool _hovering, _hoverFadeOn;

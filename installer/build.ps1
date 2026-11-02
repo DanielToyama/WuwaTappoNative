@@ -1,6 +1,6 @@
 ﻿param(
   [string]$Configuration = "Release",
-  [string]$Version = "0.0.25"
+  [string]$Version = "0.0.26"
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot

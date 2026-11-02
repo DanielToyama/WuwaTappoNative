@@ -202,6 +202,7 @@ public static class PetComposer
         public Image ChestButton, ChestCountdown;
         public bool Loading;
         public double LoadingPhase;
+        public int AccOffsetX, AccOffsetY;
     }
 
     public static readonly Rectangle ChestLeftRect = new(183, 263, 62, 44);
@@ -233,8 +234,8 @@ public static class PetComposer
         if (body != null) g.DrawImage(body, cat);
         if (f.Accessory != null)
         {
-            int ax = (int)Math.Round((CatX + f.AccOffsetX) * s);
-            int ay = (int)Math.Round((CatY + f.AccOffsetY) * s);
+            int ax = (int)Math.Round((CatX + f.AccOffsetX + info.AccOffsetX) * s);
+            int ay = (int)Math.Round((CatY + f.AccOffsetY + info.AccOffsetY) * s);
             g.DrawImage(f.Accessory, ax, ay, cat.Width, cat.Height);
         }
 
