@@ -41,6 +41,8 @@ public sealed class CompatibilityRegion
 {
     [JsonPropertyName("latest")] public string Latest { get; set; } = "";
     [JsonPropertyName("minOta")] public string MinOta { get; set; } = "";
+    /// <summary>没有单独维护该区服清单时，是否沿用国服的判断。</summary>
+    [JsonPropertyName("inheritCn")] public bool InheritCn { get; set; }
 }
 
 public sealed class CompatibilityProtocol

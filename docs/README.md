@@ -19,6 +19,7 @@
 | `native.minSafe` | 低于此版本时客户端提示更新 |
 | `official.cn.latest` | 当前官方国服最新版本 |
 | `official.global.latest` | 当前官方国际服最新版本，没有清单时可为 `null` |
+| `official.global.inheritCn` | 为 `true` 时页面沿用国服的版本判断，并标注“沿用国服判断（未单独校验）” |
 | `protocol.testedOfficial` | 当前协议已验证的官方版本 |
 | `protocol.breaking` | 是否检测到破坏性协议变更 |
 | `killSwitch.forceOffline` | 是否要求客户端进入安全模式 |

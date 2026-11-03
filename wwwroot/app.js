@@ -1779,6 +1779,8 @@
     const official = c.official || {};
     const cn = official.cn || {};
     const global = official.global || {};
+    const globalUsesCn = global.inheritCn === true && !global.latest;
+    const globalLatest = global.latest || (globalUsesCn ? cn.latest : '');
     const protocol = c.protocol || {};
     const kill = c.killSwitch || {};
     const force = !!kill.forceOffline;
@@ -1790,7 +1792,7 @@
     if (native.latest) bits.push(`最新 ${esc(native.latest)}`);
     if (native.minSafe) bits.push(`最低安全 ${esc(native.minSafe)}`);
     if (cn.latest) bits.push(`官方 CN ${esc(cn.latest)}`);
-    if (global.latest) bits.push(`官方 Global ${esc(global.latest)}`);
+    if (globalLatest) bits.push(`官方 Global ${esc(globalLatest)}${globalUsesCn ? '（沿用 CN）' : ''}`);
     if (protocol.testedOfficial) bits.push(`验证基线 ${esc(protocol.testedOfficial)}`);
     if (updatedText) bits.push(`更新于 ${esc(updatedText)}`);
     return `<section class="compat-banner ${meta.cls}">

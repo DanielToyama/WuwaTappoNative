@@ -240,6 +240,9 @@
         const official = data.official || {};
         const cn = official.cn || {};
         const global = official.global || {};
+        const globalUsesCn = global.inheritCn === true && !global.latest;
+        const globalLatest = global.latest || (globalUsesCn ? cn.latest : '');
+        const globalMinOta = global.minOta || (globalUsesCn ? cn.minOta : '');
         const protocol = data.protocol || {};
         const kill = data.killSwitch || {};
 
@@ -247,8 +250,12 @@
         text('nativeMinSafe', native.minSafe);
         text('officialCn', cn.latest);
         text('officialCnNote', cn.minOta ? '官方最低 OTA 版本：' + cn.minOta : '官方更新清单');
-        text('officialGlobal', global.latest || '未发布');
-        text('officialGlobalNote', global.minOta ? '官方最低 OTA 版本：' + global.minOta : '当前无 Global 更新清单');
+        text('officialGlobal', globalLatest || '未发布');
+        text('officialGlobalNote', globalLatest
+          ? (globalUsesCn
+              ? '沿用国服判断（未单独校验）' + (globalMinOta ? ' · 最低 OTA ' + globalMinOta : '')
+              : (globalMinOta ? '官方最低 OTA 版本：' + globalMinOta : '官方更新清单'))
+          : '当前无 Global 更新清单');
         text('testedOfficial', protocol.testedOfficial);
         text('protocolNote', protocol.breaking
           ? '检测到破坏性协议变更（第 ' + (protocol.generation ?? '?') + ' 代）'

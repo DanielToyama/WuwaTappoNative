@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "updatedAt": "2026-11-03T08:21:52Z",
+  "updatedAt": "2026-11-03T08:45:35Z",
   "status": "safe",
   "message": "当前版本与官方 1.0.3 兼容，可继续使用。",
   "native": {
@@ -14,7 +14,8 @@
     },
     "global": {
       "latest": null,
-      "minOta": null
+      "minOta": null,
+      "inheritCn": true
     }
   },
   "protocol": {
