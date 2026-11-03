@@ -24,10 +24,13 @@ public sealed class App : ApplicationContext
     public PetWindow Pet { get; }
     public KeyboardWindow Keyboard { get; }
     public PanelWindow Panel { get; private set; }
+    /// <summary>GitHub Pages 上发布的版本兼容状态；读取失败时为 null。</summary>
+    public CompatibilityInfo Compatibility { get; private set; }
     System.Threading.Timer _autoChestTimer;
     System.Threading.Timer _clickRefreshTimer;
     System.Threading.Timer _autoClickTimer;
     System.Threading.Timer _gameModeRuleTimer;
+    System.Threading.Timer _compatibilityTimer;
     readonly object _gameModeRuleGate = new();
     bool _gameModeRuleMatched;
     bool _gameModeRuleAuto;
@@ -126,6 +129,8 @@ public sealed class App : ApplicationContext
         // 网络恢复后最多 30 秒重新同步一次点击/宝箱等服务器状态。
         _clickRefreshTimer = new System.Threading.Timer(_ => _ = RefreshClicksAsync(), null, 30000, 30000);
         _gameModeRuleTimer = new System.Threading.Timer(_ => CheckGameModeRules(), null, 1500, 2000);
+        // 启动后异步读取 GitHub Pages 上的兼容状态，之后每 30 分钟刷新；失败不阻塞启动。
+        _compatibilityTimer = new System.Threading.Timer(_ => _ = RefreshCompatibilityAsync(), null, 2500, 30 * 60 * 1000);
         ApplyAutoClickTimer();
         StartStressHarness();
     }
@@ -168,6 +173,16 @@ public sealed class App : ApplicationContext
         timer.Tick += (s, e) => Room.DebugPulseMembers();
         timer.Start();
         Log.Write($"压测模式：成员={count} 频率={hz}Hz");
+    }
+
+    /// <summary>刷新 GitHub Pages 上的版本兼容状态；失败时保留上次结果，不影响本地功能。</summary>
+    public async Task RefreshCompatibilityAsync(bool force = false)
+    {
+        var info = await CompatibilityChecker.CheckAsync(force);
+        if (info == null) return;
+        Compatibility = info;
+        Log.Write($"版本状态：{info.Status} {info.Message}");
+        try { Panel?.Push("compatibility", info); } catch { }
     }
 
     /// <summary>

@@ -364,6 +364,39 @@ img { -webkit-user-drag: none; }
   .tab .badge { display: none; }
 }
 
+/* ---------------- 版本兼容状态 ---------------- */
+.compat-banner {
+  display: flex; align-items: flex-start; gap: 12px;
+  margin: 0 0 14px; padding: 12px 16px;
+  border: 2px solid var(--border); border-radius: 14px;
+  background: linear-gradient(135deg, rgba(255, 250, 238, .98), rgba(255, 244, 222, .96));
+  box-shadow: 0 3px 10px rgba(142, 94, 67, .08);
+}
+.compat-banner.safe { border-color: #a9c9a1; background: linear-gradient(135deg, #f4fbf0, #e8f4e2); }
+.compat-banner.warning, .compat-banner.unknown { border-color: #e2bc7c; background: linear-gradient(135deg, #fffaf0, #fff0d2); }
+.compat-banner.unsafe { border-color: #d99a90; background: linear-gradient(135deg, #fff5f2, #ffe6df); }
+.compat-banner.maintenance { border-color: #a9c2d4; background: linear-gradient(135deg, #f5faff, #e8f1f7); }
+.compat-badge {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 999px;
+  border: 1.5px solid currentColor; font-size: 12px; font-weight: 800;
+  white-space: nowrap;
+}
+.compat-badge span {
+  width: 18px; height: 18px; border-radius: 50%; display: grid; place-items: center;
+  background: currentColor; color: #fff; font-size: 12px; line-height: 1;
+}
+.compat-banner.safe .compat-badge { color: #4f8a5b; }
+.compat-banner.warning .compat-badge, .compat-banner.unknown .compat-badge { color: #b7792f; }
+.compat-banner.unsafe .compat-badge { color: #b34a3f; }
+.compat-banner.maintenance .compat-badge { color: #5d7f9c; }
+.compat-main { flex: 1; min-width: 0; }
+.compat-title { font-size: 14px; font-weight: 800; color: var(--ink-strong); }
+.compat-sub { margin-top: 3px; font-size: 12px; color: var(--ink); line-height: 1.55; }
+.compat-meta { margin-top: 4px; font-size: 11px; color: var(--ink-dim); line-height: 1.5; }
+.compat-force { margin-top: 6px; font-size: 12px; font-weight: 700; color: var(--danger); }
+.compat-link { flex: 0 0 auto; align-self: center; }
+
 /* ---------------- 更新横幅 ---------------- */
 .update-banner {
   margin: 0 0 14px; padding: 12px 16px 14px;

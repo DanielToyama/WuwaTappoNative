@@ -40,6 +40,7 @@
     uacPromptOpen: false,
     update: null,
     updateDismissed: false,
+    compatibility: null,
     favors: new Set(),
     catalog: {},
     atlas: {},
@@ -348,7 +349,12 @@
   }
 
   function handleEvent(evt, data) {
-    if (evt === 'boot') { state.boot = data; state.update = data.update || state.update; renderChrome(); renderPage(); maybeShowDisclaimer(); maybeShowUacPrompt(); maybeOpenEmoteEditor(); return; }
+    if (evt === 'boot') { state.boot = data; state.update = data.update || state.update; state.compatibility = data.compatibility || state.compatibility; renderChrome(); renderPage(); maybeShowDisclaimer(); maybeShowUacPrompt(); maybeOpenEmoteEditor(); return; }
+    if (evt === 'compatibility') {
+      state.compatibility = data;
+      if (state.page === 'settings') renderSettings();
+      return;
+    }
     if (evt === 'update') {
       state.update = data;
       if (state.page === 'settings') renderSettings();
@@ -1758,6 +1764,48 @@
     return out.join('');
   }
 
+  function compatibilityBannerHtml() {
+    const c = state.compatibility;
+    if (!c) return '';
+    const status = String(c.status || 'unknown').toLowerCase();
+    const meta = ({
+      safe: { cls: 'safe', icon: '✓', label: '安全', title: '当前版本可继续使用' },
+      warning: { cls: 'warning', icon: '!', label: '注意', title: '当前版本需要关注' },
+      unsafe: { cls: 'unsafe', icon: '×', label: '不安全', title: '当前版本不建议继续联网' },
+      maintenance: { cls: 'maintenance', icon: '…', label: '维护中', title: '官方服务可能正在维护' },
+      unknown: { cls: 'unknown', icon: '?', label: '未知', title: '暂时无法确认版本状态' }
+    })[status] || { cls: 'unknown', icon: '?', label: '未知', title: '暂时无法确认版本状态' };
+    const native = c.native || {};
+    const official = c.official || {};
+    const cn = official.cn || {};
+    const global = official.global || {};
+    const protocol = c.protocol || {};
+    const kill = c.killSwitch || {};
+    const force = !!kill.forceOffline;
+    const updated = c.updatedAt ? new Date(c.updatedAt) : null;
+    const updatedText = updated && !Number.isNaN(updated.getTime())
+      ? updated.toLocaleString('zh-CN', { hour12: false })
+      : '';
+    const bits = [];
+    if (native.latest) bits.push(`最新 ${esc(native.latest)}`);
+    if (native.minSafe) bits.push(`最低安全 ${esc(native.minSafe)}`);
+    if (cn.latest) bits.push(`官方 CN ${esc(cn.latest)}`);
+    if (global.latest) bits.push(`官方 Global ${esc(global.latest)}`);
+    if (protocol.testedOfficial) bits.push(`验证基线 ${esc(protocol.testedOfficial)}`);
+    if (updatedText) bits.push(`更新于 ${esc(updatedText)}`);
+    return `<section class="compat-banner ${meta.cls}">
+      <div class="compat-badge"><span>${meta.icon}</span>${meta.label}</div>
+      <div class="compat-main">
+        <div class="compat-title">版本状态：${meta.title}</div>
+        <div class="compat-sub">${esc(c.message || '暂无说明')}</div>
+        <div class="compat-meta">${bits.join(' · ')}</div>
+        ${force ? `<div class="compat-force">安全模式：${esc(kill.reason || '维护者要求暂停联网')}</div>` : ''}
+        ${protocol.breaking ? '<div class="compat-force">检测到破坏性协议变更，请尽快更新。</div>' : ''}
+      </div>
+      <a class="btn ghost compat-link" href="https://danieltoyama.github.io/WuwaTappoNative/" target="_blank" rel="noreferrer">状态页</a>
+    </section>`;
+  }
+
   function updateBannerHtml() {
     const u = state.update;
     if (!u || state.updateDismissed) return '';
@@ -1829,6 +1877,7 @@
     const prevScroll = document.querySelector('.settings-scroll')?.scrollTop || 0;
     setPage(`
       <div class="settings-scroll">
+        ${compatibilityBannerHtml()}
         ${updateBannerHtml()}
         <div class="section">
           <div class="section-title">账号</div>
@@ -2113,6 +2162,7 @@
         </div>
         <div class="settings-footer">
           <button class="btn ghost" id="checkUpdateBtn">检查更新</button>
+          <button class="btn ghost" id="compatRefreshBtn">刷新版本状态</button>
           <span class="muted" id="updateCheckStatus"></span>
         </div>
       </div>`);
@@ -2435,6 +2485,26 @@
       } catch {
         btn.disabled = false;
         btn.textContent = '检查更新';
+      }
+    });
+    document.getElementById('compatRefreshBtn')?.addEventListener('click', async () => {
+      const btn = document.getElementById('compatRefreshBtn');
+      btn.disabled = true;
+      btn.textContent = '刷新中…';
+      try {
+        const r = await tryCall('compatibility.check');
+        if (r) {
+          state.compatibility = r;
+          renderSettings();
+          toast('版本状态已更新');
+        } else {
+          toast('暂时无法获取版本状态', 'err');
+        }
+      } catch {
+        toast('版本状态刷新失败', 'err');
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '刷新版本状态';
       }
     });
     bindHotkeys();

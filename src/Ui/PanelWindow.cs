@@ -305,6 +305,7 @@ public sealed class PanelWindow : Form
         disclaimerShown = _app.Cfg.DisclaimerShown,
         uacPromptShown = _app.Cfg.UacPromptShown,
         update = _updateInfo,
+        compatibility = _app.Compatibility,
         settings = new
         {
             scale = _app.Cfg.Scale,
@@ -961,6 +962,10 @@ public sealed class PanelWindow : Form
                 Push("update", info);
                 return new { available = info != null, update = info, currentVersion = current.ToString(3) };
             }
+
+            case "compatibility.check":
+                await _app.RefreshCompatibilityAsync(true);
+                return _app.Compatibility;
 
             case "appearance.offset":
             {

@@ -120,6 +120,8 @@ Wuwatappo Native 是 WuwaTappo 1.0.2 的 Windows 原生实现，使用 C# / .NET
 
 设置页底部的“检查更新”会读取 GitHub Releases。当前版本落后多个版本时，更新说明会按从新到旧列出这些版本的更新内容，并在设置页更新横幅内滚动显示。程序不会自动安装更新，需要从 Release 页面下载新的 Setup 或便携版。
 
+版本兼容状态页：<https://danieltoyama.github.io/WuwaTappoNative/>。页面和客户端都会读取同一份 `docs/compatibility.json`，用于展示当前版本是否仍在安全兼容范围内。
+
 ## 性能
 
 44 名成员、每秒 10 次全员按键的压测下约占单核 6.7%，动作无积压；拖动角色时键盘只移动不重绘。压测命令：
@@ -161,14 +163,14 @@ dotnet build -c Release
 需要 PowerShell 7 和 Inno Setup 6.7 或更高版本。
 
 ```powershell
-pwsh -File .\installer\build.ps1 -Version 0.0.40
+pwsh -File .\installer\build.ps1 -Version 0.0.41
 ```
 
 输出：
 
 ```text
-dist/WuwatappoNative-0.0.40-Setup.exe
-dist/WuwatappoNative-0.0.40-portable.zip
+dist/WuwatappoNative-0.0.41-Setup.exe
+dist/WuwatappoNative-0.0.41-portable.zip
 dist/WuwatappoTokenExtractor-1.0.0-x64.zip
 ```
 
