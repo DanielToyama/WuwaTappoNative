@@ -95,8 +95,8 @@ public sealed class RoomManager : IDisposable
     {
         _auth = auth;
         _cfg = cfg;
-        // 与原版一致：点击上报周期 30 秒。过去 5 秒一次会被服务端按频率拒绝（80013）。
-        _reportTimer = new System.Threading.Timer(_ => _ = FlushClicksAsync(), null, 5000, 30000);
+        // 与原版一致：点击上报周期 30 秒。首次也等 30 秒，避免启动时撞上服务端频率窗口。
+        _reportTimer = new System.Threading.Timer(_ => _ = FlushClicksAsync(), null, 30000, 30000);
         // Socket 断开或首次连接失败后，不能只等一次重试；后台每 5 秒检查并恢复房间连接。
         _reconnectTimer = new System.Threading.Timer(_ => _ = AutoReconnectTickAsync(), null, 3000, 5000);
     }
