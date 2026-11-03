@@ -136,6 +136,19 @@ img { -webkit-user-drag: none; }
 .seg-tab { height: 34px; padding: 0 18px; border-radius: 11px; font-size: 15px; font-weight: 700; color: var(--ink-dim); background: transparent; }
 .seg-tab:hover { background: rgba(186, 124, 90, .12); }
 .seg-tab.active { background: var(--active); color: var(--ink-strong); box-shadow: 0 3px 0 var(--border); }
+.layout-switch {
+  display: inline-flex; align-items: center; gap: 2px;
+  height: 30px; padding: 2px; border: 1.5px solid var(--border);
+  border-radius: 10px; background: var(--cream); white-space: nowrap;
+}
+.layout-choice {
+  height: 24px; padding: 0 10px; border-radius: 7px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 12px; font-weight: 700; color: var(--ink-dim);
+  white-space: nowrap; text-decoration: none;
+}
+.layout-choice:hover { background: rgba(186, 124, 90, .12); }
+.layout-choice.active { background: var(--active); color: var(--ink-strong); box-shadow: 0 1px 0 var(--border); }
 .filter-row { display: flex; gap: 10px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
 .filter-row .select { height: 34px; border-radius: 10px; max-width: 220px; }
 .bag-groups { flex: 1; min-height: 0; overflow-y: auto; padding-right: 4px; }
