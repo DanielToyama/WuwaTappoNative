@@ -475,6 +475,18 @@ public sealed class PanelWindow : Form
                 _app.CheckAutoChestNow();
                 return new { loggedIn = true, nickname = auth.Nickname };
 
+            case "login.phone.sendCode":
+                await auth.SendPhoneCodeAsync(ApiClient.ReadString(data["phone"]));
+                return new { sent = true };
+
+            case "login.phone.submit":
+                await auth.LoginWithPhoneAsync(ApiClient.ReadString(data["phone"]), ApiClient.ReadString(data["code"]));
+                _app.Pet.BeginInvoke(new Action(() => _app.Pet.ApplySettings()));
+                await _app.Room.EnsureLobbyAsync();
+                await _app.ResumeLastRoomAsync();
+                _app.CheckAutoChestNow();
+                return new { loggedIn = true, nickname = auth.Nickname };
+
             case "login.token":
                 auth.SetTokenManually(ApiClient.ReadString(data["token"]));
                 if (await auth.TryRestoreAsync())

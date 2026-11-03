@@ -6,7 +6,7 @@ using WuwatappoNative.Core;
 
 namespace WuwatappoNative.Net;
 
-/// <summary>登录编排：UID 验证码登录（原版主路径）、token 存档、48 小时内自动续期、user/me 同步。</summary>
+/// <summary>登录编排：UID 验证码、国服手机号通行证、token 存档、48 小时内自动续期、user/me 同步。</summary>
 public sealed class AuthService
 {
     readonly Settings _cfg;
@@ -87,7 +87,6 @@ public sealed class AuthService
 
     /// <summary>
     /// UID 登录。playerId 与 code 都必须是数字，字符串会被判定为无效参数。
-    /// 手机号通道已实测不可用，客户端不再接受手机号。
     /// </summary>
     public async Task LoginWithUidAsync(string playerId, string code)
     {
@@ -102,6 +101,87 @@ public sealed class AuthService
         var data = await Api.PostAsync("api/auth/uid-login", new { playerId = uid, code = codeNum });
         ApplyAuthToken(data);
         await WhoAmIAsync();
+    }
+
+    /// <summary>发送库洛通行证手机号验证码（国服 H5 SDK 通道）。</summary>
+    public async Task SendPhoneCodeAsync(string phone)
+    {
+        if (!string.Equals(_cfg.ServerRegion, "cn", StringComparison.OrdinalIgnoreCase))
+            throw new ApiException(-1, "手机号登录仅支持国服");
+        string rawPhone = NormalizePhone(phone);
+        await KuroSdkClient.SendPhoneCodeAsync(rawPhone, _cfg.SdkDeviceNum);
+    }
+
+    /// <summary>手机号验证码登录：先用 H5 SDK 换通行证 access_token，再换 WuwaTappo token。</summary>
+    public async Task LoginWithPhoneAsync(string phone, string code)
+    {
+        if (!string.Equals(_cfg.ServerRegion, "cn", StringComparison.OrdinalIgnoreCase))
+            throw new ApiException(-1, "手机号登录仅支持国服");
+        string rawPhone = NormalizePhone(phone);
+        string trimmed = (code ?? "").Trim();
+        if (string.IsNullOrEmpty(trimmed)) throw new ApiException(-1, "请输入短信验证码");
+        if (!trimmed.All(char.IsDigit)) throw new ApiException(-1, "短信验证码只能是数字");
+        if (trimmed.Length < 4 || trimmed.Length > 6) throw new ApiException(-1, "请输入 4-6 位短信验证码");
+
+        var user = await KuroSdkClient.PhoneLoginAsync(rawPhone, trimmed, _cfg.SdkDeviceNum);
+        await LoginWithSdkSessionAsync(user.Cuid, user.SdkOpenId, user.UserName, user.AccessToken, domestic: true);
+    }
+
+    /// <summary>
+    /// 用通行证会话换取 WuwaTappo token。国服走 is_domestic=1，查询角色后按官方 SDK 参数登录。
+    /// </summary>
+    public async Task LoginWithSdkSessionAsync(string cuid, string sdkOpenId, string userName, string accessToken, bool domestic)
+    {
+        if (string.IsNullOrWhiteSpace(cuid)) throw new ApiException(-1, "缺少通行证 cuid");
+        if (string.IsNullOrWhiteSpace(accessToken)) throw new ApiException(-1, "缺少通行证 access_token");
+        if (string.IsNullOrWhiteSpace(sdkOpenId)) sdkOpenId = cuid;
+
+        var queryResp = await Api.PostAsync("api/auth/player/query", new
+        {
+            cuid,
+            is_domestic = domestic ? 1 : 0,
+        });
+        if (queryResp is not JsonObject queryObj)
+            throw new ApiException(-1, "查询游戏角色失败");
+
+        long channelId = ApiClient.ReadLong(queryObj["channelId"]);
+        if (channelId <= 0) channelId = domestic ? 201 : 18;
+        if (queryObj["items"] is not JsonArray items || items.Count == 0)
+            throw new ApiException(-1, "未找到游戏角色，请先进入游戏创建角色");
+
+        // 官方客户端取玩家列表第一项；这里保持一致。
+        var selectedRole = items.OfType<JsonObject>().FirstOrDefault();
+        if (selectedRole == null) throw new ApiException(-1, "未找到可用游戏角色");
+        long playerId = ApiClient.ReadLong(selectedRole["playerId"]);
+        string serverId = ApiClient.ReadString(selectedRole["serverId"]);
+        if (playerId <= 0) throw new ApiException(-1, "游戏角色信息不完整");
+        if (string.IsNullOrEmpty(serverId)) serverId = "0";
+
+        _cfg.PlayerId = playerId;
+        string cname = string.IsNullOrWhiteSpace(userName) ? sdkOpenId : userName;
+        var loginData = await Api.PostAsync("api/auth/login", new
+        {
+            cuid,
+            puid = sdkOpenId,
+            channelId,
+            userid = sdkOpenId,
+            cname,
+            accessToken,
+            source = "sdk",
+            playerId,
+            serverId,
+            is_domestic = domestic ? 1 : 0,
+        });
+        ApplyAuthToken(loginData);
+        await WhoAmIAsync();
+    }
+
+    static string NormalizePhone(string phone)
+    {
+        string raw = (phone ?? "").Trim().Replace(" ", "").Replace("-", "");
+        if (raw.Length != 11 || !raw.All(char.IsDigit) || raw[0] != '1' || raw[1] < '3' || raw[1] > '9')
+            throw new ApiException(-1, "请输入 11 位手机号");
+        return raw;
     }
 
     /// <summary>
@@ -309,14 +389,14 @@ public sealed class AuthService
         return 0;
     }
 
-    /// <summary>原版校验：游戏 UID 为 9~10 位纯数字。手机号通道实测不可用，不再接受 11 位输入。</summary>
+    /// <summary>UID 登录校验：游戏 UID 为 9~10 位纯数字；手机号请走手机号登录通道。</summary>
     static long ParsePlayerId(string playerId)
     {
         string raw = (playerId ?? "").Trim().Replace(" ", "");
         if (string.IsNullOrEmpty(raw)) throw new ApiException(-1, "请输入游戏 UID");
         if (!raw.All(char.IsDigit)) throw new ApiException(-1, "游戏 UID 只能是数字");
         if (raw.Length == 11)
-            throw new ApiException(-1, "手机号登录已移除，请使用官方登录状态或游戏 UID");
+            throw new ApiException(-1, "UID 登录不支持手机号，请切换到手机号登录");
         if (raw.Length < 9 || raw.Length > 10)
             throw new ApiException(-1, "游戏 UID 为 9-10 位数字");
         return long.Parse(raw);

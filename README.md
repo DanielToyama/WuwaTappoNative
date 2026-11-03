@@ -8,6 +8,7 @@ Wuwatappo Native 是 WuwaTappo 1.0.2 的 Windows 原生实现，使用 C# / .NET
 
 - ✅ 支持原版全部在线内容与联机
 - ✅ 支持国服与国际服（Global）切换与官方登录继承
+- ✅ 支持国服手机号 + 短信验证码登录（库洛通行证）
 - ✅ 支持自定义所有皮肤（他人房间中仅显示你实际拥有的皮肤，但本地可设置为任意皮肤）
 - ✅ 支持发送任意表情（无视拥有状态、无视角色限制，他人可见）
 - ✅ 支持本地微调头饰位置
@@ -53,6 +54,7 @@ Wuwatappo Native 是 WuwaTappo 1.0.2 的 Windows 原生实现，使用 C# / .NET
 1. 启动程序。首次启动会打开主面板并显示免责声明，确认后程序会记住该状态。
 2. 在面板中登录：
    - **UID + 验证码**：输入 9–10 位游戏 UID，获取并填写 6 位验证码。
+   - **手机号 + 短信验证码**：国服可在登录页切换到「手机号登录」，使用库洛通行证手机号登录。
    - **继承官方程序登录状态**：打开 `设置 → 账号 → 继承官方程序登录状态`，程序会读取本机官方 WuwaTappo 的登录数据并关闭正在运行的官方客户端。
    - **导入 token**：可用 `token-extractor/` 中的独立工具读取 `kuro_infoToken`，再粘贴到设置中导入。
 3. 在 `设置 → 账号 → 服务器区服` 选择国服（CN）或国际服（Global）；切换区服会退出当前账号并要求重新登录。
@@ -132,9 +134,9 @@ WuwatappoNative.exe --stress 44 --stress-hz 10
 
 ## 限制
 
-- 手机号登录通道不可用；请使用 UID 验证码、继承官方客户端登录或导入 token。
+- 手机号登录仅支持国服；国际服请使用继承官方客户端登录或导入 token。
 - 没有自动更新器；需要手动下载并安装新版本。
-- 官方客户端使用 App-Bound Encryption（v20）时无法解密其 cookie，只能改用 UID 验证码登录。
+- 官方客户端使用 App-Bound Encryption（v20）时无法解密其 cookie，只能改用 UID 验证码或手机号登录。
 - 普通权限进程无法接收管理员前台窗口的 Raw Input；需要该场景时请开启管理员权限启动。
 - 联机、开宝箱和账号信息依赖库洛服务器；网络不可达或服务器不可用时相关功能不可用。
 - 仅支持 Windows 10/11 x64。
@@ -163,14 +165,14 @@ dotnet build -c Release
 需要 PowerShell 7 和 Inno Setup 6.7 或更高版本。
 
 ```powershell
-pwsh -File .\installer\build.ps1 -Version 0.0.41
+pwsh -File .\installer\build.ps1 -Version 0.0.42
 ```
 
 输出：
 
 ```text
-dist/WuwatappoNative-0.0.41-Setup.exe
-dist/WuwatappoNative-0.0.41-portable.zip
+dist/WuwatappoNative-0.0.42-Setup.exe
+dist/WuwatappoNative-0.0.42-portable.zip
 dist/WuwatappoTokenExtractor-1.0.0-x64.zip
 ```
 

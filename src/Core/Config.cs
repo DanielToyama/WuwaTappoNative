@@ -11,6 +11,8 @@ public sealed class Settings
     public string Token { get; set; } = "";
     public long TokenExpireMs { get; set; }
     public string Cuid { get; set; } = "";
+    /// <summary>库洛 H5 SDK 的设备标识；首次生成后复用，避免每次登录都被当成新设备。</summary>
+    public string SdkDeviceNum { get; set; } = Guid.NewGuid().ToString("N");
     public long UserId { get; set; }
     public long PlayerId { get; set; }
     public string Nickname { get; set; } = "";
@@ -163,6 +165,8 @@ public static class ConfigStore
                     cfg.GameModeRules = GameModeRules.Normalize(cfg.GameModeRules);
                     if (cfg.AutoEmoteMode != "specific" && cfg.AutoEmoteMode != "library") cfg.AutoEmoteMode = "quickbar";
                     cfg.ServerRegion = NormalizeRegion(cfg.ServerRegion);
+                    if (string.IsNullOrWhiteSpace(cfg.SdkDeviceNum) || cfg.SdkDeviceNum.Length < 16)
+                        cfg.SdkDeviceNum = Guid.NewGuid().ToString("N");
                     return cfg;
                 }
             }

@@ -41,6 +41,7 @@
     update: null,
     updateDismissed: false,
     compatibility: null,
+    loginMode: 'uid',
     favors: new Set(),
     catalog: {},
     atlas: {},
@@ -433,6 +434,7 @@
   function renderLogin() {
     const reg = state.boot?.settings?.serverRegion || 'cn';
     const isGlobal = reg === 'global';
+    const mode = !isGlobal && state.loginMode === 'phone' ? 'phone' : 'uid';
     return `<div class="login-wrap"><div class="login-card">
       <h2>登录 Wuwa Tappo</h2>
       <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
@@ -456,14 +458,29 @@
           <button class="btn ghost" id="loginTokenBtn">Token 登录</button>
         </div>
       ` : `
-        <div class="hint">使用游戏 UID 登录；如果无法完成验证码登录，请使用官方登录状态。</div>
-        <input class="input" id="loginUid" placeholder="游戏 UID（9-10 位）" inputmode="numeric" maxlength="10" />
-        <div style="display:flex;gap:10px">
-          <input class="input" id="loginCode" placeholder="6 位验证码" style="flex:1" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
-          <button class="btn ghost" id="sendCodeBtn">发送验证码</button>
+        <div class="pill-row" style="margin-bottom:12px">
+          <button type="button" class="pill ${mode === 'uid' ? 'active' : ''}" data-login-mode="uid">UID 验证码</button>
+          <button type="button" class="pill ${mode === 'phone' ? 'active' : ''}" data-login-mode="phone">手机号登录</button>
         </div>
-        <button class="btn" id="loginBtn">登录</button>
-        <div class="hint">如果无法完成 UID 验证码登录，请先在官方客户端登录，再点击下方按钮继承官方登录状态。</div>
+        ${mode === 'phone' ? `
+          <div class="hint">使用库洛通行证手机号登录；验证码由库洛发送，可能需要人机验证。</div>
+          <input class="input" id="loginPhone" placeholder="手机号（11 位）" inputmode="numeric" maxlength="11" autocomplete="tel" />
+          <div style="display:flex;gap:10px">
+            <input class="input" id="loginPhoneCode" placeholder="短信验证码" style="flex:1" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
+            <button class="btn ghost" id="phoneSendBtn">发送验证码</button>
+          </div>
+          <button class="btn" id="phoneLoginBtn">手机号登录</button>
+          <div class="hint">登录成功后会同步该通行证绑定的鸣潮角色。</div>
+        ` : `
+          <div class="hint">使用游戏 UID 登录；如果无法完成验证码登录，请使用官方登录状态。</div>
+          <input class="input" id="loginUid" placeholder="游戏 UID（9-10 位）" inputmode="numeric" maxlength="10" />
+          <div style="display:flex;gap:10px">
+            <input class="input" id="loginCode" placeholder="6 位验证码" style="flex:1" inputmode="numeric" maxlength="6" autocomplete="one-time-code" />
+            <button class="btn ghost" id="sendCodeBtn">发送验证码</button>
+          </div>
+          <button class="btn" id="loginBtn">登录</button>
+        `}
+        <div class="hint">如果无法完成验证码登录，请先在官方客户端登录，再点击下方按钮继承官方登录状态。</div>
         <button class="btn ghost" id="loginInherit">继承官方程序登录状态</button>
 
         <div style="margin-top:12px;border-top:1px dashed var(--border,#e0d4c3);padding-top:10px">
@@ -481,7 +498,33 @@
     const go = document.getElementById('loginBtn');
     const uidEl = document.getElementById('loginUid');
     const codeEl = document.getElementById('loginCode');
+    const phoneEl = document.getElementById('loginPhone');
+    const phoneCodeEl = document.getElementById('loginPhoneCode');
+    const phoneSend = document.getElementById('phoneSendBtn');
+    const phoneLogin = document.getElementById('phoneLoginBtn');
     const regEl = document.getElementById('loginRegion');
+    const startCooldown = (btn, seconds, label) => {
+      if (!btn) return;
+      let left = seconds;
+      btn.disabled = true;
+      btn.textContent = left + 's';
+      const timer = setInterval(() => {
+        left--;
+        if (left <= 0) {
+          clearInterval(timer);
+          btn.disabled = false;
+          btn.textContent = label;
+        } else {
+          btn.textContent = left + 's';
+        }
+      }, 1000);
+    };
+    document.querySelectorAll('[data-login-mode]').forEach(btn => {
+      btn.onclick = () => {
+        state.loginMode = btn.dataset.loginMode === 'phone' ? 'phone' : 'uid';
+        renderPage();
+      };
+    });
     if (regEl) {
       regEl.onchange = async () => {
         const val = regEl.value;
@@ -489,6 +532,7 @@
           if (!state.boot) state.boot = {};
           if (!state.boot.settings) state.boot.settings = {};
           state.boot.settings.serverRegion = val;
+          if (val === 'global') state.loginMode = 'uid';
           await tryCall('settings.set', { serverRegion: val });
           renderPage();
         }
@@ -499,9 +543,9 @@
       const v = el.value.replace(/[^0-9]/g, '');
       if (el.value !== v) el.value = v;
     });
-    digitsOnly(uidEl); digitsOnly(codeEl);
+    digitsOnly(uidEl); digitsOnly(codeEl); digitsOnly(phoneEl); digitsOnly(phoneCodeEl);
 
-    // 手机号登录已移除，只接受 9-10 位游戏 UID。
+    // UID 登录只接受 9-10 位游戏 UID。
     const uidValid = v => /^[0-9]{9,10}$/.test(v);
     if (send) {
       send.onclick = async () => {
@@ -520,6 +564,34 @@
         if (!/^[0-9]{6}$/.test(code)) return toast('请输入 6 位数字验证码', 'err');
         try {
           await tryCall('login.submit', { uid, code });
+          toast('登录成功');
+          state.boot = await call('boot');
+          renderChrome();
+          navigate('bag');
+        } catch { }
+      };
+    }
+    if (phoneSend) {
+      phoneSend.onclick = async () => {
+        const phone = phoneEl?.value.trim();
+        if (!phone) return toast('请输入手机号', 'err');
+        if (!/^1[3-9]\d{9}$/.test(phone)) return toast('请输入 11 位手机号', 'err');
+        try {
+          await tryCall('login.phone.sendCode', { phone });
+          toast('短信验证码已发送');
+          startCooldown(phoneSend, 60, '发送验证码');
+        } catch { }
+      };
+    }
+    if (phoneLogin) {
+      phoneLogin.onclick = async () => {
+        const phone = phoneEl?.value.trim();
+        const code = phoneCodeEl?.value.trim();
+        if (!phone) return toast('请输入手机号', 'err');
+        if (!/^1[3-9]\d{9}$/.test(phone)) return toast('请输入 11 位手机号', 'err');
+        if (!/^[0-9]{4,6}$/.test(code)) return toast('请输入 4-6 位短信验证码', 'err');
+        try {
+          await tryCall('login.phone.submit', { phone, code });
           toast('登录成功');
           state.boot = await call('boot');
           renderChrome();
@@ -1907,12 +1979,16 @@
                 <input class="input" id="setToken" placeholder="粘贴官方客户端 infoToken" style="flex:1" />
                 <button class="btn ghost" id="setTokenBtn">导入 token</button>
               </div>` : `
-              <div class="detail-row"><span>登录</span><span class="muted">UID + 验证码（也可继承官方登录状态）</span></div>
+              <div class="detail-row"><span>登录</span><span class="muted">UID / 手机号 + 验证码（也可继承官方登录状态）</span></div>
               <div style="display:flex;gap:10px">
                 <input class="input" id="setUid" placeholder="游戏 UID（9-10 位）" style="width:180px" />
                 <input class="input" id="setCode" placeholder="6 位验证码" style="width:140px" />
                 <button class="btn ghost" id="setSend">发送验证码</button>
                 <button class="btn" id="setLogin">登录</button>
+              </div>
+              <div style="display:flex;gap:10px;align-items:center">
+                <button class="btn ghost" id="setPhoneLoginOpen">手机号登录</button>
+                <span class="muted" style="font-size:12px">库洛通行证手机号 + 短信验证码</span>
               </div>
               <div style="display:flex;gap:10px">
                 <input class="input" id="setToken" placeholder="粘贴官方客户端 infoToken" style="flex:1" />
@@ -2564,6 +2640,10 @@
       if (!/^[0-9]{9,10}$/.test(uid)) return toast('请输入 9-10 位游戏 UID', 'err');
       if (!/^[0-9]{6}$/.test(code)) return toast('请输入 6 位数字验证码', 'err');
       try { await tryCall('login.submit', { uid, code }); state.boot = await call('boot'); renderChrome(); navigate('bag'); toast('登录成功'); } catch { }
+    });
+    document.getElementById('setPhoneLoginOpen')?.addEventListener('click', () => {
+      state.loginMode = 'phone';
+      navigate('bag');
     });
     document.getElementById('inheritLogin')?.addEventListener('click', showInheritLogin);
     document.getElementById('setTokenBtn')?.addEventListener('click', async () => {
