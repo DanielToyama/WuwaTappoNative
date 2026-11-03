@@ -29,6 +29,9 @@ public sealed class PanelWindow : Form
     bool _detached;
     ReleaseInfo _updateInfo;
     bool _updateChecked;
+    readonly Dictionary<string, HashSet<long>> _ownedAssets = new(StringComparer.OrdinalIgnoreCase);
+    DateTimeOffset _ownedAssetsAt = DateTimeOffset.MinValue;
+    string _ownedAssetsCuid = "";
 
     public PanelWindow(App app)
     {
@@ -689,6 +692,9 @@ public sealed class PanelWindow : Form
 
             case "appearance.sync":
             {
+                var (uploadChar, uploadAcc, characterBlocked, accessoryBlocked) = await ResolveCloudAppearanceAsync();
+                if (characterBlocked || accessoryBlocked)
+                    Log.Write($"云端外观使用安全值 character={uploadChar} accessory={uploadAcc} blocked={characterBlocked}/{accessoryBlocked}");
                 var serverEmotes = new List<long>();
                 if (_app.Auth.UserInfo?["emote"] is JsonArray serverEmoteArr)
                     foreach (var e in serverEmoteArr)
@@ -696,18 +702,37 @@ public sealed class PanelWindow : Form
                         long eid = ApiClient.ReadLong(e?["id"]);
                         if (eid > 0) serverEmotes.Add(eid);
                     }
+                if (serverEmotes.Count == 0)
+                    serverEmotes.AddRange((cfg.CloudEmoteAssetIds ?? Array.Empty<long>()).Where(id => id > 0));
+
                 await auth.Api.PutAsync("api/frontend/user/me/appearance", new
                 {
-                    character_asset_id = cfg.CharacterAssetId,
-                    accessory_asset_id = cfg.AccessoryAssetId,
+                    character_asset_id = uploadChar,
+                    accessory_asset_id = uploadAcc,
                     // 表情栏只存本地；云端保留服务器现有表情，避免跨角色被拒
                     emote_asset_ids = serverEmotes.ToArray(),
                 });
-                cfg.LocalAppearance = false;
+
+                cfg.CloudCharacterAssetId = uploadChar;
+                cfg.CloudAccessoryAssetId = uploadAcc;
+                cfg.CloudEmoteAssetIds = serverEmotes.ToArray();
+                // 本地装扮与云端安全值一致时才解除本地覆盖；未拥有的本地装扮继续保留。
+                bool localMatches = (cfg.CharacterAssetId == uploadChar || cfg.CharacterAssetId == 0)
+                    && cfg.AccessoryAssetId == uploadAcc;
+                if (localMatches)
+                {
+                    cfg.CharacterAssetId = uploadChar;
+                    cfg.AccessoryAssetId = uploadAcc;
+                    cfg.LocalAppearance = false;
+                }
+                else
+                {
+                    cfg.LocalAppearance = true;
+                }
                 ConfigStore.Save(cfg);
                 await auth.WhoAmIAsync();
                 await _app.Room.AnnounceAppearanceAsync();
-                return new { synced = true };
+                return new { synced = true, characterBlocked, accessoryBlocked };
             }
 
             case "room.create":
@@ -956,12 +981,16 @@ public sealed class PanelWindow : Form
                 return await auth.Api.GetAsync("api/frontend/presets");
 
             case "presets.create":
+            {
+                // 预设同样只使用云端已验证的角色/配件/表情，避免把本地未拥有内容写进云端预设。
+                var cloud = await ResolveCloudAppearanceAsync();
                 return await auth.Api.PostAsync("api/frontend/presets", new
                 {
-                    character_asset_id = cfg.CharacterAssetId,
-                    accessory_asset_id = cfg.AccessoryAssetId,
-                    emote_asset_ids = cfg.EmoteAssetIds ?? Array.Empty<long>(),
+                    character_asset_id = cloud.character,
+                    accessory_asset_id = cloud.accessory,
+                    emote_asset_ids = (cfg.CloudEmoteAssetIds ?? Array.Empty<long>()).Where(id => id > 0).ToArray(),
                 });
+            }
 
             case "presets.delete":
                 return await auth.Api.DeleteAsync("api/frontend/presets", new { preset_id = ApiClient.ReadLong(data["id"]) });
@@ -1007,6 +1036,7 @@ public sealed class PanelWindow : Form
         var auth = _app.Auth;
         if (!auth.IsLoggedIn) throw new ApiException(-1, "请先登录");
         var data = await auth.Api.PostAsync("api/frontend/bags/list");
+        _ownedAssets.Clear();
         var list = new List<object>();
         if (data is JsonArray arr)
         {
@@ -1016,6 +1046,12 @@ public sealed class PanelWindow : Form
                 long id = ApiClient.ReadLong(o["asset_id"]);
                 string type = ApiClient.ReadString(o["asset_type"]);
                 string assetName = ApiClient.ReadString(o["asset_name"]);
+                if (id > 0 && !string.IsNullOrEmpty(type))
+                {
+                    if (!_ownedAssets.TryGetValue(type, out var owned))
+                        _ownedAssets[type] = owned = new HashSet<long>();
+                    owned.Add(id);
+                }
                 string rarity = ApiClient.ReadString(o["rarity"]).ToLowerInvariant();
                 if (rarity == "") rarity = _app.Catalog.Rarities.TryGetValue(id, out var r) ? r : "common";
                 string display = _app.Catalog.DisplayName(type, assetName);
@@ -1039,7 +1075,49 @@ public sealed class PanelWindow : Form
                 });
             }
         }
+        _ownedAssetsCuid = auth.Cuid;
+        _ownedAssetsAt = DateTimeOffset.UtcNow;
         return new { items = list, count = list.Count };
+    }
+
+    async Task EnsureOwnedAssetsAsync()
+    {
+        var auth = _app.Auth;
+        if (!auth.IsLoggedIn) throw new ApiException(-1, "请先登录");
+        string cuid = auth.Cuid ?? "";
+        if (string.Equals(_ownedAssetsCuid, cuid, StringComparison.Ordinal) &&
+            _ownedAssets.Count > 0 &&
+            DateTimeOffset.UtcNow - _ownedAssetsAt < TimeSpan.FromMinutes(2))
+            return;
+        await LoadBagAsync();
+    }
+
+    bool IsOwned(string type, long id)
+    {
+        if (id <= 0) return true;
+        return _ownedAssets.TryGetValue(type, out var owned) && owned.Contains(id);
+    }
+
+    async Task<(long character, long accessory, bool characterBlocked, bool accessoryBlocked)> ResolveCloudAppearanceAsync()
+    {
+        var cfg = _app.Cfg;
+        if (cfg.CloudCharacterAssetId <= 0)
+        {
+            try { await _app.Auth.WhoAmIAsync(); }
+            catch (Exception ex) { Log.Write("同步前读取云端外观失败 " + ex.Message); }
+        }
+        await EnsureOwnedAssetsAsync();
+
+        long localChar = cfg.CharacterAssetId;
+        long localAcc = cfg.AccessoryAssetId;
+        bool characterBlocked = localChar > 0 && !IsOwned("character_skin", localChar);
+        bool accessoryBlocked = localAcc > 0 && !IsOwned("accessory", localAcc);
+        long uploadChar = characterBlocked ? cfg.CloudCharacterAssetId : localChar;
+        long uploadAcc = accessoryBlocked ? cfg.CloudAccessoryAssetId : localAcc;
+        if (uploadChar <= 0) uploadChar = cfg.CloudCharacterAssetId;
+        if (uploadChar <= 0)
+            throw new ApiException(-1, "当前角色未拥有，无法同步云端；请先切换为已拥有角色");
+        return (uploadChar, uploadAcc, characterBlocked, accessoryBlocked);
     }
 
     object CatalogList(string type)

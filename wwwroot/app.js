@@ -806,16 +806,24 @@
       toast('已清空最近获得记录');
     });
     document.getElementById('bagSync').onclick = async () => {
-      try { await tryCall('appearance.sync'); toast('角色/配件已同步到云端（表情栏仅本地）'); } catch { }
+      try {
+        const r = await tryCall('appearance.sync');
+        const blocked = [];
+        if (r?.characterBlocked) blocked.push('角色');
+        if (r?.accessoryBlocked) blocked.push('头饰');
+        toast(blocked.length
+          ? `已同步；未拥有的${blocked.join('、')}保留了云端内容`
+          : '角色/配件已同步到云端（表情栏仅本地）');
+      } catch { }
     };
     document.getElementById('bagRemoveAccessory')?.addEventListener('click', async () => {
       try {
         await tryCall('appearance.set', { type: 'accessory', id: 0 });
-        await tryCall('appearance.sync');
+        const r = await tryCall('appearance.sync');
         state.boot = await call('boot');
         renderChrome();
         renderBag();
-        toast('已摘下头饰并同步云端');
+        toast(r?.characterBlocked ? '已摘下头饰；未拥有的角色保留了云端内容' : '已摘下头饰并同步云端');
       } catch { }
     });
     renderBagList();
@@ -950,9 +958,15 @@
     try {
       const unequipAccessory = item.type === 'accessory' && isAccessoryEquipped(item.id);
       await tryCall('appearance.set', { type: item.type, id: unequipAccessory ? 0 : item.id });
-      if (sync) await tryCall('appearance.sync');
-      toast(unequipAccessory ? (sync ? '已取消头饰并同步云端' : '已取消头饰（本地显示）')
-        : (sync ? '已装备并同步到云端' : '已装备到本地显示'));
+      let syncResult = null;
+      if (sync) syncResult = await tryCall('appearance.sync');
+      const blocked = [];
+      if (syncResult?.characterBlocked) blocked.push('角色');
+      if (syncResult?.accessoryBlocked) blocked.push('头饰');
+      const base = unequipAccessory
+        ? (sync ? '已取消头饰并同步云端' : '已取消头饰（本地显示）')
+        : (sync ? '已装备并同步到云端' : '已装备到本地显示');
+      toast(blocked.length ? `已更新；未拥有的${blocked.join('、')}保留了云端内容` : base);
       state.boot = await call('boot');
       renderChrome();
       if (state.page === 'bag') renderBagDetail();

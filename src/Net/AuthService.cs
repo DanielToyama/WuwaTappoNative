@@ -307,26 +307,27 @@ public sealed class AuthService
 
         long skin = ApiClient.ReadLong(me["character"]?["id"]);
         long acc = ApiClient.ReadLong(me["accessory"]?["id"]);
+        // 云端安全值始终记录服务器最近一次确认的内容；本地是否覆盖由 LocalAppearance 决定。
+        _cfg.CloudCharacterAssetId = skin;
+        _cfg.CloudAccessoryAssetId = acc;
         if (!_cfg.LocalAppearance)
         {
             if (skin > 0) _cfg.CharacterAssetId = skin;
             _cfg.AccessoryAssetId = acc;
         }
 
-        if (!_cfg.LocalEmoteSlots)
+        var emotes = new long[5];
+        if (me["emote"] is JsonArray arr)
         {
-            var emotes = new long[5];
-            if (me["emote"] is JsonArray arr)
+            int i = 0;
+            foreach (var e in arr)
             {
-                int i = 0;
-                foreach (var e in arr)
-                {
-                    if (i >= 5) break;
-                    emotes[i++] = ApiClient.ReadLong(e?["id"]);
-                }
+                if (i >= 5) break;
+                emotes[i++] = ApiClient.ReadLong(e?["id"]);
             }
-            if (emotes.Any(x => x > 0)) _cfg.EmoteAssetIds = emotes;
         }
+        _cfg.CloudEmoteAssetIds = emotes;
+        if (!_cfg.LocalEmoteSlots && emotes.Any(x => x > 0)) _cfg.EmoteAssetIds = emotes;
         ConfigStore.Save(_cfg);
         Changed?.Invoke();
     }
@@ -345,6 +346,9 @@ public sealed class AuthService
         _cfg.UserId = 0;
         _cfg.PlayerId = 0;
         _cfg.Nickname = "";
+        _cfg.CloudCharacterAssetId = 0;
+        _cfg.CloudAccessoryAssetId = 0;
+        _cfg.CloudEmoteAssetIds = new long[5];
         Api.SetToken("");
         ConfigStore.Save(_cfg);
         Changed?.Invoke();

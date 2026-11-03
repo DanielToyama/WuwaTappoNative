@@ -46,6 +46,7 @@ public sealed class RoomManager : IDisposable
     bool _roomReady;
     bool _awaitingSnapshot;
     int _flushingClicks;
+    long _lastRejectedClickLogMs;
 
     /// <summary>累计总额：服务器已记录 + 本地未上报 + 正在上报的点击。上报 cr 与开宝箱的 click_num 都用它。</summary>
     public long DisplayClicks
@@ -94,7 +95,8 @@ public sealed class RoomManager : IDisposable
     {
         _auth = auth;
         _cfg = cfg;
-        _reportTimer = new System.Threading.Timer(_ => _ = FlushClicksAsync(), null, 5000, 5000);
+        // 与原版一致：点击上报周期 30 秒。过去 5 秒一次会被服务端按频率拒绝（80013）。
+        _reportTimer = new System.Threading.Timer(_ => _ = FlushClicksAsync(), null, 5000, 30000);
         // Socket 断开或首次连接失败后，不能只等一次重试；后台每 5 秒检查并恢复房间连接。
         _reconnectTimer = new System.Threading.Timer(_ => _ = AutoReconnectTickAsync(), null, 3000, 5000);
     }
@@ -743,7 +745,17 @@ public sealed class RoomManager : IDisposable
                 var ack = await _socket.EmitAsync("cr", new JsonObject { ["num"] = gross });
                 int code = ack is JsonObject o ? ApiClient.ReadInt(o["c"]) : -1;
                 success = code == 0 || code == 200;
-                if (!success) Log.Write("点击上报被拒绝 c=" + code);
+                if (!success)
+                {
+                    // 80013 是官方客户端会静默忽略的错误（通常是上报频率/风控），
+                    // 保留待上报增量并在下个 30 秒周期重试；日志限频，避免刷屏。
+                    long now = Environment.TickCount64;
+                    if (code != 80013 || now - Interlocked.Read(ref _lastRejectedClickLogMs) >= 300_000)
+                    {
+                        Interlocked.Exchange(ref _lastRejectedClickLogMs, now);
+                        Log.Write($"点击上报被拒绝 c={code} num={gross} pending={sent} base={_baseClicks}");
+                    }
+                }
             }
             catch (Exception ex) { Log.Write("点击上报异常 " + ex.Message); }
 

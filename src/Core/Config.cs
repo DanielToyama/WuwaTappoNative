@@ -24,6 +24,10 @@ public sealed class Settings
     public bool LocalAppearance { get; set; }
     /// <summary>表情栏已被本地编辑过；为 true 时 user/me 不再覆盖槽位。</summary>
     public bool LocalEmoteSlots { get; set; }
+    /// <summary>服务器最近一次确认过的角色/配件/表情；本地装扮可以任意，但上传云端时用这组安全值。</summary>
+    public long CloudCharacterAssetId { get; set; }
+    public long CloudAccessoryAssetId { get; set; }
+    public long[] CloudEmoteAssetIds { get; set; } = new long[5];
     public long[] PresetIds { get; set; } = Array.Empty<long>();
 
     public double Scale { get; set; } = 1.0;
@@ -148,6 +152,13 @@ public static class ConfigStore
                         if (cfg.EmoteAssetIds != null)
                             Array.Copy(cfg.EmoteAssetIds, slots, Math.Min(5, cfg.EmoteAssetIds.Length));
                         cfg.EmoteAssetIds = slots;
+                    }
+                    if (cfg.CloudEmoteAssetIds == null || cfg.CloudEmoteAssetIds.Length != 5)
+                    {
+                        var cloudSlots = new long[5];
+                        if (cfg.CloudEmoteAssetIds != null)
+                            Array.Copy(cfg.CloudEmoteAssetIds, cloudSlots, Math.Min(5, cfg.CloudEmoteAssetIds.Length));
+                        cfg.CloudEmoteAssetIds = cloudSlots;
                     }
                     cfg.RhythmKeyCount = Math.Clamp(cfg.RhythmKeyCount, 4, 6);
                     bool hasProfiles = cfg.RhythmKeys4 != null || cfg.RhythmKeys5 != null || cfg.RhythmKeys6 != null;
