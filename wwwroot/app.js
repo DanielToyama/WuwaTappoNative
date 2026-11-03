@@ -1582,11 +1582,10 @@
           <div class="panel-box" style="flex:1;display:flex;flex-direction:column;min-height:0">
             <div style="display:flex;align-items:center;gap:10px">
               <div class="section-title" style="margin-left:0;flex:1">房间成员（${room.members?.length || 0}）</div>
-              <div class="layout-switch" id="catLayout" title="联机桌宠排列方向">
+              <div class="layout-switch" id="catLayout" style="margin-left:auto" title="切换排列方向并重新排序">
                 <button type="button" class="layout-choice ${(state.boot?.settings?.catLayout || 'horizontal') !== 'vertical' ? 'active' : ''}" data-layout="horizontal">横向排列</button>
                 <button type="button" class="layout-choice ${(state.boot?.settings?.catLayout || 'horizontal') === 'vertical' ? 'active' : ''}" data-layout="vertical">纵向排列</button>
               </div>
-              <button class="btn ghost" id="resetCatOrder" ${joined ? '' : 'disabled'} style="height:30px;padding:0 12px;font-size:13px" title="主角贴右下，其他成员按所选方向排列">重置排序</button>
             </div>
             <div class="member-list" id="memberList">
               ${(room.members || []).map(m => `
@@ -1631,9 +1630,6 @@
     };
     document.querySelectorAll('[data-hist]').forEach(b => b.onclick = async () => {
       try { const r = await tryCall('room.join', { roomNo: b.dataset.hist }); state.boot.room = r; renderRoom(); toast('已加入房间'); } catch { }
-    });
-    document.getElementById('resetCatOrder')?.addEventListener('click', async () => {
-      try { await tryCall('room.resetOrder'); toast('已重置角色排序'); } catch { }
     });
     document.querySelectorAll('#catLayout [data-layout]').forEach(btn => {
       btn.onclick = async () => {
