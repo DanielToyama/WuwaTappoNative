@@ -1796,15 +1796,15 @@
     if (protocol.testedOfficial) bits.push(`验证基线 ${esc(protocol.testedOfficial)}`);
     if (updatedText) bits.push(`更新于 ${esc(updatedText)}`);
     return `<section class="compat-banner ${meta.cls}">
-      <div class="compat-badge"><span>${meta.icon}</span>${meta.label}</div>
-      <div class="compat-main">
-        <div class="compat-title">版本状态：${meta.title}</div>
-        <div class="compat-sub">${esc(c.message || '暂无说明')}</div>
-        <div class="compat-meta">${bits.join(' · ')}</div>
-        ${force ? `<div class="compat-force">安全模式：${esc(kill.reason || '维护者要求暂停联网')}</div>` : ''}
-        ${protocol.breaking ? '<div class="compat-force">检测到破坏性协议变更，请尽快更新。</div>' : ''}
+      <div class="compat-head">
+        <span class="compat-badge"><span>${meta.icon}</span>${meta.label}</span>
+        <span class="compat-title">版本状态：${meta.title}</span>
+        <a class="btn ghost compat-link" href="https://code.danieluu.top/WuwaTappoNative/" target="_blank" rel="noreferrer">状态页</a>
       </div>
-      <a class="btn ghost compat-link" href="https://code.danieluu.top/WuwaTappoNative/" target="_blank" rel="noreferrer">状态页</a>
+      <div class="compat-sub">${esc(c.message || '暂无说明')}</div>
+      <div class="compat-meta">${bits.join(' · ')}</div>
+      ${force ? `<div class="compat-force">安全模式：${esc(kill.reason || '维护者要求暂停联网')}</div>` : ''}
+      ${protocol.breaking ? '<div class="compat-force">检测到破坏性协议变更，请尽快更新。</div>' : ''}
     </section>`;
   }
 
@@ -1879,7 +1879,6 @@
     const prevScroll = document.querySelector('.settings-scroll')?.scrollTop || 0;
     setPage(`
       <div class="settings-scroll">
-        ${compatibilityBannerHtml()}
         ${updateBannerHtml()}
         <div class="section">
           <div class="section-title">账号</div>
@@ -2162,6 +2161,7 @@
             <div class="setting-content"><button class="btn ghost" id="aboutBtn">关于本程序</button></div>
           </div>
         </div>
+        ${compatibilityBannerHtml()}
         <div class="settings-footer">
           <button class="btn ghost" id="checkUpdateBtn">检查更新</button>
           <button class="btn ghost" id="compatRefreshBtn">刷新版本状态</button>
