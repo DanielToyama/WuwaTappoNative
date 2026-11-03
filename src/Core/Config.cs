@@ -36,8 +36,40 @@ public sealed class Settings
     public bool HideOtherPets { get; set; }
     /// <summary>开启后把鸣潮专属指示器替换成四键音游指示器。</summary>
     public bool RhythmMode { get; set; }
-    /// <summary>音游模式从左到右的四个触发键（单字符字母/数字）。</summary>
+    /// <summary>音游模式按键数量：4K / 5K / 6K。</summary>
+    public int RhythmKeyCount { get; set; } = 4;
+    /// <summary>音游模式当前选中键数的触发键（兼容旧配置和运行时代码）。</summary>
     public string[] RhythmKeys { get; set; } = { "D", "F", "J", "K" };
+    /// <summary>各键数模式分别保存的键位。</summary>
+    public string[] RhythmKeys4 { get; set; }
+    public string[] RhythmKeys5 { get; set; }
+    public string[] RhythmKeys6 { get; set; }
+
+    /// <summary>读取指定键数模式的键位；未保存时使用默认键位。</summary>
+    public string[] GetRhythmKeys(int count)
+    {
+        count = Math.Clamp(count, 4, 6);
+        string[] value = count switch
+        {
+            4 => RhythmKeys4,
+            5 => RhythmKeys5,
+            _ => RhythmKeys6,
+        };
+        return value ?? WuwatappoNative.Core.RhythmKeys.DefaultsFor(count);
+    }
+
+    /// <summary>保存指定键数模式的键位，并同步当前活跃键位。</summary>
+    public void SetRhythmKeys(int count, string[] keys)
+    {
+        count = Math.Clamp(count, 4, 6);
+        keys = WuwatappoNative.Core.RhythmKeys.Normalize(keys, count);
+        switch (count)
+        {
+            case 4: RhythmKeys4 = keys; break;
+            case 5: RhythmKeys5 = keys; break;
+            default: RhythmKeys6 = keys; break;
+        }
+    }
     /// <summary>允许角色桌宠互相重叠；关闭后重叠的联机桌宠会自动挪到旁边。</summary>
     public bool AllowOverlap { get; set; } = true;
     /// <summary>OBS 绿幕采集窗口：只显示主角，背景纯绿。</summary>
@@ -115,7 +147,14 @@ public static class ConfigStore
                             Array.Copy(cfg.EmoteAssetIds, slots, Math.Min(5, cfg.EmoteAssetIds.Length));
                         cfg.EmoteAssetIds = slots;
                     }
-                    cfg.RhythmKeys = RhythmKeys.Normalize(cfg.RhythmKeys);
+                    cfg.RhythmKeyCount = Math.Clamp(cfg.RhythmKeyCount, 4, 6);
+                    bool hasProfiles = cfg.RhythmKeys4 != null || cfg.RhythmKeys5 != null || cfg.RhythmKeys6 != null;
+                    cfg.RhythmKeys4 = RhythmKeys.Normalize(cfg.RhythmKeys4 ?? RhythmKeys.DefaultsFor(4), 4);
+                    cfg.RhythmKeys5 = RhythmKeys.Normalize(cfg.RhythmKeys5 ?? RhythmKeys.DefaultsFor(5), 5);
+                    cfg.RhythmKeys6 = RhythmKeys.Normalize(cfg.RhythmKeys6 ?? RhythmKeys.DefaultsFor(6), 6);
+                    if (!hasProfiles)
+                        cfg.SetRhythmKeys(cfg.RhythmKeyCount, cfg.RhythmKeys);
+                    cfg.RhythmKeys = cfg.GetRhythmKeys(cfg.RhythmKeyCount);
                     if (cfg.RhythmMode && cfg.KeyboardMode == "wuwa") cfg.KeyboardMode = "rhythm";
                     else if (!cfg.RhythmMode && cfg.KeyboardMode == "rhythm") cfg.KeyboardMode = "wuwa";
                     cfg.AutoEmoteMaxPerSecond = Math.Clamp(cfg.AutoEmoteMaxPerSecond, 1, 20);

@@ -317,6 +317,7 @@ public sealed class PanelWindow : Form
             showMappingControls = _app.Cfg.ShowMappingControls,
             hideOtherPets = _app.Cfg.HideOtherPets,
             rhythmMode = _app.Cfg.RhythmMode,
+            rhythmKeyCount = _app.Cfg.RhythmKeyCount,
             rhythmKeys = _app.Cfg.RhythmKeys,
             allowOverlap = _app.Cfg.AllowOverlap,
             captureMode = _app.Cfg.CaptureMode,
@@ -798,10 +799,23 @@ public sealed class PanelWindow : Form
                             else if (cfg.KeyboardMode == "rhythm") cfg.KeyboardMode = "wuwa";
                             break;
                         }
+                        case "rhythmKeyCount":
+                        {
+                            int nextCount = Math.Clamp((int)ApiClient.ReadLong(kv.Value), 4, 6);
+                            if (nextCount != cfg.RhythmKeyCount)
+                            {
+                                // 切换键数前先把当前模式的键位存回它自己的配置。
+                                cfg.SetRhythmKeys(cfg.RhythmKeyCount, cfg.RhythmKeys);
+                                cfg.RhythmKeyCount = nextCount;
+                                cfg.RhythmKeys = cfg.GetRhythmKeys(nextCount);
+                            }
+                            break;
+                        }
                         case "rhythmKeys":
                         {
                             var arr = kv.Value as JsonArray;
-                            cfg.RhythmKeys = RhythmKeys.Normalize(arr?.Select(x => ApiClient.ReadString(x)));
+                            cfg.RhythmKeys = RhythmKeys.Normalize(arr?.Select(x => ApiClient.ReadString(x)), cfg.RhythmKeyCount);
+                            cfg.SetRhythmKeys(cfg.RhythmKeyCount, cfg.RhythmKeys);
                             break;
                         }
                         case "hideOtherPets":

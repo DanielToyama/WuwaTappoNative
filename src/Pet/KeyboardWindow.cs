@@ -32,7 +32,7 @@ public sealed class KeyboardWindow : Form
     readonly List<RectangleF> _rhythmLanes = new();
     readonly HashSet<string> _down = new();
     bool _rhythmEnabled;
-    string[] _rhythmKeys = (string[])RhythmKeys.Defaults.Clone();
+    string[] _rhythmKeys = RhythmKeys.DefaultsFor(4);
     // 原版给每次按下约 70ms 的可见高亮：极快的点按也能看见，不会“一闪就没”。
     readonly Dictionary<string, long> _pulseUntil = new();
     System.Windows.Forms.Timer _pulseTimer;
@@ -133,13 +133,19 @@ public sealed class KeyboardWindow : Form
         }
         else if (mode == Mode.Rhythm)
         {
-            // 四键音游指示器：沿用项目的奶油键帽和暖橙高亮，不使用参考工具的素材。
-            float gap = 6, kw = 42, kh = 42;
-            float startX = (W - (4 * kw + 3 * gap)) / 2f;
+            // 4K/5K/6K 音游指示器：沿用项目的奶油键帽和暖橙高亮。
+            int count = Math.Clamp(_rhythmKeys.Length, 4, 6);
+            float gap = 4, kh = 42;
+            float kw = Math.Min(42f, (W - 12 - (count - 1) * gap) / count);
+            float totalW = count * kw + (count - 1) * gap;
+            float startX = (W - totalW) / 2f;
             float y = ToolbarH + 12;
-            for (int i = 0; i < 4; i++)
+            string[] defaults = RhythmKeys.DefaultsFor(count);
+            for (int i = 0; i < count; i++)
             {
-                string label = i < _rhythmKeys.Length ? _rhythmKeys[i] : RhythmKeys.Defaults[i];
+                string label = i < _rhythmKeys.Length && _rhythmKeys[i].Length > 0
+                    ? _rhythmKeys[i]
+                    : defaults[i];
                 var rect = new RectangleF(startX + i * (kw + gap), y, kw, kh);
                 _keys[label] = rect;
                 _rhythmLanes.Add(rect);
@@ -177,11 +183,11 @@ public sealed class KeyboardWindow : Form
         Render();
     }
 
-    /// <summary>切换音游模式并更新四个触发键；已显示时立即重建键帽。</summary>
+    /// <summary>切换音游模式并更新 4/5/6 个触发键；已显示时立即重建键帽。</summary>
     public void SetRhythm(bool enabled, string[] keys)
     {
         _rhythmEnabled = enabled;
-        _rhythmKeys = RhythmKeys.Normalize(keys);
+        _rhythmKeys = RhythmKeys.Normalize(keys, keys?.Length ?? 4);
         if (_mode == Mode.Hidden) return;
         _down.Clear();
         _pulseUntil.Clear();
@@ -244,14 +250,16 @@ public sealed class KeyboardWindow : Form
             return;
         }
         if (_mode != Mode.Letters && _mode != Mode.Wuwa && _mode != Mode.Rhythm) return;
-        string key = vk switch
-        {
-            0x01 => "MOUSE_L",
-            0x02 => "MOUSE_R",
-            0x20 => "SPACE",
-            >= 0x30 and <= 0x5A => ((char)vk).ToString(),
-            _ => null
-        };
+        string key = _mode == Mode.Rhythm
+            ? RhythmKeys.FromVirtualKey(vk)
+            : vk switch
+            {
+                0x01 => "MOUSE_L",
+                0x02 => "MOUSE_R",
+                0x20 => "SPACE",
+                >= 0x30 and <= 0x5A => ((char)vk).ToString(),
+                _ => null
+            };
         if (key == null || !_keys.ContainsKey(key)) return;
         if (down) { if (!_down.Add(key)) return; }
         else { if (!_down.Remove(key)) return; }
@@ -467,11 +475,27 @@ public sealed class KeyboardWindow : Form
             g.DrawPath(glow, path);
         }
         string label = key switch { "MOUSE_L" => "左键", "MOUSE_R" => "右键", "SPACE" => "空格", _ => key };
-        float fs = (rhythm ? 22f : wuwa ? 14f : (key.StartsWith("MOUSE") || key == "SPACE") ? 9f : 9f) * s;
+        float fs = rhythm
+            ? (_rhythmKeys.Length >= 6 ? 16f : _rhythmKeys.Length == 5 ? 18f : 22f)
+            : wuwa ? 14f : (key.StartsWith("MOUSE") || key == "SPACE") ? 9f : 9f;
+        fs *= s;
         using var font = new Font("Microsoft YaHei UI", fs, FontStyle.Bold, GraphicsUnit.Pixel);
         using var text = new SolidBrush(down ? Color.FromArgb(255, 110, 69, 45) : PetComposer.Ink);
         using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-        g.DrawString(label, font, text, r, fmt);
+        if (rhythm && key == RhythmKeys.Space)
+        {
+            // 空格用旋转 90° 的 "[" 作为键帽标记。
+            var state = g.Save();
+            g.TranslateTransform(r.X + r.Width / 2, r.Y + r.Height / 2);
+            g.RotateTransform(90);
+            var box = new RectangleF(-r.Width / 2, -r.Height / 2, r.Width, r.Height);
+            g.DrawString("[", font, text, box, fmt);
+            g.Restore(state);
+        }
+        else
+        {
+            g.DrawString(label, font, text, r, fmt);
+        }
     }
 
     void DrawRhythmLaneNumbers(Graphics g, float s)

@@ -1794,6 +1794,10 @@
     const auth = state.boot?.auth || {};
     const acc = state.boot?.appearance || {};
     const accId = Number(acc.accessoryAssetId || 0);
+    const rhythmCount = Math.max(4, Math.min(6, Number(s.rhythmKeyCount) || 4));
+    const rhythmDefaults = { 4: ['D', 'F', 'J', 'K'], 5: ['D', 'F', 'J', 'K', 'L'], 6: ['S', 'D', 'F', 'J', 'K', 'L'] };
+    const rhythmKeys = Array.isArray(s.rhythmKeys) ? s.rhythmKeys : rhythmDefaults[rhythmCount];
+    const rhythmDisplay = (key) => key === 'SPACE' ? '␣' : (key || '');
     const scalePct = Math.max(25, Math.min(200, Math.round((Number(s.scale) || 1) * 100)));
     const scalePreset = [25, 50, 75, 100, 125, 150, 200].includes(scalePct);
     const accX = Number(acc.accessoryOffsetX || 0);
@@ -1925,13 +1929,21 @@
         <div class="section">
           <div class="section-title">桌面键盘</div>
           <div class="setting-item">
-            <div><div class="setting-title">音游模式</div><div class="setting-sub">把鸣潮专属指示器替换四键音游指示器；开启后立即切换</div></div>
+            <div><div class="setting-title">音游模式</div><div class="setting-sub">把鸣潮专属指示器替换音游指示器；开启后立即切换</div></div>
             <div class="switch ${s.rhythmMode ? 'on' : ''}" data-switch="rhythmMode"></div>
           </div>
           ${s.rhythmMode ? `<div class="setting-item">
-            <div><div class="setting-title">音游触发键位</div><div class="setting-sub">从左到右四个键；显示对应字母，只接受单个字母或数字且不能重复</div></div>
+            <div><div class="setting-title">音游键数</div><div class="setting-sub">选择 4K、5K 或 6K 键位布局</div></div>
             <div class="setting-content">
-              ${[0, 1, 2, 3].map(i => `<input class="input" data-rhythm-key="${i}" maxlength="1" value="${esc(s.rhythmKeys?.[i] || ['D', 'F', 'J', 'K'][i])}" style="width:46px;text-align:center;text-transform:uppercase;font-weight:700" inputmode="text" autocomplete="off" />`).join('')}
+              <select class="select" id="setRhythmKeyCount">
+                ${[4, 5, 6].map(n => `<option value="${n}" ${rhythmCount === n ? 'selected' : ''}>${n}K</option>`).join('')}
+              </select>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">音游触发键位</div><div class="setting-sub">从左到右 ${rhythmCount} 个键；支持字母、数字、空格和 ; ' , . / 等符号；空格显示为横过来的 [</div></div>
+            <div class="setting-content">
+              ${Array.from({ length: rhythmCount }, (_, i) => `<input class="input" data-rhythm-key="${i}" maxlength="1" value="${esc(rhythmDisplay(rhythmKeys[i] || rhythmDefaults[rhythmCount][i]))}" style="width:42px;text-align:center;text-transform:uppercase;font-weight:700" inputmode="text" autocomplete="off" />`).join('')}
             </div>
           </div>` : ''}
           <div class="setting-item">
@@ -2329,14 +2341,42 @@
       } catch { }
     });
     const rhythmInputs = [...document.querySelectorAll('[data-rhythm-key]')];
+    const rhythmNormalize = (value) => {
+      let v = String(value || '').trim();
+      if (v === ' ' || v === '␣' || /^space$/i.test(v)) return '␣';
+      if (v.length > 1) v = v.slice(-1);
+      if (/^[A-Za-z0-9]$/.test(v)) return v.toUpperCase();
+      if (";',./[]=-`\\".includes(v)) return v;
+      return '';
+    };
+    const rhythmToken = (value) => rhythmNormalize(value) === '␣' ? 'SPACE' : rhythmNormalize(value);
+    const rhythmCodeMap = {
+      Space: '␣', Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/',
+      BracketLeft: '[', BracketRight: ']', Minus: '-', Equal: '=', Backquote: '`', Backslash: '\\'
+    };
+    const rhythmFromEvent = (e) => {
+      if (rhythmCodeMap[e.code]) return rhythmCodeMap[e.code];
+      if (/^Key[A-Z]$/.test(e.code)) return e.code.slice(3);
+      if (/^Digit[0-9]$/.test(e.code)) return e.code.slice(5);
+      return null;
+    };
     rhythmInputs.forEach(input => {
-      input.addEventListener('input', () => {
-        input.value = String(input.value || '').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 1);
+      input.addEventListener('focus', () => input.select());
+      input.addEventListener('keydown', e => {
+        if (e.ctrlKey || e.altKey || e.metaKey) return;
+        const value = rhythmFromEvent(e);
+        if (value === null) return;
+        // 直接按键替换当前键位，不需要先删除原值。
+        e.preventDefault();
+        input.value = value;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
       });
+      input.addEventListener('input', () => { input.value = rhythmNormalize(input.value); });
       input.addEventListener('change', async () => {
-        const keys = rhythmInputs.map(x => String(x.value || '').trim().toUpperCase());
-        if (keys.some(k => !/^[A-Z0-9]$/.test(k))) return toast('四个键位都必须是单个字母或数字', 'err');
-        if (new Set(keys).size !== 4) return toast('四个触发键位不能重复', 'err');
+        const keys = rhythmInputs.map(x => rhythmToken(x.value));
+        if (keys.some(k => !(k === 'SPACE' || /^[A-Z0-9]$/.test(k) || ";',./[]=-`\\".includes(k)))) return toast('音游键位包含不支持的字符', 'err');
+        if (new Set(keys).size !== keys.length) return toast('触发键位不能重复', 'err');
         try {
           await tryCall('settings.set', { rhythmKeys: keys });
           await syncBoot();
@@ -2344,6 +2384,13 @@
           toast('音游键位已保存');
         } catch { }
       });
+    });
+    document.getElementById('setRhythmKeyCount')?.addEventListener('change', async e => {
+      try {
+        await tryCall('settings.set', { rhythmKeyCount: Number(e.target.value) });
+        await syncBoot();
+        renderSettings();
+      } catch { }
     });
     document.getElementById('openLog')?.addEventListener('click', () => call('open.log'));
     document.getElementById('aboutBtn')?.addEventListener('click', showAbout);

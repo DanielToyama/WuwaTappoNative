@@ -16,7 +16,7 @@ Wuwatappo Native 是 WuwaTappo 1.0.2 的 Windows 原生实现，使用 C# / .NET
 - ✅ 支持自动表情、自动敲击和游戏模式规则
 - ✅ 支持快捷键
 - ✅ 支持显示当前键盘/手柄键位
-- ✅ 支持音游模式（4个自定义按键）
+- ✅ 音游模式支持 4K / 5K / 6K，每个模式分别保存键位；可设置空格和 ; ' , . / 等标点键
 - ✅ 支持一键继承官方登录状态
 - ✅ 支持主播模式 OBS 绿幕窗口采集
 - ✅ 支持联机角色自动避让与重置排序
@@ -161,14 +161,14 @@ dotnet build -c Release
 需要 PowerShell 7 和 Inno Setup 6.7 或更高版本。
 
 ```powershell
-pwsh -File .\installer\build.ps1 -Version 0.0.38
+pwsh -File .\installer\build.ps1 -Version 0.0.39
 ```
 
 输出：
 
 ```text
-dist/WuwatappoNative-0.0.38-Setup.exe
-dist/WuwatappoNative-0.0.38-portable.zip
+dist/WuwatappoNative-0.0.39-Setup.exe
+dist/WuwatappoNative-0.0.39-portable.zip
 dist/WuwatappoTokenExtractor-1.0.0-x64.zip
 ```
 
