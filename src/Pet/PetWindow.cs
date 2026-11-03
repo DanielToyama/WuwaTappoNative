@@ -1172,9 +1172,9 @@ public sealed class PetWindow : Form
     }
 
     /// <summary>
-    /// 新成员默认从当前屏幕的右下角开始摆放，向右下角对齐：占位就向左挪，
-    /// 一行排满后向上换行。碰撞按桌宠实际可见区域判断，透明的气泡净空不占位置；
-    /// 本机桌宠也视为已占位，避免新成员直接叠在自己身上。
+    /// 新成员默认从当前屏幕右下角开始摆放：横向时贴着工作区底边从右往左，排满后向上换行；
+    /// 纵向时贴着工作区右边，第一列从右下往上，排满后向左换列并从顶部往下。
+    /// 碰撞按桌宠实际可见区域判断，透明的气泡净空不占位置；本机桌宠也视为已占位。
     /// </summary>
     Point DefaultCatPoint()
     {
@@ -1184,7 +1184,6 @@ public sealed class PetWindow : Form
         int head = (int)Math.Round(RemoteCatWindow.Headroom * s);
         int catH = (int)Math.Round(RemoteCatWindow.CatH * s);
         int gap = Math.Max(4, (int)Math.Round(8 * s));
-        int margin = Math.Max(4, (int)Math.Round(10 * s));
         int stepX = Math.Max(1, w + gap);
         int stepY = Math.Max(1, catH + gap);
         var wa = Screen.FromControl(this).WorkingArea;
@@ -1195,10 +1194,32 @@ public sealed class PetWindow : Form
             if (!cat.Visible) continue;
             taken.Add(new Rectangle(cat.Left, cat.Top + head, w, catH));
         }
-        if (Visible && !_hiddenByHotkey) taken.Add(Bounds);
+        if (Visible && !_hiddenByHotkey) taken.Add(LocalVisibleRect());
 
-        int startX = Math.Max(wa.Left, wa.Right - w - margin);
-        int startY = Math.Max(wa.Top, wa.Bottom - h - margin);
+        if (string.Equals(_cfg.CatLayout, "vertical", StringComparison.OrdinalIgnoreCase))
+        {
+            int columnRight = wa.Right;
+            bool firstColumn = true;
+            for (int col = 0; col < 32; col++)
+            {
+                int start = firstColumn ? wa.Bottom - catH : wa.Top;
+                int end = firstColumn ? wa.Top : wa.Bottom - catH;
+                for (int y = start; firstColumn ? y >= end : y <= end; y += firstColumn ? -stepY : stepY)
+                {
+                    int x = columnRight - w;
+                    if (x < wa.Left) break;
+                    var slot = new Rectangle(x, y, w, catH);
+                    if (!taken.Any(t => t.IntersectsWith(slot))) return new Point(x, y - head);
+                }
+                firstColumn = false;
+                columnRight -= stepX;
+                if (columnRight - w < wa.Left) break;
+            }
+            return new Point(wa.Left, wa.Top);
+        }
+
+        int startX = wa.Right - w;
+        int startY = wa.Bottom - h;
         for (int row = 0; row < 32; row++)
         {
             int y = startY - row * stepY;
@@ -1213,18 +1234,23 @@ public sealed class PetWindow : Form
     }
 
     /// <summary>
-    /// 联机面板“重置排序”：本地主角贴右下，当前实际显示的联机成员从右往左排列；
-    /// 一行放不下时向上换行。只排列已经存在的桌宠，不再给离线/隐藏/已离开成员留空位。
+    /// 联机面板“重置排序”：横向时主角贴右下、其他成员从右往左排成底部横排；
+    /// 纵向时沿屏幕右侧向下排列，排满后向左换列并从顶部继续。
+    /// 锚点使用可见区域并贴住工作区底边/右边，和手动拖动贴边后的位置一致。
     /// </summary>
     public void ResetCatOrder()
     {
         var wa = Screen.FromControl(this).WorkingArea;
         float s = DpiScale * (float)_cfg.Scale;
-        int margin = Math.Max(8, (int)Math.Round(12 * s));
         int gap = Math.Max(6, (int)Math.Round(10 * s));
 
-        int localX = Math.Max(wa.Left, wa.Right - Width - margin);
-        int localY = Math.Max(wa.Top, wa.Bottom - Height - margin);
+        // 主窗口右侧有透明边距和宝箱按钮；用实际内容右边界定位，避免主角看起来没贴住屏幕。
+        int mainContentRight = (int)Math.Round(Math.Max(PetComposer.ToolbarX + PetComposer.ToolbarW, PetComposer.ChestRightRect.Right) * s);
+        int mainVisibleOffsetX = (int)Math.Round(PetComposer.CatX * s);
+        int mainVisibleW = (int)Math.Round(PetComposer.CatSize * s);
+        int mainVisibleRight = wa.Right - Math.Max(0, mainContentRight - (mainVisibleOffsetX + mainVisibleW));
+        int localX = mainVisibleRight - mainVisibleOffsetX - mainVisibleW;
+        int localY = Math.Max(wa.Top, wa.Bottom - Height);
         Location = new Point(localX, localY);
         _cfg.PetX = localX;
         _cfg.PetY = localY;
@@ -1244,28 +1270,78 @@ public sealed class PetWindow : Form
             int rw = Math.Max(1, (int)Math.Round(RemoteCatWindow.W * s));
             int catH = Math.Max(1, (int)Math.Round(RemoteCatWindow.CatH * s));
             int rh = Math.Max(1, (int)Math.Round(RemoteCatWindow.H * s));
-            int rowStep = Math.Max(1, catH + gap);
-            int rightEdge = localX - gap;
-            int leftLimit = wa.Left + margin;
-            int baseY = Math.Max(wa.Top, wa.Bottom - rh - margin);
-            int cursorRight = rightEdge;
-            int row = 0;
+            int head = (int)Math.Round(RemoteCatWindow.Headroom * s);
+            int leftLimit = wa.Left;
 
-            for (int i = 0; i < memberIds.Count; i++)
+            if (string.Equals(_cfg.CatLayout, "vertical", StringComparison.OrdinalIgnoreCase))
             {
-                int rawX = cursorRight - rw;
-                if (rawX < leftLimit && cursorRight != rightEdge)
+                // 第一列从主角上方往上排；排满后向左换列，从工作区顶部往下排。
+                int columnRight = wa.Right;
+                int cursorBottom = localY + (int)Math.Round(PetComposer.CatY * s) - gap;
+                int topCursor = wa.Top;
+                bool firstColumn = true;
+
+                foreach (long id in memberIds)
                 {
-                    row++;
-                    cursorRight = rightEdge;
-                    rawX = cursorRight - rw;
+                    int visibleTop;
+                    if (firstColumn)
+                    {
+                        if (cursorBottom - catH >= wa.Top)
+                        {
+                            visibleTop = cursorBottom - catH;
+                            cursorBottom -= catH + gap;
+                        }
+                        else
+                        {
+                            firstColumn = false;
+                            columnRight -= rw + gap;
+                            if (columnRight - rw < leftLimit) break;
+                            visibleTop = wa.Top;
+                            topCursor = wa.Top + catH + gap;
+                        }
+                    }
+                    else
+                    {
+                        if (topCursor + catH > wa.Bottom)
+                        {
+                            columnRight -= rw + gap;
+                            if (columnRight - rw < leftLimit) break;
+                            topCursor = wa.Top;
+                        }
+                        visibleTop = topCursor;
+                        topCursor += catH + gap;
+                    }
+
+                    int x = Math.Max(leftLimit, columnRight - rw);
+                    int y = visibleTop - head;
+                    if (_cats.TryGetValue(id, out var cat)) cat.Location = new Point(x, y);
+                    _cfg.MemberPositions[CatKey(id)] = new[] { x, y };
                 }
-                int x = Math.Max(leftLimit, rawX);
-                int y = Math.Max(wa.Top, baseY - row * rowStep);
-                long id = memberIds[i];
-                if (_cats.TryGetValue(id, out var cat)) cat.Location = new Point(x, y);
-                _cfg.MemberPositions[CatKey(id)] = new[] { x, y };
-                cursorRight = x - gap;
+            }
+            else
+            {
+                // 底部横排：主角贴右下，其他成员从右往左排；一行放不下时向上换行。
+                int rowStep = Math.Max(1, catH + gap);
+                int rightEdge = localX + mainVisibleOffsetX - gap;
+                int baseY = Math.Max(wa.Top, wa.Bottom - rh);
+                int cursorRight = rightEdge;
+                int row = 0;
+
+                foreach (long id in memberIds)
+                {
+                    int rawX = cursorRight - rw;
+                    if (rawX < leftLimit && cursorRight != rightEdge)
+                    {
+                        row++;
+                        cursorRight = rightEdge;
+                        rawX = cursorRight - rw;
+                    }
+                    int x = Math.Max(leftLimit, rawX);
+                    int y = Math.Max(wa.Top, baseY - row * rowStep);
+                    if (_cats.TryGetValue(id, out var cat)) cat.Location = new Point(x, y);
+                    _cfg.MemberPositions[CatKey(id)] = new[] { x, y };
+                    cursorRight = x - gap;
+                }
             }
         }
 
@@ -1330,9 +1406,9 @@ public sealed class PetWindow : Form
             (int)Math.Round(PetComposer.CatSize * s),
             (int)Math.Round(PetComposer.CatSize * s));
         var hud = new Rectangle(
-            Left,
+            Left + (int)Math.Round(PetComposer.CatX * s),
             Top + (int)Math.Round(PetComposer.InfoY * s),
-            Width,
+            (int)Math.Round(PetComposer.CatSize * s),
             (int)Math.Round(PetComposer.CounterH * s));
         return Rectangle.Union(cat, hud);
     }

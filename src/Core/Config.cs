@@ -78,6 +78,8 @@ public sealed class Settings
     }
     /// <summary>允许角色桌宠互相重叠；关闭后重叠的联机桌宠会自动挪到旁边。</summary>
     public bool AllowOverlap { get; set; } = true;
+    /// <summary>联机桌宠排列方向：horizontal = 底部横向，vertical = 右侧纵向。</summary>
+    public string CatLayout { get; set; } = "horizontal";
     /// <summary>OBS 绿幕采集窗口：只显示主角，背景纯绿。</summary>
     public bool CaptureMode { get; set; }
     public int CaptureWidth { get; set; } = 400;
@@ -176,6 +178,7 @@ public static class ConfigStore
                     cfg.GameModeRules = GameModeRules.Normalize(cfg.GameModeRules);
                     if (cfg.AutoEmoteMode != "specific" && cfg.AutoEmoteMode != "library") cfg.AutoEmoteMode = "quickbar";
                     cfg.ServerRegion = NormalizeRegion(cfg.ServerRegion);
+                    cfg.CatLayout = string.Equals(cfg.CatLayout, "vertical", StringComparison.OrdinalIgnoreCase) ? "vertical" : "horizontal";
                     if (string.IsNullOrWhiteSpace(cfg.SdkDeviceNum) || cfg.SdkDeviceNum.Length < 16)
                         cfg.SdkDeviceNum = Guid.NewGuid().ToString("N");
                     return cfg;

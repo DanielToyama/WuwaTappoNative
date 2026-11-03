@@ -324,6 +324,7 @@ public sealed class PanelWindow : Form
             rhythmKeyCount = _app.Cfg.RhythmKeyCount,
             rhythmKeys = _app.Cfg.RhythmKeys,
             allowOverlap = _app.Cfg.AllowOverlap,
+            catLayout = _app.Cfg.CatLayout,
             captureMode = _app.Cfg.CaptureMode,
             captureWidth = _app.Cfg.CaptureWidth,
             captureHeight = _app.Cfg.CaptureHeight,
@@ -861,6 +862,10 @@ public sealed class PanelWindow : Form
                             hideOthersChanged = true;
                             break;
                         case "allowOverlap": cfg.AllowOverlap = ApiClient.ReadBool(kv.Value); break;
+                        case "catLayout":
+                            cfg.CatLayout = string.Equals(ApiClient.ReadString(kv.Value), "vertical", StringComparison.OrdinalIgnoreCase)
+                                ? "vertical" : "horizontal";
+                            break;
                         case "captureMode": cfg.CaptureMode = ApiClient.ReadBool(kv.Value); break;
                         case "captureWidth": cfg.CaptureWidth = Math.Clamp((int)ApiClient.ReadLong(kv.Value), 160, 1600); break;
                         case "captureHeight": cfg.CaptureHeight = Math.Clamp((int)ApiClient.ReadLong(kv.Value), 160, 1600); break;

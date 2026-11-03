@@ -1582,7 +1582,11 @@
           <div class="panel-box" style="flex:1;display:flex;flex-direction:column;min-height:0">
             <div style="display:flex;align-items:center;gap:10px">
               <div class="section-title" style="margin-left:0;flex:1">房间成员（${room.members?.length || 0}）</div>
-              <button class="btn ghost" id="resetCatOrder" ${joined ? '' : 'disabled'} style="height:30px;padding:0 12px;font-size:13px" title="主角贴右下，其他成员在底部排成一排">重置排序</button>
+              <select class="select" id="catLayout" style="height:30px;width:94px;font-size:13px" title="联机桌宠排列方向">
+                <option value="horizontal" ${(state.boot?.settings?.catLayout || 'horizontal') !== 'vertical' ? 'selected' : ''}>横向排列</option>
+                <option value="vertical" ${(state.boot?.settings?.catLayout || 'horizontal') === 'vertical' ? 'selected' : ''}>纵向排列</option>
+              </select>
+              <button class="btn ghost" id="resetCatOrder" ${joined ? '' : 'disabled'} style="height:30px;padding:0 12px;font-size:13px" title="主角贴右下，其他成员按所选方向排列">重置排序</button>
             </div>
             <div class="member-list" id="memberList">
               ${(room.members || []).map(m => `
@@ -1630,6 +1634,17 @@
     });
     document.getElementById('resetCatOrder')?.addEventListener('click', async () => {
       try { await tryCall('room.resetOrder'); toast('已重置角色排序'); } catch { }
+    });
+    document.getElementById('catLayout')?.addEventListener('change', async e => {
+      const val = e.target.value === 'vertical' ? 'vertical' : 'horizontal';
+      try {
+        await tryCall('settings.set', { catLayout: val });
+        if (state.boot?.settings) state.boot.settings.catLayout = val;
+        await tryCall('room.resetOrder');
+        toast(val === 'vertical' ? '已切换为纵向排列' : '已切换为横向排列');
+      } catch {
+        renderRoom();
+      }
     });
     document.getElementById('hideOthers').onclick = async () => {
       const hide = !state.boot?.settings?.hideOtherPets;
@@ -2142,6 +2157,15 @@
         <div class="section">
           <div class="section-title">联机与宝箱</div>
           <div class="setting-item">
+            <div><div class="setting-title">联机桌宠排列</div><div class="setting-sub">横向贴底部排成一排；纵向贴屏幕右侧，排满后向左换列</div></div>
+            <div class="setting-content">
+              <select class="select" id="setCatLayout">
+                <option value="horizontal" ${(s.catLayout || 'horizontal') !== 'vertical' ? 'selected' : ''}>横向排列</option>
+                <option value="vertical" ${(s.catLayout || 'horizontal') === 'vertical' ? 'selected' : ''}>纵向排列</option>
+              </select>
+            </div>
+          </div>
+          <div class="setting-item">
             <div><div class="setting-title">隐藏其他成员桌宠</div><div class="setting-sub">本机显示设置，不影响他人</div></div>
             <div class="switch ${s.hideOtherPets ? 'on' : ''}" data-switch="hideOtherPets"></div>
           </div>
@@ -2641,6 +2665,15 @@
       if (val !== (state.boot?.settings?.serverRegion || 'cn')) {
         await tryCall('settings.set', { serverRegion: val });
       }
+    });
+    document.getElementById('setCatLayout')?.addEventListener('change', async e => {
+      const val = e.target.value === 'vertical' ? 'vertical' : 'horizontal';
+      try {
+        await tryCall('settings.set', { catLayout: val });
+        if (state.boot?.settings) state.boot.settings.catLayout = val;
+        await tryCall('room.resetOrder');
+        toast(val === 'vertical' ? '已切换为纵向排列' : '已切换为横向排列');
+      } catch { }
     });
     document.getElementById('setSend')?.addEventListener('click', async () => {
       const uid = val('setUid');
