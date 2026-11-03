@@ -59,7 +59,7 @@ public sealed class CompatibilityKillSwitch
 /// <summary>读取 GitHub Pages 上的 compatibility.json；失败时返回上次成功结果或不阻塞。</summary>
 public static class CompatibilityChecker
 {
-    public const string PageUrl = "https://danieltoyama.github.io/WuwaTappoNative/";
+    public const string PageUrl = "https://code.danieluu.top/WuwaTappoNative/";
     public const string JsonUrl = PageUrl + "compatibility.json";
 
     static readonly HttpClient Http = CreateClient();

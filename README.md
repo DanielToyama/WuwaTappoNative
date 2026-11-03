@@ -120,7 +120,7 @@ Wuwatappo Native 是 WuwaTappo 1.0.2 的 Windows 原生实现，使用 C# / .NET
 
 设置页底部的“检查更新”会读取 GitHub Releases。当前版本落后多个版本时，更新说明会按从新到旧列出这些版本的更新内容，并在设置页更新横幅内滚动显示。程序不会自动安装更新，需要从 Release 页面下载新的 Setup 或便携版。
 
-版本兼容状态页：<https://danieltoyama.github.io/WuwaTappoNative/>。页面和客户端都会读取同一份 `docs/compatibility.json`，用于展示当前版本是否仍在安全兼容范围内。
+版本兼容状态页：<https://code.danieluu.top/WuwaTappoNative/>。页面和客户端都会读取同一份 `docs/compatibility.json`，用于展示当前版本是否仍在安全兼容范围内。
 
 ## 性能
 

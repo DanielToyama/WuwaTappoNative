@@ -2,8 +2,8 @@
 
 `docs/` 通过 GitHub Pages 发布，地址：
 
-- 状态页：<https://danieltoyama.github.io/WuwaTappoNative/>
-- 状态 JSON：<https://danieltoyama.github.io/WuwaTappoNative/compatibility.json>
+- 状态页：<https://code.danieluu.top/WuwaTappoNative/>
+- 状态 JSON：<https://code.danieluu.top/WuwaTappoNative/compatibility.json>
 
 ## 更新状态
 

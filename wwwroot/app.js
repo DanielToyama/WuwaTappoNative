@@ -1802,7 +1802,7 @@
         ${force ? `<div class="compat-force">安全模式：${esc(kill.reason || '维护者要求暂停联网')}</div>` : ''}
         ${protocol.breaking ? '<div class="compat-force">检测到破坏性协议变更，请尽快更新。</div>' : ''}
       </div>
-      <a class="btn ghost compat-link" href="https://danieltoyama.github.io/WuwaTappoNative/" target="_blank" rel="noreferrer">状态页</a>
+      <a class="btn ghost compat-link" href="https://code.danieluu.top/WuwaTappoNative/" target="_blank" rel="noreferrer">状态页</a>
     </section>`;
   }
 
