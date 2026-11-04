@@ -845,7 +845,7 @@ public sealed class PetWindow : Form
         var entry = _catalog.Find(assetType, assetId);
         if (entry != null) url = _catalog.CdnUrl(entry.Url);
         if (string.IsNullOrEmpty(url)) return;
-        var img = _store.Get(url, () => Safe(() => { var loaded = _store.GetCached(url); if (loaded != null) PushBubble(loaded); }));
+        var img = _store.GetBubbleImage(url, onReady: () => Safe(() => { var loaded = _store.GetBubbleImage(url, allowDownload: false); if (loaded != null) PushBubble(loaded); }));
         if (img != null) PushBubble(img);
     }
 
@@ -856,7 +856,7 @@ public sealed class PetWindow : Form
         if (entry != null)
         {
             string url = _catalog.CdnUrl(entry.Url);
-            var img = _store.Get(url, () => Safe(() => { var loaded = _store.GetCached(url); if (loaded != null) PushBubble(loaded); }));
+            var img = _store.GetBubbleImage(url, onReady: () => Safe(() => { var loaded = _store.GetBubbleImage(url, allowDownload: false); if (loaded != null) PushBubble(loaded); }));
             if (img != null) PushBubble(img);
         }
         try { await _room.SendEmoteAsync(id); } catch (Exception ex) { Log.Write("发送表情失败 " + ex.Message); }

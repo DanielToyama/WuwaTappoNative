@@ -292,9 +292,9 @@ public sealed class RemoteCatWindow : Form
         var e = _catalog.Find("emote", id);
         if (e == null) return null;
         string url = _catalog.CdnUrl(e.Url);
-        var img = _store.Get(url, () =>
+        var img = _store.GetBubbleImage(url, onReady: () =>
         {
-            var loaded = _store.GetCached(url);
+            var loaded = _store.GetBubbleImage(url, allowDownload: false);
             if (loaded != null && IsHandleCreated) BeginInvoke(new Action(() => PushBubble(loaded)));
         });
         return img;

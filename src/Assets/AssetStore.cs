@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Concurrent;
 using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
@@ -16,6 +18,9 @@ public sealed class AssetStore : IDisposable
 {
     readonly HttpClient _http = new() { Timeout = TimeSpan.FromSeconds(30) };
     readonly ConcurrentDictionary<string, Image> _memory = new();
+    readonly ConcurrentDictionary<string, Image> _bubbleMemory = new();
+    readonly ConcurrentQueue<string> _bubbleOrder = new();
+    const int MaxBubbleImages = 160;
     readonly ConcurrentDictionary<string, byte> _inflight = new();
     readonly ConcurrentDictionary<string, string> _pathOf = new();
     // 同一个 URL 在下载期间可能被多个窗口请求；回调必须全部保留，否则后建窗口永远收不到通知。
@@ -51,6 +56,38 @@ public sealed class AssetStore : IDisposable
         if (GetCached(url) is Image cached) return cached;
         onStarted?.Invoke();
         Prefetch(url, onReady);
+        return null;
+    }
+
+    /// <summary>
+    /// 表情气泡专用：不解码并缓存 560px 原图，而是按显示尺寸生成缩略图。
+    /// 高频发表情时避免 504 张表情原图长期占用数百 MB 内存。
+    /// </summary>
+    public Image GetBubbleImage(string url, int maxSize = 192, Action onReady = null, bool allowDownload = true)
+    {
+        if (string.IsNullOrEmpty(url)) return null;
+        string key = url + "|" + maxSize;
+        if (_bubbleMemory.TryGetValue(key, out var cached)) return cached;
+
+        string path = CachePathOf(url);
+        if (File.Exists(path))
+        {
+            var scaled = LoadScaled(path, maxSize);
+            if (scaled != null)
+            {
+                if (_bubbleMemory.TryAdd(key, scaled))
+                {
+                    _bubbleOrder.Enqueue(key);
+                    while (_bubbleOrder.Count > MaxBubbleImages && _bubbleOrder.TryDequeue(out var oldKey))
+                        _bubbleMemory.TryRemove(oldKey, out _);
+                    return scaled;
+                }
+                scaled.Dispose();
+                return _bubbleMemory.TryGetValue(key, out var existing) ? existing : null;
+            }
+        }
+
+        if (allowDownload) Prefetch(url, onReady);
         return null;
     }
 
@@ -137,12 +174,46 @@ public sealed class AssetStore : IDisposable
         }
     }
 
-    public void ClearMemory() => _memory.Clear();
+    static Image LoadScaled(string path, int maxSize)
+    {
+        try
+        {
+            var bytes = File.ReadAllBytes(path);
+            using var ms = new MemoryStream(bytes);
+            using var src = Image.FromStream(ms);
+            int width = src.Width, height = src.Height;
+            double scale = Math.Min(1.0, (double)maxSize / Math.Max(width, height));
+            int tw = Math.Max(1, (int)Math.Round(width * scale));
+            int th = Math.Max(1, (int)Math.Round(height * scale));
+            var bmp = new Bitmap(tw, th, PixelFormat.Format32bppPArgb);
+            using var g = Graphics.FromImage(bmp);
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.SmoothingMode = SmoothingMode.HighQuality;
+            g.DrawImage(src, new Rectangle(0, 0, tw, th));
+            return bmp;
+        }
+        catch (Exception ex)
+        {
+            Log.Write("表情缩略图解码失败 " + path + " " + ex.Message);
+            return null;
+        }
+    }
+
+    public void ClearMemory()
+    {
+        _memory.Clear();
+        _bubbleMemory.Clear();
+        while (_bubbleOrder.TryDequeue(out _)) { }
+    }
 
     public void Dispose()
     {
         _http.Dispose();
         foreach (var img in _memory.Values) { try { img.Dispose(); } catch { } }
+        foreach (var img in _bubbleMemory.Values) { try { img.Dispose(); } catch { } }
         _memory.Clear();
+        _bubbleMemory.Clear();
+        while (_bubbleOrder.TryDequeue(out _)) { }
     }
 }
