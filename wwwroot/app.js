@@ -2627,7 +2627,11 @@
       try { await tryCall('redeem', { code }); toast('兑换成功'); document.getElementById('redeemCode').value = ''; } catch { }
     });
     document.getElementById('logoutBtn')?.addEventListener('click', async () => {
-      try { await tryCall('logout'); state.boot = await call('boot'); renderChrome(); navigate('bag'); toast('已退出登录'); } catch { }
+      try {
+        await tryCall('logout');
+        // 退出后必须重新加载 WebView，清空背包/图鉴/预设等上一个账号的页面缓存。
+        window.location.reload();
+      } catch { }
     });
     document.getElementById('userRefresh')?.addEventListener('click', async () => {
       try { state.boot = await tryCall('user.refresh'); renderChrome(); renderSettings(); toast('已刷新'); } catch { }
