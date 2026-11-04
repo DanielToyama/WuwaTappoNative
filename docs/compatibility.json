@@ -1,11 +1,11 @@
 {
   "schema": 1,
-  "updatedAt": "2026-11-03T16:01:11Z",
+  "updatedAt": "2026-11-04T08:06:46Z",
   "status": "safe",
   "message": "当前版本与官方 1.0.3 兼容，可继续使用。",
   "native": {
-    "latest": "0.0.43",
-    "minSafe": "0.0.43"
+    "latest": "0.0.44",
+    "minSafe": "0.0.44"
   },
   "official": {
     "cn": {
