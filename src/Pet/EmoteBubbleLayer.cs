@@ -21,7 +21,7 @@ public sealed class EmoteBubbleLayer
 
     const int LifeMs = 1000;
     const float Rise = 102f;
-    const int MaxBubbles = 30;
+    const int DefaultMaxBubbles = 8;
 
     // 原版偏移表（再叠加随机抖动）
     static readonly (float X, float Y)[] Offsets =
@@ -31,8 +31,14 @@ public sealed class EmoteBubbleLayer
 
     readonly List<Bubble> _items = new();
     readonly Random _random = new();
+    readonly int _maxBubbles;
     int _seq;
     long _nextId;
+
+    public EmoteBubbleLayer(int maxBubbles = DefaultMaxBubbles)
+    {
+        _maxBubbles = Math.Clamp(maxBubbles, 1, 30);
+    }
 
     public bool Active => _items.Count > 0;
     public int Count => _items.Count;
@@ -49,7 +55,7 @@ public sealed class EmoteBubbleLayer
             OffsetX = o.X + (float)(_random.NextDouble() * 10 - 5),
             OffsetY = o.Y + (float)(_random.NextDouble() * 8 - 4) - 50f,
         });
-        if (_items.Count > MaxBubbles) _items.RemoveAt(0);
+        if (_items.Count > _maxBubbles) _items.RemoveAt(0);
     }
 
     /// <summary>清理过期气泡；返回是否仍有活动气泡。</summary>

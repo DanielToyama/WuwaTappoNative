@@ -23,7 +23,7 @@ public sealed class RemoteCatWindow : Form
     readonly AssetStore _store;
 
     PetFrames _frames;
-    readonly EmoteBubbleLayer _bubbles = new();
+    readonly EmoteBubbleLayer _bubbles = new(6);
     System.Windows.Forms.Timer _emoteTimer, _handReset, _hoverFadeTimer, _hoverFadeAnimTimer;
     int _bodyFrame = 1;
     string _lastAction = "";
@@ -48,11 +48,12 @@ public sealed class RemoteCatWindow : Form
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
         Size = new Size(W, H);
-        _emoteTimer = new System.Windows.Forms.Timer { Interval = 33 };
+        _emoteTimer = new System.Windows.Forms.Timer { Interval = 50 };
         _emoteTimer.Tick += (s, e) =>
         {
             bool active = _bubbles.Tick();
-            Compose();
+            // 表情动画也走重绘调度器：人多时把整窗绘制摊到多帧，避免高频表情卡住 UI。
+            CatPainter.Request(this);
             if (!active) _emoteTimer.Stop();
         };
         _handReset = new System.Windows.Forms.Timer { Interval = 220 };
@@ -271,8 +272,12 @@ public sealed class RemoteCatWindow : Form
     void PushBubble(Image image)
     {
         _bubbles.Add(image);
-        Compose();
-        if (!_emoteTimer.Enabled) _emoteTimer.Start();
+        // 高频表情只让计时器统一重绘，避免突发 ru 时每个气泡都整窗合成。
+        if (!_emoteTimer.Enabled)
+        {
+            CatPainter.Request(this);
+            _emoteTimer.Start();
+        }
     }
 
     Image ResolveEmote(string name)

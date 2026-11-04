@@ -32,7 +32,7 @@ public sealed class PetWindow : Form
     bool _handIsLeft;
     long _lastGeometryMs;
     Point _dragCursor, _dragOrigin;
-    readonly EmoteBubbleLayer _bubbles = new();
+    readonly EmoteBubbleLayer _bubbles = new(10);
     readonly EmoteWheelLayer _wheel = new();
     System.Windows.Forms.Timer _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _wheelShowTimer, _hoverFadeTimer, _loadingTimer, _hoverFadeAnimTimer, _hoverPollTimer;
     long _lastSkin = -1, _lastAcc = -1;
@@ -338,7 +338,7 @@ public sealed class PetWindow : Form
         _moveReset.Tick += (s, e) => { _moveReset.Stop(); SetBody(1); };
         _handReset = new System.Windows.Forms.Timer { Interval = 220 };
         _handReset.Tick += (s, e) => { _handReset.Stop(); SetBody(1); };
-        _emoteTimer = new System.Windows.Forms.Timer { Interval = 33 };
+        _emoteTimer = new System.Windows.Forms.Timer { Interval = 50 };
         _emoteTimer.Tick += (s, e) =>
         {
             bool active = _bubbles.Tick();
@@ -865,8 +865,12 @@ public sealed class PetWindow : Form
     void PushBubble(Image image)
     {
         _bubbles.Add(image);
-        Compose();
-        if (!_emoteTimer.Enabled) _emoteTimer.Start();
+        // 高频发表情时只让动画计时器统一重绘，避免每来一个气泡就整窗合成一次。
+        if (!_emoteTimer.Enabled)
+        {
+            Compose();
+            _emoteTimer.Start();
+        }
     }
 
     // ---------- 全局快捷键 ----------
