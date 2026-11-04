@@ -20,7 +20,10 @@ public sealed class AssetStore : IDisposable
     readonly ConcurrentDictionary<string, Image> _memory = new();
     readonly ConcurrentDictionary<string, Image> _bubbleMemory = new();
     readonly ConcurrentQueue<string> _bubbleOrder = new();
-    const int MaxBubbleImages = 160;
+    // 0.0.46 的 160 上限会在高频随机表情时反复淘汰 GDI+ 缩略图；Bitmap 的 native
+    // 内存回收滞后，会造成内存看起来持续增长。当前表情库仅 504 张，直接保留全部
+    // 160px 缩略图（约 50MB），避免淘汰/重解码抖动，同时远小于 560px 原图缓存。
+    const int MaxBubbleImages = 1024;
     readonly ConcurrentDictionary<string, byte> _inflight = new();
     readonly ConcurrentDictionary<string, string> _pathOf = new();
     // 同一个 URL 在下载期间可能被多个窗口请求；回调必须全部保留，否则后建窗口永远收不到通知。
@@ -63,7 +66,7 @@ public sealed class AssetStore : IDisposable
     /// 表情气泡专用：不解码并缓存 560px 原图，而是按显示尺寸生成缩略图。
     /// 高频发表情时避免 504 张表情原图长期占用数百 MB 内存。
     /// </summary>
-    public Image GetBubbleImage(string url, int maxSize = 192, Action onReady = null, bool allowDownload = true)
+    public Image GetBubbleImage(string url, int maxSize = 160, Action onReady = null, bool allowDownload = true)
     {
         if (string.IsNullOrEmpty(url)) return null;
         string key = url + "|" + maxSize;
