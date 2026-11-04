@@ -24,7 +24,7 @@ public sealed class RemoteCatWindow : Form
 
     PetFrames _frames;
     readonly EmoteBubbleLayer _bubbles = new(6);
-    System.Windows.Forms.Timer _emoteTimer, _handReset, _hoverFadeTimer, _hoverFadeAnimTimer;
+    System.Windows.Forms.Timer _handReset, _hoverFadeTimer, _hoverFadeAnimTimer;
     int _bodyFrame = 1;
     string _lastAction = "";
     long _lastSkin = -1, _lastPart = -1;
@@ -48,14 +48,6 @@ public sealed class RemoteCatWindow : Form
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
         Size = new Size(W, H);
-        _emoteTimer = new System.Windows.Forms.Timer { Interval = 50 };
-        _emoteTimer.Tick += (s, e) =>
-        {
-            bool active = _bubbles.Tick();
-            // 表情动画也走重绘调度器：人多时把整窗绘制摊到多帧，避免高频表情卡住 UI。
-            CatPainter.Request(this);
-            if (!active) _emoteTimer.Stop();
-        };
         _handReset = new System.Windows.Forms.Timer { Interval = 220 };
         _handReset.Tick += (s, e) => { _handReset.Stop(); SetBody(1); };
         _hoverFadeTimer = new System.Windows.Forms.Timer { Interval = 500 };
@@ -272,12 +264,15 @@ public sealed class RemoteCatWindow : Form
     void PushBubble(Image image)
     {
         _bubbles.Add(image);
-        // 高频表情只让计时器统一重绘，避免突发 ru 时每个气泡都整窗合成。
-        if (!_emoteTimer.Enabled)
-        {
-            CatPainter.Request(this);
-            _emoteTimer.Start();
-        }
+        // 多个远程桌宠共用一个表情动画时钟；只有第一次入队时请求重绘。
+        if (RemoteEmoteAnimator.Add(this)) CatPainter.Request(this);
+    }
+
+    internal bool TickEmote()
+    {
+        bool active = _bubbles.Tick();
+        CatPainter.Request(this);
+        return active;
     }
 
     Image ResolveEmote(string name)
@@ -444,7 +439,7 @@ public sealed class RemoteCatWindow : Form
     protected override void OnClosed(EventArgs e)
     {
         if (_frames != null) _frames.Changed -= OnFramesChanged;
-        _emoteTimer.Dispose();
+        RemoteEmoteAnimator.Remove(this);
         _handReset.Dispose();
         _hoverFadeTimer.Dispose();
         _hoverFadeAnimTimer.Dispose();
@@ -533,6 +528,55 @@ public sealed class LayeredSurface : IDisposable
     }
 
     public void Dispose() => Release();
+}
+
+/// <summary>
+/// 多个远程桌宠共用的表情动画时钟。避免每个成员各自持有一个 20fps WinForms Timer，
+/// 人多时大量 WM_TIMER 消息和重复整窗重绘会抢占 UI 线程。
+/// </summary>
+static class RemoteEmoteAnimator
+{
+    static readonly System.Windows.Forms.Timer Timer = new() { Interval = 50 };
+    static readonly HashSet<RemoteCatWindow> Active = new();
+
+    static RemoteEmoteAnimator()
+    {
+        Timer.Tick += (s, e) => Pump();
+    }
+
+    /// <summary>加入动画；返回 true 表示这是该窗口本轮第一次加入，需要立即请求一帧。</summary>
+    public static bool Add(RemoteCatWindow window)
+    {
+        if (window == null || window.IsDisposed) return false;
+        bool added = Active.Add(window);
+        if (!Timer.Enabled) Timer.Start();
+        return added;
+    }
+
+    public static void Remove(RemoteCatWindow window)
+    {
+        Active.Remove(window);
+        if (Active.Count == 0) Timer.Stop();
+    }
+
+    static void Pump()
+    {
+        if (Active.Count == 0)
+        {
+            Timer.Stop();
+            return;
+        }
+        foreach (var window in new List<RemoteCatWindow>(Active))
+        {
+            if (window.IsDisposed || !window.IsHandleCreated)
+            {
+                Active.Remove(window);
+                continue;
+            }
+            if (!window.TickEmote()) Active.Remove(window);
+        }
+        if (Active.Count == 0) Timer.Stop();
+    }
 }
 
 /// <summary>
