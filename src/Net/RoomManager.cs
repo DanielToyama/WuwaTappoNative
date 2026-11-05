@@ -36,6 +36,8 @@ public sealed class RoomManager : IDisposable
     int _reconnectBusy;
     bool _reconnectSuppressed;
     readonly object _clicksLock = new();
+    readonly SemaphoreSlim _clickUploadGate = new(1, 1);
+    long _clickEpoch;
     long _baseClicks;
     long _pendingClicks;
     long _inflightClicks;
@@ -45,7 +47,6 @@ public sealed class RoomManager : IDisposable
     int _generation;
     bool _roomReady;
     bool _awaitingSnapshot;
-    int _flushingClicks;
     long _lastRejectedClickLogMs;
     int _connectionFailures;
     volatile bool _serviceUnavailable;
@@ -702,16 +703,29 @@ public sealed class RoomManager : IDisposable
         ClicksChanged?.Invoke();
     }
 
-    /// <summary>开箱结算时把已包含在 click_num 里的待上报点击并入服务器累计。</summary>
-    public void AbsorbPendingClicks()
+    internal Task EnterClickUploadAsync() => _clickUploadGate.WaitAsync();
+    internal void ExitClickUpload() => _clickUploadGate.Release();
+
+    internal readonly record struct ChestClicks(long Total, long Pending, long Consumed, long Epoch)
+    {
+        public long Available => Math.Max(0, Total - Consumed);
+    }
+
+    internal ChestClicks CaptureChestClicks()
+    {
+        lock (_clicksLock)
+            return new ChestClicks(_baseClicks + _pendingClicks, _pendingClicks, _serverConsume, _clickEpoch);
+    }
+
+    internal void CompleteChestClicks(ChestClicks sent, long consume)
     {
         lock (_clicksLock)
         {
-            if (_pendingClicks > 0)
-            {
-                _baseClicks += _pendingClicks;
-                _pendingClicks = 0;
-            }
+            if (sent.Epoch != _clickEpoch) return;
+            // user/me may already reflect this receipt. Keep the newer server totals.
+            _baseClicks = Math.Max(_baseClicks, sent.Total);
+            _serverConsume = Math.Max(_serverConsume, sent.Consumed + consume);
+            _pendingClicks -= Math.Min(_pendingClicks, sent.Pending);
         }
         ClicksChanged?.Invoke();
     }
@@ -727,6 +741,7 @@ public sealed class RoomManager : IDisposable
     {
         lock (_clicksLock)
         {
+            _clickEpoch++;
             _baseClicks = 0;
             _pendingClicks = 0;
             _inflightClicks = 0;
@@ -770,23 +785,16 @@ public sealed class RoomManager : IDisposable
         }
     }
 
-    /// <summary>开箱响应的 click_consume 先本地记账，随后 user/me 会以服务器值为准。</summary>
-    public void AddConsume(long n)
-    {
-        if (n <= 0) return;
-        lock (_clicksLock) { _serverConsume += n; }
-        ClicksChanged?.Invoke();
-    }
-
     async Task FlushClicksAsync()
     {
-        if (Interlocked.CompareExchange(ref _flushingClicks, 1, 0) != 0) return;
+        if (!await _clickUploadGate.WaitAsync(0)) return;
         long sent = 0, gross = 0;
         try
         {
+            var socket = _socket;
             lock (_clicksLock)
             {
-                if (_socket?.Connected != true || _pendingClicks <= 0) return;
+                if (socket?.Connected != true || _pendingClicks <= 0) return;
                 sent = _pendingClicks;
                 _pendingClicks = 0;
                 _inflightClicks = sent;
@@ -796,7 +804,7 @@ public sealed class RoomManager : IDisposable
             bool success = false;
             try
             {
-                var ack = await _socket.EmitAsync("cr", new JsonObject { ["num"] = gross });
+                var ack = await socket.EmitAsync("cr", new JsonObject { ["num"] = gross });
                 int code = ack is JsonObject o ? ApiClient.ReadInt(o["c"]) : -1;
                 success = code == 0 || code == 200;
                 if (!success)
@@ -826,7 +834,7 @@ public sealed class RoomManager : IDisposable
         }
         finally
         {
-            Interlocked.Exchange(ref _flushingClicks, 0);
+            ExitClickUpload();
         }
     }
 

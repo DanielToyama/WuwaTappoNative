@@ -208,8 +208,7 @@ public sealed class App : ApplicationContext
         try
         {
             if (!Auth.IsLoggedIn) return;
-            await Auth.RefreshClicksAsync();
-            Room.SyncServerClicks(Auth.TotalClickCount, Auth.TotalClickConsume);
+            if (!await Auth.RefreshClicksAsync(Auth.CaptureSession())) return;
             Pet.BeginInvoke(new Action(() => { Pet.RefreshHud(); }));
             try { if (Panel != null && Panel.IsHandleCreated) Panel.BeginInvoke(new Action(PushAuth)); } catch { }
         }
@@ -438,7 +437,8 @@ public sealed class App : ApplicationContext
         if (Interlocked.Exchange(ref _autoChestTickBusy, 1) == 1) return;
         try
         {
-            if (!Auth.IsLoggedIn || !Cfg.AutoChest || Auth.UserInfo is not System.Text.Json.Nodes.JsonObject me) return;
+            var session = Auth.CaptureSession();
+            if (session == null || !Cfg.AutoChest || Auth.UserInfo is not System.Text.Json.Nodes.JsonObject me) return;
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             long left = ApiClient.ReadLong(me["left_treasure_chest"]);
             long right = ApiClient.ReadLong(me["right_treasure_chest"]);
@@ -447,8 +447,7 @@ public sealed class App : ApplicationContext
             bool due = (left > 0 && now >= left - 5000) || (right > 0 && now >= right - 5000);
             if (due)
             {
-                await Auth.RefreshClicksAsync();
-                Room.SyncServerClicks(Auth.TotalClickCount, Auth.TotalClickConsume);
+                if (!await Auth.RefreshClicksAsync(session) || !Cfg.AutoChest) return;
                 Pet.BeginInvoke(new Action(() => Pet.RefreshHud()));
                 if (Auth.UserInfo is not System.Text.Json.Nodes.JsonObject fresh) return;
                 me = fresh;
@@ -457,27 +456,30 @@ public sealed class App : ApplicationContext
                 right = ApiClient.ReadLong(me["right_treasure_chest"]);
             }
 
-            await TryOpenChestAsync("left", left, now, false);
-            await TryOpenChestAsync("right", right, now, true);
+            await TryOpenChestAsync(session, "left", left, now, false);
+            await TryOpenChestAsync(session, "right", right, now, true);
         }
         catch (Exception ex) { Log.Write("自动宝箱失败 " + ex.Message); }
         finally { Interlocked.Exchange(ref _autoChestTickBusy, 0); }
     }
 
-    async Task TryOpenChestAsync(string place, long unlockAt, long now, bool right)
+    async Task TryOpenChestAsync(ApiClient session, string place, long unlockAt, long now, bool right)
     {
         var next = right ? _nextRightAttempt : _nextLeftAttempt;
         if (unlockAt <= 0 || now < unlockAt + 5000 || DateTime.UtcNow < next) return;
         Log.Write("自动宝箱尝试 " + place + " available=" + Room.AvailableClicks);
         try
         {
-            await OpenChestAsync(place, true);
+            await OpenChestAsync(place, true, session);
         }
         catch (Exception ex)
         {
             Log.Write("自动宝箱 " + place + " 未成功：" + ex.Message);
-            if (right) _nextRightAttempt = DateTime.UtcNow.AddSeconds(60);
-            else _nextLeftAttempt = DateTime.UtcNow.AddSeconds(60);
+            Auth.TryUseSession(session, () =>
+            {
+                if (right) _nextRightAttempt = DateTime.UtcNow.AddSeconds(60);
+                else _nextLeftAttempt = DateTime.UtcNow.AddSeconds(60);
+            });
         }
     }
 
@@ -493,28 +495,50 @@ public sealed class App : ApplicationContext
     }
 
     /// <summary>开宝箱：手动点击桌宠锚点或自动领取都走这里。返回原始响应供面板弹奖励。</summary>
-    public async Task<System.Text.Json.Nodes.JsonNode> OpenChestAsync(string place, bool auto)
+    public Task<System.Text.Json.Nodes.JsonNode> OpenChestAsync(string place, bool auto)
     {
-        if (!Auth.IsLoggedIn) throw new ApiException(-1, "请先登录");
+        var session = Auth.CaptureSession() ?? throw new ApiException(-1, "请先登录");
+        return OpenChestAsync(place, auto, session);
+    }
+
+    async Task<System.Text.Json.Nodes.JsonNode> OpenChestAsync(string place, bool auto, ApiClient session)
+    {
         if (Interlocked.Exchange(ref _chestBusy, 1) == 1) throw new ApiException(-1, "正在领取宝箱，请稍候");
         try
         {
-            // 原版开箱前先按可用余额（总额 − 已消耗）判断，再发送累计总额。
-            const long ChestCost = 1000;
-            if (Room.AvailableClicks < ChestCost)
-                throw new ApiException(-1, $"可用点击数不足（需要 {ChestCost}，当前 {Room.AvailableClicks}）");
-            Log.Write("开宝箱 " + place + " auto=" + auto +
-                " click_num=" + Room.DisplayClicks + " available=" + Room.AvailableClicks);
-            var resp = await Auth.Api.PostAsync("api/frontend/chests/open", new { place, click_num = Room.DisplayClicks });
-            long consume = ApiClient.ReadLong(resp?["click_consume"]);
-            if (consume > 0) Room.AddConsume(consume);
-            // 开箱请求已把本地未上报的点击包含在 click_num 里，服务器总额会吸收它们。
-            Room.AbsorbPendingClicks();
-            // 先本地清掉该侧宝箱并立即刷新 UI；user/me 只做后台校正，不能让慢请求拖住奖励提示。
-            Auth.MarkChestOpened(place);
+            System.Text.Json.Nodes.JsonNode resp;
+            long consume;
+            await Room.EnterClickUploadAsync();
+            try
+            {
+                RoomManager.ChestClicks sent = default;
+                Task<System.Text.Json.Nodes.JsonNode> request = null;
+                if (!Auth.TryUseSession(session, () =>
+                {
+                    if (auto && !Cfg.AutoChest) return;
+                    sent = Room.CaptureChestClicks();
+                    const long ChestCost = 1000;
+                    if (sent.Available < ChestCost)
+                        throw new ApiException(-1, $"可用点击数不足（需要 {ChestCost}，当前 {sent.Available}）");
+                    Log.Write("开宝箱 " + place + " auto=" + auto + " click_num=" + sent.Total + " available=" + sent.Available);
+                    request = session.PostAsync("api/frontend/chests/open", new { place, click_num = sent.Total });
+                }) || request == null) return null;
+
+                try { resp = await request; }
+                catch (OperationCanceledException) when (Auth.CaptureSession() != session) { return null; }
+                consume = Math.Max(0, ApiClient.ReadLong(resp?["click_consume"]));
+                if (!Auth.TryUseSession(session, () =>
+                {
+                    Room.CompleteChestClicks(sent, consume);
+                    Auth.MarkChestOpened(place);
+                })) return null;
+            }
+            finally { Room.ExitClickUpload(); }
+
+            if (Auth.CaptureSession() != session) return null;
             PushAuth();
             try { Pet.BeginInvoke(new Action(Pet.RefreshHud)); } catch { }
-            _ = RefreshAfterChestAsync();
+            _ = RefreshAfterChestAsync(session);
             long id = ApiClient.ReadLong(resp?["asset_id"]);
             string type = ApiClient.ReadString(resp?["asset_type"]);
             Log.Write("开宝箱成功 " + place + " asset=" + id + " type=" + type + " consume=" + consume);
@@ -541,12 +565,11 @@ public sealed class App : ApplicationContext
     }
 
     /// <summary>开箱成功后后台校准服务器时间戳；失败只记日志，不影响已经到手的宝箱结果。</summary>
-    async Task RefreshAfterChestAsync()
+    async Task RefreshAfterChestAsync(ApiClient session)
     {
         try
         {
-            await Auth.WhoAmIAsync();
-            Room.SyncServerClicks(Auth.TotalClickCount, Auth.TotalClickConsume);
+            if (!await Auth.WhoAmIAsync(session)) return;
             PushAuth();
             try { Pet.BeginInvoke(new Action(Pet.RefreshHud)); } catch { }
         }
