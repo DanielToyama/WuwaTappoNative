@@ -200,7 +200,8 @@ public sealed class AuthService
         if (string.IsNullOrWhiteSpace(cuid)) throw new ApiException(-1, "缺少 cuid");
         if (string.IsNullOrWhiteSpace(accessToken)) throw new ApiException(-1, "缺少 accessToken");
 
-        // 1. 查询该 cuid 下的角色列表
+        // 1. 查询该 cuid 下的角色列表。官方国际服客户端允许“通行证已登录但账号下没有游戏角色”，
+        // 这种情况下仍然可以用 playerId=0 / serverId=0 换取账号级 token，不能直接判定登录失败。
         var queryResp = await Api.PostAsync("api/auth/player/query", new { cuid = cuid, is_domestic = 0 });
         if (queryResp is not JsonObject queryObj)
             throw new ApiException(-1, "查询国际服角色失败");
@@ -208,31 +209,30 @@ public sealed class AuthService
         long channelId = ApiClient.ReadLong(queryObj["channelId"]);
         if (channelId <= 0) channelId = 18;
 
-        if (queryObj["items"] is not JsonArray items || items.Count == 0)
-            throw new ApiException(-1, "未在国际服找到游戏角色，请先进入游戏创建角色");
-
+        var items = queryObj["items"] as JsonArray;
         JsonObject selectedRole = null;
         if (targetPlayerId.HasValue && targetPlayerId.Value > 0)
         {
-            selectedRole = items.OfType<JsonObject>().FirstOrDefault(r => ApiClient.ReadLong(r["playerId"]) == targetPlayerId.Value);
+            selectedRole = items?.OfType<JsonObject>().FirstOrDefault(r => ApiClient.ReadLong(r["playerId"]) == targetPlayerId.Value);
         }
         if (selectedRole == null && !string.IsNullOrWhiteSpace(targetServerId))
         {
-            selectedRole = items.OfType<JsonObject>().FirstOrDefault(r => string.Equals(ApiClient.ReadString(r["serverId"]), targetServerId, StringComparison.OrdinalIgnoreCase));
+            selectedRole = items?.OfType<JsonObject>().FirstOrDefault(r => string.Equals(ApiClient.ReadString(r["serverId"]), targetServerId, StringComparison.OrdinalIgnoreCase));
         }
-        if (selectedRole == null)
-        {
+        if (selectedRole == null && items != null && items.Count > 0)
             selectedRole = items[0] as JsonObject;
+
+        long playerId = 0;
+        string serverId = "0";
+        if (selectedRole != null)
+        {
+            playerId = ApiClient.ReadLong(selectedRole["playerId"]);
+            serverId = ApiClient.ReadString(selectedRole["serverId"]);
+            if (playerId <= 0) throw new ApiException(-1, "游戏角色信息不完整");
         }
-
-        if (selectedRole == null)
-            throw new ApiException(-1, "未找到可用游戏角色");
-
-        long playerId = ApiClient.ReadLong(selectedRole["playerId"]);
-        string serverId = ApiClient.ReadString(selectedRole["serverId"]);
         _cfg.PlayerId = playerId;
 
-        // 2. 调用 SDK 登录
+        // 2. 调用 SDK 登录；无角色账号使用 0/0，官方客户端也是同样的降级登录方式。
         var loginData = await Api.PostAsync("api/auth/login", new
         {
             cuid = cuid,
@@ -243,12 +243,22 @@ public sealed class AuthService
             accessToken = accessToken,
             source = "sdk",
             playerId = playerId,
-            serverId = serverId,
+            serverId = string.IsNullOrEmpty(serverId) ? "0" : serverId,
             is_domestic = 0
         });
 
         ApplyAuthToken(loginData);
-        await WhoAmIAsync();
+
+        // 无角色账号的 user/me 可能没有 player_id 或超时；token 已经换到，不能让登录状态被这次
+        // 同步失败整体回滚。后续刷新用户信息时会自然补齐。
+        try
+        {
+            await WhoAmIAsync();
+        }
+        catch (Exception ex) when (playerId == 0)
+        {
+            Log.Write("无角色国际服账号登录成功，但 user/me 同步失败：" + ex.Message);
+        }
     }
 
     public async Task RenewAsync()

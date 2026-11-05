@@ -141,6 +141,7 @@ WuwatappoNative.exe --stress 44 --stress-hz 10
 ## 限制
 
 - 手机号登录仅支持国服；国际服请使用继承官方客户端登录或导入 token。
+- 国际服通行证账号即使没有绑定游戏角色，也可以换取账号级 token 登录；部分依赖角色/玩家信息的功能可能不可用。
 - 没有自动更新器；需要手动下载并安装新版本。
 - 官方客户端使用 App-Bound Encryption（v20）时无法解密其 cookie，只能改用 UID 验证码或手机号登录。
 - 普通权限进程无法接收管理员前台窗口的 Raw Input；需要该场景时请开启管理员权限启动。
@@ -171,14 +172,14 @@ dotnet build -c Release
 需要 PowerShell 7 和 Inno Setup 6.7 或更高版本。
 
 ```powershell
-pwsh -File .\installer\build.ps1 -Version 0.1.0
+pwsh -File .\installer\build.ps1 -Version 0.1.1
 ```
 
 输出：
 
 ```text
-dist/WuwatappoNative-0.1.0-Setup.exe
-dist/WuwatappoNative-0.1.0-portable.zip
+dist/WuwatappoNative-0.1.1-Setup.exe
+dist/WuwatappoNative-0.1.1-portable.zip
 dist/WuwatappoTokenExtractor-1.0.0-x64.zip
 ```
 
