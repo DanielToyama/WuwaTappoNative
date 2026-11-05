@@ -9,7 +9,7 @@ using WuwatappoNative.Core;
 
 namespace WuwatappoNative.Net;
 
-/// <summary>最小 Socket.IO v4 / Engine.IO v4 客户端（websocket-only，不自动重连）。</summary>
+/// <summary>最小 Socket.IO v2 / Engine.IO v3 客户端（官方 1.0.4 同款协议；websocket-only，不自动重连）。</summary>
 public sealed class SocketClient : IDisposable
 {
     ClientWebSocket _ws;
@@ -36,7 +36,7 @@ public sealed class SocketClient : IDisposable
         var baseUri = new Uri(baseUrl);
         var uri = new UriBuilder("wss", baseUri.Host, baseUri.Port, "socket.io/")
         {
-            Query = "EIO=4&transport=websocket&token=" + Uri.EscapeDataString(token) + "&rm=" + Uri.EscapeDataString(roomNo ?? "")
+            Query = "EIO=3&transport=websocket&token=" + Uri.EscapeDataString(token) + "&rm=" + Uri.EscapeDataString(roomNo ?? "")
         }.Uri;
         await _ws.ConnectAsync(uri, _cts.Token).ConfigureAwait(false);
         Log.Write("socket 已连接 " + roomNo);
@@ -49,7 +49,7 @@ public sealed class SocketClient : IDisposable
         {
             var node = JsonNode.Parse(msg.Substring(1));
             int interval = (int)ApiClient.ReadLong(node?["pingInterval"]);
-            if (interval >= 1000) _pingIntervalMs = Math.Max(5000, interval - 2000);
+            if (interval >= 1000) _pingIntervalMs = Math.Max(5000, interval);
         }
         catch { }
     }
