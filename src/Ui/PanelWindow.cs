@@ -540,13 +540,12 @@ public sealed class PanelWindow : Form
                 });
 
                 var token = extracted.PreferredToken;
-                string detectedRegion = token?.Region;
-                if (string.IsNullOrEmpty(detectedRegion) && extracted.ForeignSession != null)
-                    detectedRegion = "global";
+                string detectedRegion = string.IsNullOrEmpty(token?.Region) ? extracted.Region : token.Region;
 
                 if (!string.IsNullOrEmpty(detectedRegion) && !string.Equals(_app.Cfg.ServerRegion, detectedRegion, StringComparison.OrdinalIgnoreCase))
                 {
-                    await _app.SwitchServerRegionAsync(detectedRegion);
+                    // 这是登录流程内部的区服校正，不应冒出一个“请重新登录”的切换提示。
+                    await _app.SwitchServerRegionAsync(detectedRegion, announce: false);
                 }
 
                 bool restored = false;
@@ -936,7 +935,8 @@ public sealed class PanelWindow : Form
                             if (reg != "cn" && reg != "global") reg = "cn";
                             if (cfg.ServerRegion != reg)
                             {
-                                await _app.SwitchServerRegionAsync(reg);
+                                bool announce = !data.ContainsKey("announce") || ApiClient.ReadBool(data["announce"]);
+                                await _app.SwitchServerRegionAsync(reg, announce);
                             }
                             break;
                         }

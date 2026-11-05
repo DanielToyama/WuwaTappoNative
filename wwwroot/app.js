@@ -534,7 +534,9 @@
           if (!state.boot.settings) state.boot.settings = {};
           state.boot.settings.serverRegion = val;
           if (val === 'global') state.loginMode = 'uid';
-          await tryCall('settings.set', { serverRegion: val });
+          // 登录页切换区服是登录前的准备动作，不显示“已切换，请重新登录”的提示。
+          const boot = await tryCall('settings.set', { serverRegion: val, announce: false });
+          if (boot?.settings) state.boot = boot;
           renderPage();
         }
       };
@@ -2872,7 +2874,9 @@
     document.getElementById('setServerRegion')?.addEventListener('change', async e => {
       const val = e.target.value;
       if (val !== (state.boot?.settings?.serverRegion || 'cn')) {
-        await tryCall('settings.set', { serverRegion: val });
+        const boot = await tryCall('settings.set', { serverRegion: val });
+        if (boot?.settings) state.boot = boot;
+        renderSettings();
       }
     });
     document.querySelectorAll('#setCatLayout [data-layout]').forEach(btn => {

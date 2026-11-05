@@ -165,7 +165,11 @@ public sealed class RoomManager : IDisposable
         finally { Interlocked.Exchange(ref _busy, 0); }
     }
 
-    public async Task LeaveAsync()
+    /// <param name="reconnectLobby">
+    /// 退房后是否立刻回到大厅。切换区服时必须传 false：否则会用旧区服的 token/BaseUrl
+    /// 重连旧大厅，随后登录新区服时 EnsureLobbyAsync 看到旧 socket 仍连接，就不会建立新连接。
+    /// </param>
+    public async Task LeaveAsync(bool reconnectLobby = true)
     {
         if (Interlocked.Exchange(ref _busy, 1) == 1) return;
         // 退房后 cfg.RoomNo 会被清空，自动重连只会恢复大厅，不会误回旧房间。
@@ -179,7 +183,7 @@ public sealed class RoomManager : IDisposable
             ConfigStore.Save(_cfg);
             Members.Clear();
             StateChanged?.Invoke();
-            await EnsureLobbyAsync();
+            if (reconnectLobby) await EnsureLobbyAsync();
         }
         finally { Interlocked.Exchange(ref _busy, 0); }
     }

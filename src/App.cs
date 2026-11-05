@@ -253,7 +253,8 @@ public sealed class App : ApplicationContext
     }
 
     /// <summary>切换服务器区服（cn / global）：登出账号、换 BaseUrl、重载目录与外观。</summary>
-    public async Task SwitchServerRegionAsync(string region)
+    /// <param name="announce">是否在面板提示“已切换至…”。登录流程内部的自动切换应传 false。</param>
+    public async Task SwitchServerRegionAsync(string region, bool announce = true)
     {
         region = string.Equals(region, "global", StringComparison.OrdinalIgnoreCase) ? "global" : "cn";
         if (Cfg.ServerRegion == region && Auth.Api.BaseUrl == ApiClient.ResolveBaseUrl(region))
@@ -263,7 +264,8 @@ public sealed class App : ApplicationContext
         Cfg.ServerRegion = region;
         ConfigStore.Save(Cfg);
 
-        try { await Room.LeaveAsync(); } catch { }
+        // 不能在这里回到大厅：此时 Auth 仍然指向旧区服，会留下旧区服的 socket。
+        try { await Room.LeaveAsync(reconnectLobby: false); } catch { }
         try { await Auth.LogoutAsync(); } catch { }
 
         Auth.UpdateBaseUrl(ApiClient.ResolveBaseUrl(region));
@@ -285,7 +287,8 @@ public sealed class App : ApplicationContext
                 Panel.BeginInvoke(new Action(() =>
                 {
                     Panel.PushBoot();
-                    Panel.Push("toast", new { text = $"已切换至{(region == "global" ? "国际服" : "国服")}，请重新登录", kind = "ok" });
+                    if (announce)
+                        Panel.Push("toast", new { text = $"已切换至{(region == "global" ? "国际服" : "国服")}，请重新登录", kind = "ok" });
                 }));
             }
         }

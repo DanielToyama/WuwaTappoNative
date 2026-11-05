@@ -43,6 +43,8 @@ public sealed class ExtractionResult
 {
     public List<TokenEntry> Tokens { get; } = new();
     public ForeignSessionInfo? ForeignSession { get; set; }
+    /// <summary>登录数据所属区服：cn / global。</summary>
+    public string Region { get; set; } = "cn";
     public int CookieCount { get; set; }
     public bool SawV20 { get; set; }
     public bool TokenDecryptFailed { get; set; }
@@ -191,8 +193,8 @@ public static class OfficialTokenReader
 
             log?.Invoke("正在解密本地登录数据…");
             byte[] key = LoadKey(Path.Combine(dump, "Local State"));
-            string region = Path.GetFileName(root).Contains("global", StringComparison.OrdinalIgnoreCase) ? "global" : "cn";
-            ReadTokens(cookieCopy, key, result, region, cookies);
+            result.Region = DetectDataRegion(root);
+            ReadTokens(cookieCopy, key, result, result.Region, cookies);
             result.ForeignSession = ReadForeignSession(root);
             log?.Invoke($"读取到 {result.CookieCount} 条 cookie，找到 {result.Tokens.Count} 个 token" +
                 (result.ForeignSession != null ? "，找到官方通行证会话" : "") + "。");
@@ -211,6 +213,21 @@ public static class OfficialTokenReader
                 result.TempCleaned = false;
             }
         }
+    }
+
+    /// <summary>
+    /// 从 WebView2 数据目录判断区服。生产环境下 root 是
+    /// %LOCALAPPDATA%\com.kuro.wuwatappo.global\EBWebView，
+    /// 因此必须检查父目录，不能只看 root 本身的目录名。
+    /// </summary>
+    static string DetectDataRegion(string root)
+    {
+        string full = Path.GetFullPath(root);
+        if (full.IndexOf("com.kuro.wuwatappo.global", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            full.IndexOf("wuwatappo-global", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            full.IndexOf("wuwatappo.global", StringComparison.OrdinalIgnoreCase) >= 0)
+            return "global";
+        return "cn";
     }
 
     public static string? FindDataRoot(string? preferredRegion = null)
