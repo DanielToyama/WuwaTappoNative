@@ -328,6 +328,7 @@ public sealed class PanelWindow : Form
             scale = _app.Cfg.Scale,
             opacity = _app.Cfg.Opacity,
             remoteScale = _app.Cfg.RemoteScale,
+            remoteFollowMain = _app.Cfg.RemoteFollowMainScale,
             remoteOpacity = _app.Cfg.RemoteOpacity,
             topmost = _app.Cfg.Topmost,
             clickThrough = _app.Cfg.ClickThrough,
@@ -878,7 +879,12 @@ public sealed class PanelWindow : Form
                             hideOthersChanged = true;
                             break;
                         case "allowOverlap": cfg.AllowOverlap = ApiClient.ReadBool(kv.Value); break;
-                        case "remoteScale": cfg.RemoteScale = Math.Clamp(ReadDouble(kv.Value), 0.25, 2.0); break;
+                        case "remoteFollowMain": cfg.RemoteFollowMainScale = ApiClient.ReadBool(kv.Value); break;
+                        case "remoteScale":
+                            cfg.RemoteScale = Math.Clamp(ReadDouble(kv.Value), 0.25, 2.0);
+                            // 在联机面板/远程菜单主动调整大小时，退出“跟随主角”。
+                            cfg.RemoteFollowMainScale = false;
+                            break;
                         case "remoteOpacity": cfg.RemoteOpacity = Math.Clamp(ReadDouble(kv.Value), 0.2, 1.0); break;
                         case "catLayout":
                             cfg.CatLayout = string.Equals(ApiClient.ReadString(kv.Value), "vertical", StringComparison.OrdinalIgnoreCase)

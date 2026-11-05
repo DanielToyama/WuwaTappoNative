@@ -1536,7 +1536,8 @@
     const joined = room.state === 'joined';
     const auth = state.boot?.auth || {};
     const s = state.boot?.settings || {};
-    const remoteScalePct = Math.max(25, Math.min(200, Math.round((Number(s.remoteScale) || 1) * 100)));
+    const remoteFollowMain = s.remoteFollowMain !== false;
+    const remoteScalePct = Math.max(25, Math.min(200, Math.round((Number(remoteFollowMain ? s.scale : s.remoteScale) || 1) * 100)));
     const remoteOpacityPct = Math.max(20, Math.min(100, Math.round((Number(s.remoteOpacity) || 1) * 100)));
     const emotes = state.boot?.appearance?.emoteAssetIds || [];
     setPage(`
@@ -1675,7 +1676,10 @@
         const val = Number(el.value) / 100;
         try {
           await tryCall('settings.set', { [key]: val });
-          if (state.boot?.settings) state.boot.settings[key] = val;
+          if (state.boot?.settings) {
+            state.boot.settings[key] = val;
+            if (key === 'remoteScale') state.boot.settings.remoteFollowMain = false;
+          }
         } catch { renderRoom(); }
       };
     };
@@ -2001,6 +2005,10 @@
     const rhythmDisplay = (key) => key === 'SPACE' ? '␣' : (key || '');
     const scalePct = Math.max(25, Math.min(200, Math.round((Number(s.scale) || 1) * 100)));
     const scalePreset = [25, 50, 75, 100, 125, 150, 200].includes(scalePct);
+    const remoteFollowMain = s.remoteFollowMain !== false;
+    const remoteCustomPct = Math.max(25, Math.min(200, Math.round((Number(s.remoteScale) || 1) * 100)));
+    const remoteScalePct = remoteFollowMain ? scalePct : remoteCustomPct;
+    const remoteScalePreset = [25, 50, 75, 100, 125, 150, 200].includes(remoteScalePct);
     const accX = Number(acc.accessoryOffsetX || 0);
     const accY = Number(acc.accessoryOffsetY || 0);
     // 快捷键/菜单改设置会触发 boot 重推；保留滚动位置，别把用户顶回顶部。
@@ -2068,6 +2076,21 @@
               </select>
               <input type="range" min="25" max="200" step="1" value="${scalePct}" id="setScaleRange" style="width:180px" />
               <span id="scaleVal">${scalePct}%</span>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">联机桌宠大小</div><div class="setting-sub">默认跟随主角；取消勾选后可单独调整所有联机角色</div></div>
+            <div class="setting-content">
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--ink);cursor:pointer;white-space:nowrap">
+                <input type="checkbox" id="remoteFollowMain" ${remoteFollowMain ? 'checked' : ''} style="width:16px;height:16px;accent-color:#e3a765" />
+                跟随主角
+              </label>
+              <select class="select" id="setRemoteScale" style="width:96px" ${remoteFollowMain ? 'disabled' : ''}>
+                ${[0.25, 0.5, 0.75, 1, 1.25, 1.5, 2].map(v => `<option value="${v}" ${Math.abs(remoteScalePct / 100 - v) < 0.005 ? 'selected' : ''}>${Math.round(v * 100)}%</option>`).join('')}
+                <option value="custom" disabled ${remoteScalePreset ? '' : 'selected'}>自定义</option>
+              </select>
+              <input type="range" min="25" max="200" step="1" value="${remoteScalePct}" id="setRemoteScaleRange" style="width:150px" ${remoteFollowMain ? 'disabled' : ''} />
+              <span id="remoteScaleVal">${remoteScalePct}%</span>
             </div>
           </div>
           <div class="setting-item">
@@ -2427,6 +2450,14 @@
       if (scaleRange) scaleRange.value = String(pct);
       syncScaleSelect(pct);
       if (state.boot?.settings) state.boot.settings.scale = pct / 100;
+      if (document.getElementById('remoteFollowMain')?.checked) {
+        const rr = document.getElementById('setRemoteScaleRange');
+        const rv = document.getElementById('remoteScaleVal');
+        const rs = document.getElementById('setRemoteScale');
+        if (rr) rr.value = String(pct);
+        if (rv) rv.textContent = pct + '%';
+        if (rs) rs.value = scalePresets.includes(pct) ? String(pct / 100) : 'custom';
+      }
       try {
         const boot = await tryCall('settings.set', { scale: pct / 100 });
         if (boot?.settings) state.boot = boot;
@@ -2452,6 +2483,76 @@
     scaleRange?.addEventListener('change', () => {
       lastScaleSent = performance.now();
       applyScale(Number(scaleRange.value), true);
+    });
+    const remoteFollow = document.getElementById('remoteFollowMain');
+    const remoteScaleSel = document.getElementById('setRemoteScale');
+    const remoteScaleRange = document.getElementById('setRemoteScaleRange');
+    const remoteScaleVal = document.getElementById('remoteScaleVal');
+    const remoteScalePresets = [25, 50, 75, 100, 125, 150, 200];
+    let lastRemoteScaleSent = 0;
+    const syncRemoteScaleSelect = (pct) => {
+      if (!remoteScaleSel) return;
+      remoteScaleSel.value = remoteScalePresets.includes(pct) ? String(pct / 100) : 'custom';
+    };
+    const setRemoteControlsEnabled = (follow) => {
+      if (remoteScaleSel) remoteScaleSel.disabled = follow;
+      if (remoteScaleRange) remoteScaleRange.disabled = follow;
+    };
+    const applyRemoteScale = async (pct, final = false) => {
+      pct = Math.max(25, Math.min(200, Math.round(Number(pct) || 100)));
+      if (remoteScaleVal) remoteScaleVal.textContent = pct + '%';
+      if (remoteScaleRange) remoteScaleRange.value = String(pct);
+      syncRemoteScaleSelect(pct);
+      if (state.boot?.settings) {
+        state.boot.settings.remoteScale = pct / 100;
+        state.boot.settings.remoteFollowMain = false;
+      }
+      try {
+        const boot = await tryCall('settings.set', { remoteScale: pct / 100, remoteFollowMain: false });
+        if (boot?.settings) state.boot = boot;
+        if (final) renderChrome();
+      } catch { }
+    };
+    remoteFollow?.addEventListener('change', async () => {
+      const follow = !!remoteFollow.checked;
+      setRemoteControlsEnabled(follow);
+      if (follow) {
+        try {
+          const boot = await tryCall('settings.set', { remoteFollowMain: true });
+          if (boot?.settings) state.boot = boot;
+          renderSettings();
+        } catch { }
+        return;
+      }
+      const mainPct = Math.max(25, Math.min(200, Math.round((Number(state.boot?.settings?.scale) || 1) * 100)));
+      // 从“跟随主角”切到自定义时，以当前主角大小作为起点，避免滑条突然跳到旧值。
+      if (remoteScaleRange) remoteScaleRange.value = String(mainPct);
+      if (remoteScaleVal) remoteScaleVal.textContent = mainPct + '%';
+      syncRemoteScaleSelect(mainPct);
+      try {
+        const boot = await tryCall('settings.set', { remoteFollowMain: false, remoteScale: mainPct / 100 });
+        if (boot?.settings) state.boot = boot;
+        renderSettings();
+      } catch { }
+    });
+    remoteScaleSel?.addEventListener('change', e => {
+      if (e.target.value === 'custom') return;
+      lastRemoteScaleSent = performance.now();
+      applyRemoteScale(Number(e.target.value) * 100, true);
+    });
+    remoteScaleRange?.addEventListener('input', () => {
+      const pct = Number(remoteScaleRange.value);
+      if (remoteScaleVal) remoteScaleVal.textContent = pct + '%';
+      syncRemoteScaleSelect(pct);
+      const now = performance.now();
+      if (now - lastRemoteScaleSent >= 80) {
+        lastRemoteScaleSent = now;
+        applyRemoteScale(pct, false);
+      }
+    });
+    remoteScaleRange?.addEventListener('change', () => {
+      lastRemoteScaleSent = performance.now();
+      applyRemoteScale(Number(remoteScaleRange.value), true);
     });
     const captureW = document.getElementById('captureW');
     const captureH = document.getElementById('captureH');

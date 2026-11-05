@@ -1,6 +1,6 @@
 #define MyAppName "Wuwatappo Native"
 #ifndef MyVersion
-  #define MyVersion "0.0.48"
+  #define MyVersion "0.1.0"
 #endif
 #ifndef MySourceDir
   #define MySourceDir "..\publish\app-" + MyVersion
@@ -15,6 +15,7 @@ DefaultDirName={localappdata}\Programs\Wuwatappo Native
 UsePreviousAppDir=yes
 DisableDirPage=yes
 DisableProgramGroupPage=yes
+; 以 lowest 启动，由 [Code] 主动请求管理员权限；拒绝 UAC 时继续标准权限安装。
 PrivilegesRequired=lowest
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
@@ -54,6 +55,18 @@ var
   ResultCode: Integer;
 begin
   Result := True;
+
+  // 默认尝试以管理员权限重新启动安装器，便于结束以管理员模式运行的桌宠。
+  // 用户取消 UAC 时 ShellExec 返回 False，继续以当前标准权限安装。
+  if (not IsAdmin) and (ParamStr(1) <> '/ELEVATED') then
+  begin
+    if ShellExec('runas', ExpandConstant('{srcexe}'), '/ELEVATED', '', SW_SHOW, ewNoWait, ResultCode) then
+    begin
+      Result := False;
+      Exit;
+    end;
+  end;
+
   if CheckForMutexes('Local\WuwatappoNative.SingleInstance.v1') then
   begin
     if MsgBox('检测到 Wuwatappo Native 正在运行。安装前需要关闭它，是否现在关闭并继续？', mbConfirmation, MB_YESNO) = IDNO then
@@ -63,8 +76,13 @@ begin
     end;
     if (not Exec('taskkill.exe', '/IM WuwatappoNative.exe /F', '', SW_HIDE, ewWaitUntilTerminated, ResultCode)) or (ResultCode <> 0) then
     begin
-      MsgBox('无法自动关闭 Wuwatappo Native，可能它正以管理员权限运行。请先从托盘退出程序，再重新运行安装包。', mbError, MB_OK);
-      Result := False;
+      if IsAdmin then
+      begin
+        MsgBox('无法自动关闭 Wuwatappo Native，可能它正以管理员权限运行。请先从托盘退出程序，再重新运行安装包。', mbError, MB_OK);
+        Result := False;
+      end
+      else if MsgBox('当前为标准权限，无法自动结束管理员模式运行的桌宠。请先手动退出桌宠后继续安装；是否仍继续？', mbConfirmation, MB_YESNO) = IDNO then
+        Result := False;
     end;
   end;
 end;

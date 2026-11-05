@@ -32,8 +32,10 @@ public sealed class Settings
 
     public double Scale { get; set; } = 1.0;
     public double Opacity { get; set; } = 1.0;
-    /// <summary>联机角色全局大小/透明度，独立于主角；任意远程角色修改后对所有远程角色生效。</summary>
+    /// <summary>联机角色自定义大小；RemoteFollowMainScale=true 时忽略此值，直接跟随主角 Scale。</summary>
     public double RemoteScale { get; set; } = 1.0;
+    /// <summary>联机角色大小是否跟随主角，默认开启。</summary>
+    public bool RemoteFollowMainScale { get; set; } = true;
     public double RemoteOpacity { get; set; } = 1.0;
     public bool Topmost { get; set; } = true;
     public bool ClickThrough { get; set; }

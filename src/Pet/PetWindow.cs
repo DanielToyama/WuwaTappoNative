@@ -118,6 +118,8 @@ public sealed class PetWindow : Form
     // ---------- 尺寸 / 渲染 ----------
 
     float DpiScale => DeviceDpi / 96f;
+    double EffectiveRemoteScale => _cfg.RemoteFollowMainScale ? _cfg.Scale : _cfg.RemoteScale;
+    float RemoteScaleFactor => DpiScale * (float)EffectiveRemoteScale;
 
     Size WindowSize()
     {
@@ -1205,17 +1207,17 @@ public sealed class PetWindow : Form
             if (string.IsNullOrEmpty(m.RoleKey) && !_cats.ContainsKey(id)) return;
             if (_cats.TryGetValue(id, out var existing))
             {
-                existing.SetScale(DpiScale * (float)_cfg.RemoteScale);
+                existing.SetScale(RemoteScaleFactor);
                 existing.SetWindowOptions(_cfg.RemoteOpacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
-                existing.SetRemoteStyle(_cfg.RemoteScale, _cfg.RemoteOpacity);
+                existing.SetRemoteStyle(EffectiveRemoteScale, _cfg.RemoteOpacity);
                 existing.RefreshMember();
             }
             else
             {
                 var cat = new RemoteCatWindow(m, _loader, _catalog, _store);
-                cat.SetScale(DpiScale * (float)_cfg.RemoteScale);
+                cat.SetScale(RemoteScaleFactor);
                 cat.SetWindowOptions(_cfg.RemoteOpacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
-                cat.SetRemoteStyle(_cfg.RemoteScale, _cfg.RemoteOpacity);
+                cat.SetRemoteStyle(EffectiveRemoteScale, _cfg.RemoteOpacity);
                 cat.RemoteScaleRequested += ApplyRemoteScale;
                 cat.RemoteOpacityRequested += ApplyRemoteOpacity;
                 cat.Location = PlaceNewCat(id);
@@ -1237,7 +1239,7 @@ public sealed class PetWindow : Form
     {
         if (!_cfg.MemberPositions.TryGetValue(CatKey(id), out var a) || a == null || a.Length < 2) return null;
         var p = new Point(a[0], a[1]);
-        float s = DpiScale * (float)_cfg.RemoteScale;
+        float s = RemoteScaleFactor;
         int w = (int)Math.Round(RemoteCatWindow.W * s);
         int head = (int)Math.Round(RemoteCatWindow.Headroom * s);
         int catH = (int)Math.Round(RemoteCatWindow.CatH * s);
@@ -1278,7 +1280,7 @@ public sealed class PetWindow : Form
 
     Rectangle CatVisibleRectAt(Point location)
     {
-        float s = DpiScale * (float)_cfg.RemoteScale;
+        float s = RemoteScaleFactor;
         int w = (int)Math.Round(RemoteCatWindow.W * s);
         int head = (int)Math.Round(RemoteCatWindow.Headroom * s);
         int catH = (int)Math.Round(RemoteCatWindow.CatH * s);
@@ -1317,7 +1319,7 @@ public sealed class PetWindow : Form
     /// </summary>
     Point DefaultCatPoint()
     {
-        float s = DpiScale * (float)_cfg.RemoteScale;
+        float s = RemoteScaleFactor;
         int w = (int)Math.Round(RemoteCatWindow.W * s);
         int h = (int)Math.Round(RemoteCatWindow.H * s);
         int head = (int)Math.Round(RemoteCatWindow.Headroom * s);
@@ -1374,7 +1376,7 @@ public sealed class PetWindow : Form
     public void ResetCatOrder()
     {
         var wa = Screen.FromControl(this).WorkingArea;
-        float s = DpiScale * (float)_cfg.RemoteScale;
+        float s = RemoteScaleFactor;
         float ms = Width / (float)PetComposer.WindowW;
         int gap = Math.Max(6, (int)Math.Round(10 * s));
 
@@ -1524,7 +1526,7 @@ public sealed class PetWindow : Form
 
     Rectangle CatVisibleRect(RemoteCatWindow cat)
     {
-        float s = DpiScale * (float)_cfg.RemoteScale;
+        float s = RemoteScaleFactor;
         int head = (int)Math.Round(RemoteCatWindow.Headroom * s);
         int catH = (int)Math.Round(RemoteCatWindow.CatH * s);
         return new Rectangle(cat.Left, cat.Top + head, cat.Width, catH);
@@ -1551,7 +1553,7 @@ public sealed class PetWindow : Form
     {
         var current = CatVisibleRect(cat);
         var wa = Screen.FromPoint(new Point(current.Left + current.Width / 2, current.Top + current.Height / 2)).WorkingArea;
-        float s = DpiScale * (float)_cfg.RemoteScale;
+        float s = RemoteScaleFactor;
         int head = (int)Math.Round(RemoteCatWindow.Headroom * s);
         int w = cat.Width;
         int h = (int)Math.Round(RemoteCatWindow.CatH * s);
@@ -1582,14 +1584,14 @@ public sealed class PetWindow : Form
 
     void UpdateCatScales()
     {
-        float s = DpiScale * (float)_cfg.RemoteScale;
+        float s = RemoteScaleFactor;
         foreach (var pair in _cats)
         {
             var c = pair.Value;
             int oldWidth = c.Width;
             c.SetScale(s);
             c.SetWindowOptions(_cfg.RemoteOpacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
-            c.SetRemoteStyle(_cfg.RemoteScale, _cfg.RemoteOpacity);
+            c.SetRemoteStyle(EffectiveRemoteScale, _cfg.RemoteOpacity);
             // 缩放后窗口从左上角变大，贴边排列的成员会被顶出屏幕；按可见猫体修正回工作区。
             if (c.Width != oldWidth) ClampCatToScreen(pair.Key, c);
         }
@@ -1611,6 +1613,7 @@ public sealed class PetWindow : Form
 
     void ApplyRemoteScale(double value)
     {
+        _cfg.RemoteFollowMainScale = false;
         _cfg.RemoteScale = Math.Clamp(value, 0.25, 2.0);
         Save();
         UpdateCatScales();

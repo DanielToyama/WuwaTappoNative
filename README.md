@@ -38,7 +38,7 @@ Wuwatappo Native 是 WuwaTappo 1.0.2 的 Windows 原生实现，使用 C# / .NET
 
 从 [GitHub Releases](https://github.com/DanielToyama/WuwaTappoNative/releases) 下载：
 
-- `WuwatappoNative-<版本>-Setup.exe`：安装到 `%LOCALAPPDATA%\Programs\Wuwatappo Native`，按当前用户安装，不需要管理员权限。
+- `WuwatappoNative-<版本>-Setup.exe`：安装到 `%LOCALAPPDATA%\Programs\Wuwatappo Native`；默认请求管理员权限以便关闭管理员模式桌宠，取消 UAC 后会按标准权限继续安装。
 - `WuwatappoNative-<版本>-portable.zip`：解压后直接运行 `WuwatappoNative.exe`。
 
 系统要求：
@@ -81,7 +81,7 @@ Wuwatappo Native 是 WuwaTappo 1.0.2 的 Windows 原生实现，使用 C# / .NET
 - 右键桌宠可打开菜单，包含打开面板、表情轮盘、窗口置顶、鼠标悬停半透明、鼠标穿透、桌宠大小、桌宠透明度、重置位置、重启桌宠和退出。
 - 右键联机角色可单独调整“联机角色大小”和“联机角色透明度”；这两项对所有联机角色统一生效，不影响主角。
 - `联机` 页面也可以调整联机角色大小和透明度。
-- `设置 → 窗口与桌宠` 可调整桌宠大小 25%–200%、不透明度、鼠标穿透、悬停淡出、悬停隐藏程度（10%–100%，默认 40%）和 OBS 绿幕窗口尺寸。
+- `设置 → 窗口与桌宠` 可调整桌宠大小 25%–200%、不透明度、联机桌宠大小（默认跟随主角，也可单独自定义）、鼠标穿透、悬停淡出、悬停隐藏程度（10%–100%，默认 40%）和 OBS 绿幕窗口尺寸。
 - 开启鼠标穿透后，桌宠不接收鼠标点击；可从右键菜单或 `F7` 恢复。
 - OBS 绿幕窗口的窗口标题为 `Wuwatappo Capture`，可在 OBS 中使用窗口采集。
 - “重启桌宠”会退出当前进程并重新启动，单实例锁会自动交接。
@@ -105,7 +105,7 @@ Wuwatappo Native 是 WuwaTappo 1.0.2 的 Windows 原生实现，使用 C# / .NET
 | 设置位置 | 内容 |
 |---|---|
 | `设置 → 账号` | 区服、登录、继承官方登录、导入 token、退出登录、刷新账号信息、累计点击补充 |
-| `设置 → 窗口与桌宠` | 桌宠大小、不透明度、置顶、鼠标穿透、悬停隐藏、重叠处理、OBS 绿幕窗口 |
+| `设置 → 窗口与桌宠` | 桌宠大小、联机桌宠大小/跟随主角、不透明度、置顶、鼠标穿透、悬停隐藏、重叠处理、OBS 绿幕窗口 |
 | `设置 → 桌面键盘` | 26 键、鸣潮专属、音游模式、手柄模式、键位映射和快捷键 |
 | `联机` 页面 | 联机角色大小/透明度、横向/纵向排列、隐藏其他成员、宝箱显示、自动领取宝箱 |
 | `设置 → 自动化` | 自动表情、自动敲击、自动敲击频率和虚拟敲击动画 |
@@ -170,14 +170,14 @@ dotnet build -c Release
 需要 PowerShell 7 和 Inno Setup 6.7 或更高版本。
 
 ```powershell
-pwsh -File .\installer\build.ps1 -Version 0.0.48
+pwsh -File .\installer\build.ps1 -Version 0.1.0
 ```
 
 输出：
 
 ```text
-dist/WuwatappoNative-0.0.48-Setup.exe
-dist/WuwatappoNative-0.0.48-portable.zip
+dist/WuwatappoNative-0.1.0-Setup.exe
+dist/WuwatappoNative-0.1.0-portable.zip
 dist/WuwatappoTokenExtractor-1.0.0-x64.zip
 ```
 

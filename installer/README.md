@@ -1,15 +1,14 @@
-# 打包说明（v0.0.48）
+# 打包说明（v0.1.0）
 
 ## 产物
 
 发布采用 Helper 风格的单文件结构：安装目录和绿色版目录都只有一个自包含的 `WuwatappoNative.exe`，素材、网页和运行时由单文件在启动时解压。
 
-- `dist/WuwatappoNative-0.0.48-Setup.exe`：Inno Setup 安装包（无需管理员），安装到
-  `%LOCALAPPDATA%\Programs\Wuwatappo Native`，创建开始菜单与桌面快捷方式，版本 0.0.48。
-- `dist/WuwatappoNative-0.0.48-portable.zip`：解压即用，运行 `WuwatappoNative.exe`。
+- `dist/WuwatappoNative-0.1.0-Setup.exe`：Inno Setup 安装包，默认请求管理员权限，以便关闭管理员模式运行的桌宠；取消 UAC 后继续按当前标准权限安装，安装到 `%LOCALAPPDATA%\Programs\Wuwatappo Native`，创建开始菜单与桌面快捷方式，版本 0.1.0。
+- `dist/WuwatappoNative-0.1.0-portable.zip`：解压即用，运行 `WuwatappoNative.exe`。
 - `dist/WuwatappoTokenExtractor-1.0.0-x64.zip`：独立的单文件 token 提取器（无需 Python），源码在 `token-extractor/`。
 
-安装包使用 Inno Setup 的 `CloseApplications` 和 Native 单实例 Mutex 检测：如果安装时 Native 正在运行，会提示用户确认关闭；确认后尝试结束进程，无法关闭时提示用户先从托盘退出。
+安装包默认尝试以管理员权限启动，以便通过 `taskkill` 结束管理员模式运行的桌宠；用户取消 UAC 时继续以标准权限安装。安装器同时使用 Inno Setup 的 `CloseApplications` 和 Native 单实例 Mutex 检测：如果 Native 正在运行，会提示用户确认关闭；无法关闭时提示用户先从托盘退出。
 
 ## 依赖
 
@@ -22,15 +21,15 @@
 
 ```powershell
 cd wuwatappoNative
-pwsh -File installer/build.ps1 -Version 0.0.48
+pwsh -File installer/build.ps1 -Version 0.1.0
 ```
 
 脚本会：单文件 publish → Inno Setup 编译安装包 → 打便携 ZIP → 构建单文件 token 提取器 ZIP。
 
 ## 已做的验证
 
-- 单文件 publish 只生成一个 `WuwatappoNative.exe`，版本 `0.0.48.0`。
-- Inno Setup 6.7.3 编译通过，输出 `WuwatappoNative-0.0.48-Setup.exe`。
+- 单文件 publish 只生成一个 `WuwatappoNative.exe`，版本 `0.1.0.0`。
+- Inno Setup 6.7.3 编译通过，输出 `WuwatappoNative-0.1.0-Setup.exe`。
 - 安装包和绿色版均不依赖目标机器安装 .NET 8 Runtime。
 
 ## 注意
