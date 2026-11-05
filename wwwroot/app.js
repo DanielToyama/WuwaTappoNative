@@ -351,6 +351,7 @@
 
   function handleEvent(evt, data) {
     if (evt === 'boot') { state.boot = data; state.update = data.update || state.update; state.compatibility = data.compatibility || state.compatibility; renderChrome(); renderPage(); maybeShowDisclaimer(); maybeShowUacPrompt(); maybeOpenEmoteEditor(); return; }
+    if (evt === 'navigate') { if (data?.page) navigate(data.page); return; }
     if (evt === 'compatibility') {
       state.compatibility = data;
       if (state.page === 'settings') renderSettings();
@@ -1534,6 +1535,9 @@
     state.roomSig = roomSignature(room);
     const joined = room.state === 'joined';
     const auth = state.boot?.auth || {};
+    const s = state.boot?.settings || {};
+    const remoteScalePct = Math.max(25, Math.min(200, Math.round((Number(s.remoteScale) || 1) * 100)));
+    const remoteOpacityPct = Math.max(20, Math.min(100, Math.round((Number(s.remoteOpacity) || 1) * 100)));
     const emotes = state.boot?.appearance?.emoteAssetIds || [];
     setPage(`
       <div class="room-layout">
@@ -1566,6 +1570,17 @@
             <div class="setting-item" style="margin-bottom:0;padding:6px 4px;background:transparent">
               <div><div class="setting-title">隐藏其他成员桌宠</div><div class="setting-sub">只影响本机显示</div></div>
               <div class="switch ${state.boot?.settings?.hideOtherPets ? 'on' : ''}" id="hideOthers"></div>
+            </div>
+          </div>
+          <div class="panel-box">
+            <div class="section-title" style="margin-left:0">联机角色样式</div>
+            <div class="setting-item" style="padding:6px 4px 8px">
+              <div><div class="setting-title">角色大小</div><div class="setting-sub">对所有联机角色生效 · <span id="remoteScaleVal">${remoteScalePct}%</span></div></div>
+              <input type="range" id="remoteScale" min="25" max="200" step="1" value="${remoteScalePct}" style="width:148px" />
+            </div>
+            <div class="setting-item" style="padding:6px 4px 0">
+              <div><div class="setting-title">角色透明度</div><div class="setting-sub">对所有联机角色生效 · <span id="remoteOpacityVal">${remoteOpacityPct}%</span></div></div>
+              <input type="range" id="remoteOpacity" min="20" max="100" step="1" value="${remoteOpacityPct}" style="width:148px" />
             </div>
           </div>
           <div class="panel-box">
@@ -1651,6 +1666,21 @@
         state.boot.room = r; renderRoom();
       } catch { }
     };
+    const bindRemoteStyle = (id, key, outId) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const out = document.getElementById(outId);
+      el.oninput = () => { if (out) out.textContent = el.value + '%'; };
+      el.onchange = async () => {
+        const val = Number(el.value) / 100;
+        try {
+          await tryCall('settings.set', { [key]: val });
+          if (state.boot?.settings) state.boot.settings[key] = val;
+        } catch { renderRoom(); }
+      };
+    };
+    bindRemoteStyle('remoteScale', 'remoteScale', 'remoteScaleVal');
+    bindRemoteStyle('remoteOpacity', 'remoteOpacity', 'remoteOpacityVal');
     document.querySelectorAll('[data-chest]').forEach(b => b.onclick = async () => {
       try {
         const r = await tryCall('chest.open', { place: b.dataset.chest, clickNum: 1000 });
@@ -2297,6 +2327,11 @@
     { id: 'visibility', label: '显示／隐藏桌宠', def: 'F9' },
     { id: 'reload', label: '刷新界面', def: 'F5' },
     ...[1, 2, 3, 4, 5, 6].map(i => ({ id: 'emote' + i, label: '发送表情 · 槽位 ' + i, def: 'Ctrl+Alt+' + i })),
+    { id: 'capture', label: 'OBS 绿幕窗口', def: '' },
+    { id: 'settingsPanel', label: '打开设置面板', def: '' },
+    { id: 'rhythmMode', label: '开关音游模式', def: '' },
+    { id: 'autoEmote', label: '开关自动表情', def: '' },
+    { id: 'autoClick', label: '开关自动敲击', def: '' },
   ];
 
   function hotkeyFromEvent(e) {

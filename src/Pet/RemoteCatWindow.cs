@@ -24,6 +24,11 @@ public sealed class RemoteCatWindow : Form
 
     PetFrames _frames;
     readonly EmoteBubbleLayer _bubbles = new(6);
+    ContextMenuStrip _menu;
+    ToolStripMenuItem _scaleMenu, _opacityMenu;
+    double _remoteScale = 1.0, _remoteOpacity = 1.0;
+    public event Action<double> RemoteScaleRequested;
+    public event Action<double> RemoteOpacityRequested;
     System.Windows.Forms.Timer _handReset, _hoverFadeTimer, _hoverFadeAnimTimer;
     int _bodyFrame = 1;
     string _lastAction = "";
@@ -48,6 +53,7 @@ public sealed class RemoteCatWindow : Form
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
         Size = new Size(W, H);
+        BuildRemoteMenu();
         _handReset = new System.Windows.Forms.Timer { Interval = 220 };
         _handReset.Tick += (s, e) => { _handReset.Stop(); SetBody(1); };
         _hoverFadeTimer = new System.Windows.Forms.Timer { Interval = 500 };
@@ -74,6 +80,55 @@ public sealed class RemoteCatWindow : Form
     }
 
     public long MemberId => _member.Id;
+
+    void BuildRemoteMenu()
+    {
+        _menu = new ContextMenuStrip();
+        _scaleMenu = new ToolStripMenuItem("联机角色大小");
+        foreach (var v in new[] { 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0 })
+        {
+            var item = new ToolStripMenuItem((int)(v * 100) + "%") { Tag = v };
+            double value = v;
+            item.Click += (s, e) => RemoteScaleRequested?.Invoke(value);
+            _scaleMenu.DropDownItems.Add(item);
+        }
+        _menu.Items.Add(_scaleMenu);
+
+        _opacityMenu = new ToolStripMenuItem("联机角色透明度");
+        foreach (var v in new[] { 1.0, 0.9, 0.75, 0.5 })
+        {
+            var item = new ToolStripMenuItem((int)(v * 100) + "%") { Tag = v };
+            double value = v;
+            item.Click += (s, e) => RemoteOpacityRequested?.Invoke(value);
+            _opacityMenu.DropDownItems.Add(item);
+        }
+        _menu.Items.Add(_opacityMenu);
+        _menu.Opening += (s, e) => RefreshRemoteMenu();
+    }
+
+    public void SetRemoteStyle(double scale, double opacity)
+    {
+        _remoteScale = Math.Clamp(scale, 0.25, 2.0);
+        _remoteOpacity = Math.Clamp(opacity, 0.2, 1.0);
+        RefreshRemoteMenu();
+    }
+
+    void RefreshRemoteMenu()
+    {
+        if (_menu == null) return;
+        _scaleMenu.Text = $"联机角色大小（{(int)Math.Round(_remoteScale * 100)}%）";
+        _opacityMenu.Text = $"联机角色透明度（{(int)Math.Round(_remoteOpacity * 100)}%）";
+        foreach (ToolStripItem sub in _scaleMenu.DropDownItems)
+        {
+            if (sub is ToolStripMenuItem item && item.Tag is double preset)
+                item.Checked = Math.Abs(_remoteScale - preset) < 0.005;
+        }
+        foreach (ToolStripItem sub in _opacityMenu.DropDownItems)
+        {
+            if (sub is ToolStripMenuItem item && item.Tag is double preset)
+                item.Checked = Math.Abs(_remoteOpacity - preset) < 0.005;
+        }
+    }
 
     double _opacity = 1.0, _opacityBase = 1.0;
     bool _clickThrough, _hoverFade, _hovered, _hoverFadeOn, _topmost = true;
@@ -430,6 +485,16 @@ public sealed class RemoteCatWindow : Form
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
+        if (e.Button == MouseButtons.Right)
+        {
+            // 只在真正可见的猫/昵称区域弹菜单，透明气泡净空不响应。
+            if (ContainsScreenPoint(Cursor.Position))
+            {
+                RefreshRemoteMenu();
+                _menu?.Show(Cursor.Position);
+            }
+            return;
+        }
         if (e.Button != MouseButtons.Left) return;
         if (_movedDuringDrag) SnapToWorkingArea(Cursor.Position);
         _dragging = false;
@@ -440,6 +505,7 @@ public sealed class RemoteCatWindow : Form
     {
         if (_frames != null) _frames.Changed -= OnFramesChanged;
         RemoteEmoteAnimator.Remove(this);
+        _menu?.Dispose();
         _handReset.Dispose();
         _hoverFadeTimer.Dispose();
         _hoverFadeAnimTimer.Dispose();

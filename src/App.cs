@@ -54,6 +54,8 @@ public sealed class App : ApplicationContext
         Pet.KeyboardUI = Keyboard;
 
         Pet.OpenPanelRequested += OpenPanel;
+        Pet.OpenSettingsRequested += OpenSettingsPanel;
+        Pet.AutoSettingsChanged += ApplyAutoSettings;
         Pet.ChestOpenRequested += place => _ = OpenChestSafeAsync(place);
         Pet.KeyboardModeChanged += ApplyKeyboardMode;
         Pet.PetVisibilityChanged += visible =>
@@ -600,6 +602,13 @@ public sealed class App : ApplicationContext
             Panel.FormClosed += (s, e) => Panel = null;
         }
         Panel.ShowAndFocus();
+    }
+
+    /// <summary>快捷键“打开设置面板”：打开面板并切到设置页。</summary>
+    public void OpenSettingsPanel()
+    {
+        OpenPanel();
+        try { Panel?.BeginInvoke(new Action(() => Panel.NavigateTo("settings"))); } catch { }
     }
 
     /// <summary>另一个进程再次启动时，由单实例事件线程转回 UI 线程打开面板。</summary>

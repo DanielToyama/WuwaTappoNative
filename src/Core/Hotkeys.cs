@@ -26,6 +26,11 @@ public static class Hotkeys
         ("emote4", "发送表情 · 槽位 4", "Ctrl+Alt+4"),
         ("emote5", "发送表情 · 槽位 5", "Ctrl+Alt+5"),
         ("emote6", "发送表情 · 槽位 6", "Ctrl+Alt+6"),
+        ("capture", "OBS 绿幕窗口", ""),
+        ("settingsPanel", "打开设置面板", ""),
+        ("rhythmMode", "开关音游模式", ""),
+        ("autoEmote", "开关自动表情", ""),
+        ("autoClick", "开关自动敲击", ""),
     };
 
     public static Dictionary<string, string> Defaults()

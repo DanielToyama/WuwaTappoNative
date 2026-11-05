@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -50,6 +51,9 @@ public sealed class PetWindow : Form
     public GlobalInputHook Input => _hook;
 
     public event Action OpenPanelRequested;
+    public event Action OpenSettingsRequested;
+    /// <summary>自动敲击/自动表情开关变化后，让 App 立即启停相关定时器。</summary>
+    public event Action AutoSettingsChanged;
     public event Action<string> ChestOpenRequested;
     public event Action GeometryChanged;
     public event Action<bool> PetVisibilityChanged;
@@ -955,6 +959,45 @@ public sealed class PetWindow : Form
             var emotes = _cfg.EmoteAssetIds ?? Array.Empty<long>();
             if (slot >= 1 && slot <= emotes.Length) SendEmoteById(emotes[slot - 1]);
         }
+        else if (action == "capture")
+        {
+            _cfg.CaptureMode = !_cfg.CaptureMode;
+            Save();
+            ApplyCaptureMode();
+            NotifyHotkey(_cfg.CaptureMode ? "已开启 OBS 绿幕窗口" : "已关闭 OBS 绿幕窗口");
+            NotifySettingsChanged();
+        }
+        else if (action == "settingsPanel")
+        {
+            OpenSettingsRequested?.Invoke();
+        }
+        else if (action == "rhythmMode")
+        {
+            _cfg.RhythmMode = !_cfg.RhythmMode;
+            if (_cfg.RhythmMode) _cfg.KeyboardMode = "rhythm";
+            else if (_cfg.KeyboardMode == "rhythm") _cfg.KeyboardMode = "wuwa";
+            Save();
+            KeyboardModeChanged?.Invoke();
+            Compose();
+            NotifyHotkey(_cfg.RhythmMode ? "已开启音游模式" : "已关闭音游模式");
+            NotifySettingsChanged();
+        }
+        else if (action == "autoEmote")
+        {
+            _cfg.AutoEmoteEnabled = !_cfg.AutoEmoteEnabled;
+            Save();
+            AutoSettingsChanged?.Invoke();
+            NotifyHotkey(_cfg.AutoEmoteEnabled ? "已开启自动表情" : "已关闭自动表情");
+            NotifySettingsChanged();
+        }
+        else if (action == "autoClick")
+        {
+            _cfg.AutoClickEnabled = !_cfg.AutoClickEnabled;
+            Save();
+            AutoSettingsChanged?.Invoke();
+            NotifyHotkey(_cfg.AutoClickEnabled ? "已开启自动敲击" : "已关闭自动敲击");
+            NotifySettingsChanged();
+        }
     }
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
@@ -1025,6 +1068,7 @@ public sealed class PetWindow : Form
 
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add("重置位置", null, (s, e) => { Location = DefaultLocation(); _cfg.PetX = Left; _cfg.PetY = Top; Save(); GeometryChanged?.Invoke(); });
+        _menu.Items.Add("重启桌宠", null, (s, e) => RestartPetApp());
         _menu.Items.Add("退出", null, (s, e) => Close());
         _menu.Opening += (s, e) => RefreshMenu();
     }
@@ -1075,6 +1119,37 @@ public sealed class PetWindow : Form
                 subItem.Checked = subItem.Text == active;
             }
         }
+    }
+
+    void RestartPetApp()
+    {
+        bool started = false;
+        try
+        {
+            string exe = Application.ExecutablePath;
+            // 先释放单实例锁，否则新进程会被旧实例判断为第二个实例而直接退出。
+            SingleInstance.ReleaseForRelaunch();
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = exe,
+                UseShellExecute = true,
+                WorkingDirectory = AppContext.BaseDirectory,
+            });
+            started = true;
+        }
+        catch (Exception ex)
+        {
+            Log.Write("重启桌宠失败 " + ex);
+            Notify("重启桌宠失败，请查看日志");
+            // 已经释放过单实例锁；启动失败时尽量重新拿回来，避免当前实例失去单实例保护。
+            try
+            {
+                if (SingleInstance.Acquire())
+                    SingleInstance.SetActivationHandler(() => BeginInvoke(new Action(() => OpenPanelRequested?.Invoke())));
+            }
+            catch { }
+        }
+        if (started) Close();
     }
 
     void Save() => ConfigStore.Save(_cfg);
@@ -1130,15 +1205,19 @@ public sealed class PetWindow : Form
             if (string.IsNullOrEmpty(m.RoleKey) && !_cats.ContainsKey(id)) return;
             if (_cats.TryGetValue(id, out var existing))
             {
-                existing.SetScale(DpiScale * (float)_cfg.Scale);
-                existing.SetWindowOptions(_cfg.Opacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
+                existing.SetScale(DpiScale * (float)_cfg.RemoteScale);
+                existing.SetWindowOptions(_cfg.RemoteOpacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
+                existing.SetRemoteStyle(_cfg.RemoteScale, _cfg.RemoteOpacity);
                 existing.RefreshMember();
             }
             else
             {
                 var cat = new RemoteCatWindow(m, _loader, _catalog, _store);
-                cat.SetScale(DpiScale * (float)_cfg.Scale);
-                cat.SetWindowOptions(_cfg.Opacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
+                cat.SetScale(DpiScale * (float)_cfg.RemoteScale);
+                cat.SetWindowOptions(_cfg.RemoteOpacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
+                cat.SetRemoteStyle(_cfg.RemoteScale, _cfg.RemoteOpacity);
+                cat.RemoteScaleRequested += ApplyRemoteScale;
+                cat.RemoteOpacityRequested += ApplyRemoteOpacity;
                 cat.Location = StoredCatPoint(id) ?? DefaultCatPoint();
                 cat.Moved += p =>
                 {
@@ -1158,7 +1237,7 @@ public sealed class PetWindow : Form
     {
         if (!_cfg.MemberPositions.TryGetValue(CatKey(id), out var a) || a == null || a.Length < 2) return null;
         var p = new Point(a[0], a[1]);
-        float s = DpiScale * (float)_cfg.Scale;
+        float s = DpiScale * (float)_cfg.RemoteScale;
         int w = (int)Math.Round(RemoteCatWindow.W * s);
         int head = (int)Math.Round(RemoteCatWindow.Headroom * s);
         int catH = (int)Math.Round(RemoteCatWindow.CatH * s);
@@ -1182,7 +1261,7 @@ public sealed class PetWindow : Form
     /// </summary>
     Point DefaultCatPoint()
     {
-        float s = DpiScale * (float)_cfg.Scale;
+        float s = DpiScale * (float)_cfg.RemoteScale;
         int w = (int)Math.Round(RemoteCatWindow.W * s);
         int h = (int)Math.Round(RemoteCatWindow.H * s);
         int head = (int)Math.Round(RemoteCatWindow.Headroom * s);
@@ -1245,13 +1324,14 @@ public sealed class PetWindow : Form
     public void ResetCatOrder()
     {
         var wa = Screen.FromControl(this).WorkingArea;
-        float s = DpiScale * (float)_cfg.Scale;
+        float s = DpiScale * (float)_cfg.RemoteScale;
+        float ms = Width / (float)PetComposer.WindowW;
         int gap = Math.Max(6, (int)Math.Round(10 * s));
 
         // 主窗口右侧有透明边距和宝箱按钮；用实际内容右边界定位，避免主角看起来没贴住屏幕。
-        int mainContentRight = (int)Math.Round(Math.Max(PetComposer.ToolbarX + PetComposer.ToolbarW, PetComposer.ChestRightRect.Right) * s);
-        int mainVisibleOffsetX = (int)Math.Round(PetComposer.CatX * s);
-        int mainVisibleW = (int)Math.Round(PetComposer.CatSize * s);
+        int mainContentRight = (int)Math.Round(Math.Max(PetComposer.ToolbarX + PetComposer.ToolbarW, PetComposer.ChestRightRect.Right) * ms);
+        int mainVisibleOffsetX = (int)Math.Round(PetComposer.CatX * ms);
+        int mainVisibleW = (int)Math.Round(PetComposer.CatSize * ms);
         int mainVisibleRight = wa.Right - Math.Max(0, mainContentRight - (mainVisibleOffsetX + mainVisibleW));
         int localX = mainVisibleRight - mainVisibleOffsetX - mainVisibleW;
         int localY = Math.Max(wa.Top, wa.Bottom - Height);
@@ -1281,7 +1361,7 @@ public sealed class PetWindow : Form
             {
                 // 第一列从主角上方往上排；排满后向左换列，从工作区顶部往下排。
                 int columnRight = wa.Right;
-                int cursorBottom = localY + (int)Math.Round(PetComposer.CatY * s) - gap;
+                int cursorBottom = localY + (int)Math.Round(PetComposer.CatY * ms) - gap;
                 int topCursor = wa.Top;
                 bool firstColumn = true;
 
@@ -1394,7 +1474,7 @@ public sealed class PetWindow : Form
 
     Rectangle CatVisibleRect(RemoteCatWindow cat)
     {
-        float s = DpiScale * (float)_cfg.Scale;
+        float s = DpiScale * (float)_cfg.RemoteScale;
         int head = (int)Math.Round(RemoteCatWindow.Headroom * s);
         int catH = (int)Math.Round(RemoteCatWindow.CatH * s);
         return new Rectangle(cat.Left, cat.Top + head, cat.Width, catH);
@@ -1421,7 +1501,7 @@ public sealed class PetWindow : Form
     {
         var current = CatVisibleRect(cat);
         var wa = Screen.FromPoint(new Point(current.Left + current.Width / 2, current.Top + current.Height / 2)).WorkingArea;
-        float s = DpiScale * (float)_cfg.Scale;
+        float s = DpiScale * (float)_cfg.RemoteScale;
         int head = (int)Math.Round(RemoteCatWindow.Headroom * s);
         int w = cat.Width;
         int h = (int)Math.Round(RemoteCatWindow.CatH * s);
@@ -1452,12 +1532,48 @@ public sealed class PetWindow : Form
 
     void UpdateCatScales()
     {
-        float s = DpiScale * (float)_cfg.Scale;
-        foreach (var c in _cats.Values)
+        float s = DpiScale * (float)_cfg.RemoteScale;
+        foreach (var pair in _cats)
         {
+            var c = pair.Value;
+            int oldWidth = c.Width;
             c.SetScale(s);
-            c.SetWindowOptions(_cfg.Opacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
+            c.SetWindowOptions(_cfg.RemoteOpacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
+            c.SetRemoteStyle(_cfg.RemoteScale, _cfg.RemoteOpacity);
+            // 缩放后窗口从左上角变大，贴边排列的成员会被顶出屏幕；按可见猫体修正回工作区。
+            if (c.Width != oldWidth) ClampCatToScreen(pair.Key, c);
         }
+    }
+
+    void ClampCatToScreen(long id, RemoteCatWindow cat)
+    {
+        var rect = CatVisibleRect(cat);
+        var wa = Screen.FromRectangle(rect).WorkingArea;
+        int dx = 0, dy = 0;
+        if (rect.Right > wa.Right) dx = wa.Right - rect.Right;
+        if (rect.Left + dx < wa.Left) dx = wa.Left - rect.Left;
+        if (rect.Bottom > wa.Bottom) dy = wa.Bottom - rect.Bottom;
+        if (rect.Top + dy < wa.Top) dy = wa.Top - rect.Top;
+        if (dx == 0 && dy == 0) return;
+        cat.Location = new Point(cat.Left + dx, cat.Top + dy);
+        _cfg.MemberPositions[CatKey(id)] = new[] { cat.Left, cat.Top };
+    }
+
+    void ApplyRemoteScale(double value)
+    {
+        _cfg.RemoteScale = Math.Clamp(value, 0.25, 2.0);
+        Save();
+        UpdateCatScales();
+        if (!_cfg.AllowOverlap) ResolveOverlaps();
+        NotifySettingsChanged();
+    }
+
+    void ApplyRemoteOpacity(double value)
+    {
+        _cfg.RemoteOpacity = Math.Clamp(value, 0.2, 1.0);
+        Save();
+        UpdateCatScales();
+        NotifySettingsChanged();
     }
 
     void RemoveCat(long id)

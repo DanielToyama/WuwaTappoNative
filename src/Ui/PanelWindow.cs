@@ -27,6 +27,7 @@ public sealed class PanelWindow : Form
     bool _ready;
     bool _fitting;
     bool _detached;
+    string _pendingPage;
     ReleaseInfo _updateInfo;
     bool _updateChecked;
     readonly Dictionary<string, HashSet<long>> _ownedAssets = new(StringComparer.OrdinalIgnoreCase);
@@ -215,6 +216,14 @@ public sealed class PanelWindow : Form
         try { _web.CoreWebView2.PostWebMessageAsJson(JsonSerializer.Serialize(new { evt, data })); } catch { }
     }
 
+    /// <summary>打开面板后切到指定页面；WebView 尚未加载时先记下，boot 完成后再推送。</summary>
+    public void NavigateTo(string page)
+    {
+        if (string.IsNullOrWhiteSpace(page)) return;
+        if (_ready) Push("navigate", new { page });
+        else _pendingPage = page;
+    }
+
     async Task CheckUpdateAsync()
     {
         if (_updateChecked) return;
@@ -257,6 +266,11 @@ public sealed class PanelWindow : Form
                 if (_ready)
                 {
                     Push("boot", BootPayload());
+                    if (!string.IsNullOrEmpty(_pendingPage))
+                    {
+                        Push("navigate", new { page = _pendingPage });
+                        _pendingPage = null;
+                    }
                     _ = CheckUpdateAsync();
                 }
             };
@@ -313,6 +327,8 @@ public sealed class PanelWindow : Form
         {
             scale = _app.Cfg.Scale,
             opacity = _app.Cfg.Opacity,
+            remoteScale = _app.Cfg.RemoteScale,
+            remoteOpacity = _app.Cfg.RemoteOpacity,
             topmost = _app.Cfg.Topmost,
             clickThrough = _app.Cfg.ClickThrough,
             hoverFade = _app.Cfg.HoverFade,
@@ -862,6 +878,8 @@ public sealed class PanelWindow : Form
                             hideOthersChanged = true;
                             break;
                         case "allowOverlap": cfg.AllowOverlap = ApiClient.ReadBool(kv.Value); break;
+                        case "remoteScale": cfg.RemoteScale = Math.Clamp(ReadDouble(kv.Value), 0.25, 2.0); break;
+                        case "remoteOpacity": cfg.RemoteOpacity = Math.Clamp(ReadDouble(kv.Value), 0.2, 1.0); break;
                         case "catLayout":
                             cfg.CatLayout = string.Equals(ApiClient.ReadString(kv.Value), "vertical", StringComparison.OrdinalIgnoreCase)
                                 ? "vertical" : "horizontal";

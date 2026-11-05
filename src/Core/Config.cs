@@ -32,6 +32,9 @@ public sealed class Settings
 
     public double Scale { get; set; } = 1.0;
     public double Opacity { get; set; } = 1.0;
+    /// <summary>联机角色全局大小/透明度，独立于主角；任意远程角色修改后对所有远程角色生效。</summary>
+    public double RemoteScale { get; set; } = 1.0;
+    public double RemoteOpacity { get; set; } = 1.0;
     public bool Topmost { get; set; } = true;
     public bool ClickThrough { get; set; }
     public bool HoverFade { get; set; }
@@ -175,6 +178,8 @@ public static class ConfigStore
                     cfg.AutoEmoteMaxPerSecond = Math.Clamp(cfg.AutoEmoteMaxPerSecond, 1, 20);
                     cfg.AutoClickPerSecond = Math.Clamp(cfg.AutoClickPerSecond, 1, 10);
                     cfg.HoverFadeOpacity = Math.Clamp(cfg.HoverFadeOpacity, 0.1, 1.0);
+                    cfg.RemoteScale = Math.Clamp(cfg.RemoteScale, 0.25, 2.0);
+                    cfg.RemoteOpacity = Math.Clamp(cfg.RemoteOpacity, 0.2, 1.0);
                     cfg.GameModeRules = GameModeRules.Normalize(cfg.GameModeRules);
                     if (cfg.AutoEmoteMode != "specific" && cfg.AutoEmoteMode != "library") cfg.AutoEmoteMode = "quickbar";
                     cfg.ServerRegion = NormalizeRegion(cfg.ServerRegion);
