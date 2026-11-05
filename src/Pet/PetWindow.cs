@@ -1218,7 +1218,7 @@ public sealed class PetWindow : Form
                 cat.SetRemoteStyle(_cfg.RemoteScale, _cfg.RemoteOpacity);
                 cat.RemoteScaleRequested += ApplyRemoteScale;
                 cat.RemoteOpacityRequested += ApplyRemoteOpacity;
-                cat.Location = StoredCatPoint(id) ?? DefaultCatPoint();
+                cat.Location = PlaceNewCat(id);
                 cat.Moved += p =>
                 {
                     _cfg.MemberPositions[CatKey(id)] = new[] { p.X, p.Y };
@@ -1255,6 +1255,62 @@ public sealed class PetWindow : Form
     }
 
     /// <summary>
+    /// 新成员/回房成员位置判定：两张桌宠重叠面积超过新桌宠可见面积的 30% 才算冲突。
+    /// 贴边或手动微调时允许少量重叠，避免因为一两像素就强制换位。
+    /// </summary>
+    const double CatOverlapTolerance = 0.30;
+
+    static double OverlapRatio(Rectangle candidate, Rectangle obstacle)
+    {
+        var inter = Rectangle.Intersect(candidate, obstacle);
+        if (inter.IsEmpty || candidate.Width <= 0 || candidate.Height <= 0) return 0;
+        return (double)inter.Width * inter.Height / ((double)candidate.Width * candidate.Height);
+    }
+
+    static bool HasSignificantOverlap(Rectangle candidate, IEnumerable<Rectangle> obstacles)
+    {
+        foreach (var obstacle in obstacles)
+        {
+            if (OverlapRatio(candidate, obstacle) > CatOverlapTolerance) return true;
+        }
+        return false;
+    }
+
+    Rectangle CatVisibleRectAt(Point location)
+    {
+        float s = DpiScale * (float)_cfg.RemoteScale;
+        int w = (int)Math.Round(RemoteCatWindow.W * s);
+        int head = (int)Math.Round(RemoteCatWindow.Headroom * s);
+        int catH = (int)Math.Round(RemoteCatWindow.CatH * s);
+        return new Rectangle(location.X, location.Y + head, w, catH);
+    }
+
+    List<Rectangle> VisibleCatRects()
+    {
+        var list = new List<Rectangle>();
+        foreach (var cat in _cats.Values)
+        {
+            if (cat.Visible) list.Add(CatVisibleRect(cat));
+        }
+        var local = LocalVisibleRect();
+        if (!local.IsEmpty) list.Add(local);
+        return list;
+    }
+
+    Point PlaceNewCat(long id)
+    {
+        var stored = StoredCatPoint(id);
+        if (stored.HasValue && !HasSignificantOverlap(CatVisibleRectAt(stored.Value), VisibleCatRects()))
+            return stored.Value;
+
+        var point = DefaultCatPoint();
+        // 保存自动安排的位置；下次回房时优先恢复，若与后来的人冲突再重新安排。
+        _cfg.MemberPositions[CatKey(id)] = new[] { point.X, point.Y };
+        Save();
+        return point;
+    }
+
+    /// <summary>
     /// 新成员默认从当前屏幕右下角开始摆放：横向时贴着工作区底边从右往左，排满后向上换行；
     /// 纵向时贴着工作区右边，第一列从右下往上，排满后向左换列并从顶部往下。
     /// 碰撞按桌宠实际可见区域判断，透明的气泡净空不占位置；本机桌宠也视为已占位。
@@ -1271,13 +1327,7 @@ public sealed class PetWindow : Form
         int stepY = Math.Max(1, catH + gap);
         var wa = Screen.FromControl(this).WorkingArea;
 
-        var taken = new List<Rectangle>();
-        foreach (var cat in _cats.Values)
-        {
-            if (!cat.Visible) continue;
-            taken.Add(new Rectangle(cat.Left, cat.Top + head, w, catH));
-        }
-        if (Visible && !_hiddenByHotkey) taken.Add(LocalVisibleRect());
+        var taken = VisibleCatRects();
 
         if (string.Equals(_cfg.CatLayout, "vertical", StringComparison.OrdinalIgnoreCase))
         {
@@ -1292,7 +1342,7 @@ public sealed class PetWindow : Form
                     int x = columnRight - w;
                     if (x < wa.Left) break;
                     var slot = new Rectangle(x, y, w, catH);
-                    if (!taken.Any(t => t.IntersectsWith(slot))) return new Point(x, y - head);
+                    if (!HasSignificantOverlap(slot, taken)) return new Point(x, y - head);
                 }
                 firstColumn = false;
                 columnRight -= stepX;
@@ -1310,7 +1360,7 @@ public sealed class PetWindow : Form
             for (int x = startX; x >= wa.Left; x -= stepX)
             {
                 var slot = new Rectangle(x, y + head, w, catH);
-                if (!taken.Any(t => t.IntersectsWith(slot))) return new Point(x, y);
+                if (!HasSignificantOverlap(slot, taken)) return new Point(x, y);
             }
         }
         return new Point(wa.Left, wa.Top);
@@ -1458,7 +1508,7 @@ public sealed class PetWindow : Form
                 if (!local.IsEmpty) obstacles.Add(local);
                 foreach (var other in cats)
                     if (other.Key != pair.Key) obstacles.Add(CatVisibleRect(other.Value));
-                if (!obstacles.Any(o => o.IntersectsWith(rect))) continue;
+                if (!HasSignificantOverlap(rect, obstacles)) continue;
 
                 var target = FindFreeCatPoint(cat, obstacles);
                 if (!target.HasValue) continue;
@@ -1522,7 +1572,7 @@ public sealed class PetWindow : Form
                     var candidate = new Rectangle(x, y, w, h);
                     if (candidate.Left < wa.Left || candidate.Top < wa.Top ||
                         candidate.Right > wa.Right || candidate.Bottom > wa.Bottom) continue;
-                    if (!obstacles.Any(o => o.IntersectsWith(candidate)))
+                    if (!HasSignificantOverlap(candidate, obstacles))
                         return new Point(x, y - head);
                 }
             }

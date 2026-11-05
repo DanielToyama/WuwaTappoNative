@@ -58,7 +58,7 @@ Wuwatappo Native 是 WuwaTappo 1.0.2 的 Windows 原生实现，使用 C# / .NET
    - **继承官方程序登录状态**：打开 `设置 → 账号 → 继承官方程序登录状态`，程序会读取本机官方 WuwaTappo 的登录数据并关闭正在运行的官方客户端。
    - **导入 token**：可用 `token-extractor/` 中的独立工具读取 `kuro_infoToken`，再粘贴到设置中导入。
 3. 在 `设置 → 账号 → 服务器区服` 选择国服（CN）或国际服（Global）；切换区服会退出当前账号并要求重新登录。
-4. 打开 `联机`，创建房间或输入房间号加入。加入成功后，房间成员会显示在右侧成员列表。
+4. 打开 `联机`，创建房间或输入房间号加入。加入成功后，房间成员会显示在右侧成员列表。新成员回房时优先恢复保存的位置；若与现有成员重叠超过可见面积的 30%，会按当前横向/纵向排序重新安排。没有保存位置的成员也按排序方案创建位置。
 5. 首次运行会创建以下文件：
 
 ```text
@@ -170,14 +170,14 @@ dotnet build -c Release
 需要 PowerShell 7 和 Inno Setup 6.7 或更高版本。
 
 ```powershell
-pwsh -File .\installer\build.ps1 -Version 0.0.49
+pwsh -File .\installer\build.ps1 -Version 0.0.48
 ```
 
 输出：
 
 ```text
-dist/WuwatappoNative-0.0.49-Setup.exe
-dist/WuwatappoNative-0.0.49-portable.zip
+dist/WuwatappoNative-0.0.48-Setup.exe
+dist/WuwatappoNative-0.0.48-portable.zip
 dist/WuwatappoTokenExtractor-1.0.0-x64.zip
 ```
 
