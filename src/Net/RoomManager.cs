@@ -47,6 +47,8 @@ public sealed class RoomManager : IDisposable
     bool _awaitingSnapshot;
     int _flushingClicks;
     long _lastRejectedClickLogMs;
+    int _connectionFailures;
+    volatile bool _serviceUnavailable;
 
     /// <summary>累计总额：服务器已记录 + 本地未上报 + 正在上报的点击。上报 cr 与开宝箱的 click_num 都用它。</summary>
     public long DisplayClicks
@@ -70,6 +72,8 @@ public sealed class RoomManager : IDisposable
 
     public string State { get; private set; } = "idle";
     public string RoomNo { get; private set; } = "";
+    /// <summary>连续连接/房间快照失败达到阈值后置位，用于提示联机服务暂不可用。</summary>
+    public bool ServiceUnavailable => _serviceUnavailable;
     public long SelfId => _auth.UserId;
     /// <summary>只有 socket 握手成功且房间成员快照也成功，才算真正进入房间。</summary>
     public bool IsConnected => _socket?.Connected == true && (string.IsNullOrEmpty(RoomNo) || _roomReady);
@@ -78,6 +82,8 @@ public sealed class RoomManager : IDisposable
     public readonly ConcurrentDictionary<long, RoomMember> Members = new();
 
     public event Action StateChanged;
+    /// <summary>联机服务不可用/恢复时触发。</summary>
+    public event Action<bool> ServiceUnavailableChanged;
     /// <summary>成员名册/外观/在线状态变化。人数多时高频，订阅方必须做合并（不要每条都全量重推）。</summary>
     public event Action<long> MemberUpdated;
     /// <summary>仅动作包（按键/抬手）触发的轻量事件：只驱动对应桌宠的动画，不改变名册信息。</summary>
@@ -273,6 +279,29 @@ public sealed class RoomManager : IDisposable
         if (announce) Log.Write("进入房间 " + roomNo);
     }
 
+    void MarkConnectionFailure(string reason)
+    {
+        if (string.IsNullOrEmpty(_auth.Token) || _reconnectSuppressed) return;
+        int failures = Interlocked.Increment(ref _connectionFailures);
+        Log.Write($"联机服务连接失败（{failures}）：{reason}");
+        if (failures >= 3) SetServiceUnavailable(true);
+    }
+
+    void MarkConnectionSuccess()
+    {
+        Interlocked.Exchange(ref _connectionFailures, 0);
+        SetServiceUnavailable(false);
+    }
+
+    void SetServiceUnavailable(bool value)
+    {
+        if (_serviceUnavailable == value) return;
+        _serviceUnavailable = value;
+        Log.Write(value ? "联机服务暂不可用" : "联机服务已恢复");
+        ServiceUnavailableChanged?.Invoke(value);
+        StateChanged?.Invoke();
+    }
+
     async Task ConnectSocketAsync(string roomNo)
     {
         await CloseSocketAsync();
@@ -292,10 +321,28 @@ public sealed class RoomManager : IDisposable
                 Members.Clear();
                 StateChanged?.Invoke();
             }
+            MarkConnectionFailure(reason);
             SocketClosed?.Invoke(reason);
         };
-        await _socket.ConnectAsync(_auth.Token, roomNo ?? "", _auth.Api.BaseUrl);
-        Log.Write("socket 已连接 " + (string.IsNullOrEmpty(roomNo) ? "(大厅)" : roomNo));
+        try
+        {
+            await _socket.ConnectAsync(_auth.Token, roomNo ?? "", _auth.Api.BaseUrl);
+            Log.Write("socket 已连接 " + (string.IsNullOrEmpty(roomNo) ? "(大厅)" : roomNo));
+        }
+        catch (Exception ex)
+        {
+            MarkConnectionFailure(ex.Message);
+            throw;
+        }
+    }
+
+    async Task ConfirmLobbyConnectionAsync(int generation)
+    {
+        // 大厅没有房间快照可确认，等连接稳定 5 秒再清除故障计数，避免连上即断时误判恢复。
+        await Task.Delay(5000).ConfigureAwait(false);
+        if (generation != _generation || _socket?.Connected != true) return;
+        MarkConnectionSuccess();
+        StateChanged?.Invoke();
     }
 
     async Task OnConnectedAsync()
@@ -307,6 +354,7 @@ public sealed class RoomManager : IDisposable
             if (string.IsNullOrEmpty(RoomNo))
             {
                 _awaitingSnapshot = false;
+                _ = ConfirmLobbyConnectionAsync(_generation);
                 StateChanged?.Invoke();
                 return;
             }
@@ -317,6 +365,7 @@ public sealed class RoomManager : IDisposable
             {
                 // 超时/连接中断：保持“连接中”，交给后台重连，不要误报成已连接。
                 Log.Write("房间快照超时 " + RoomNo);
+                MarkConnectionFailure("房间快照超时");
                 return;
             }
             if (!ApplyMemberSnapshot(snap))
@@ -329,12 +378,17 @@ public sealed class RoomManager : IDisposable
                 return;
             }
             _roomReady = true;
+            MarkConnectionSuccess();
             StateChanged?.Invoke();
             var appearanceSnap = await socket.EmitAsync("rd", new JsonObject { ["r"] = RoomNo }, 8000);
             ApplyAppearanceSnapshot(appearanceSnap);
             await AnnounceAppearanceAsync();
         }
-        catch (Exception ex) { Log.Write("房间快照失败 " + ex.Message); }
+        catch (Exception ex)
+        {
+            Log.Write("房间快照失败 " + ex.Message);
+            MarkConnectionFailure(ex.Message);
+        }
         finally { _awaitingSnapshot = false; }
     }
 

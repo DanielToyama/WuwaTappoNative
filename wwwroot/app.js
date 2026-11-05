@@ -1527,20 +1527,25 @@
     const ms = (room.members || [])
       .map(m => `${m.id}:${m.nickname || ''}:${m.online ? 1 : 0}:${m.visible ? 1 : 0}:${m.owner ? 1 : 0}`)
       .join('|');
-    return `${room.state}|${room.roomNo || ''}|${room.connected ? 1 : 0}|${room.hiddenAll ? 1 : 0}|${(room.history || []).join(',')}|${ms}`;
+    return `${room.state}|${room.roomNo || ''}|${room.connected ? 1 : 0}|${room.serviceUnavailable ? 1 : 0}|${room.hiddenAll ? 1 : 0}|${(room.history || []).join(',')}|${ms}`;
   }
 
   function renderRoom() {
     const room = state.boot?.room || { state: 'idle', members: [], history: [] };
     state.roomSig = roomSignature(room);
     const joined = room.state === 'joined';
+    const serviceDown = !!room.serviceUnavailable;
     const auth = state.boot?.auth || {};
     const emotes = state.boot?.appearance?.emoteAssetIds || [];
     setPage(`
       <div class="room-layout">
         <div class="room-left">
+          ${serviceDown ? `
+          <div class="panel-box" style="background:#fff0ee;border:1px solid #f2b8ad;color:#9b3b2e;font-size:13px;line-height:1.6">
+            联机服务暂不可用：官方联机服务器暂时无法连接，正在自动重试。
+          </div>` : ''}
           <div class="panel-box">
-            <div class="detail-row" style="margin-bottom:6px"><span>当前房间</span><span>${joined ? (room.connected ? '已连接' : '连接中…（自动重试）') : '未加入'}</span></div>
+            <div class="detail-row" style="margin-bottom:6px"><span>当前房间</span><span>${serviceDown ? '联机服务暂不可用' : (joined ? (room.connected ? '已连接' : '连接中…（自动重试）') : '未加入')}</span></div>
             <div class="room-no">${joined ? esc(room.roomNo) : '——'}<span class="copy" id="copyRoom" ${joined ? '' : 'style="display:none"'}>复制</span></div>
             <div class="detail-row" style="margin-top:8px"><span>可用点击数</span><span data-click-avail>${auth.clicks ?? 0}</span></div>
             <div class="detail-row"><span>累计点击数</span><span data-click-total>${auth.clickTotal ?? auth.clicks ?? 0}</span></div>

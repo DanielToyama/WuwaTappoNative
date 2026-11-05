@@ -84,6 +84,18 @@ public sealed class App : ApplicationContext
         // WebView2 序列化 + postMessage；这里合并成 100ms 一次。
         Room.ClicksChanged += QueueClicksPush;
         Room.LocalClick += OnLocalClick;
+        Room.ServiceUnavailableChanged += down =>
+        {
+            try
+            {
+                Panel?.Push("toast", new
+                {
+                    text = down ? "联机服务暂不可用，正在自动重试…" : "联机服务已恢复",
+                    kind = down ? "err" : "ok",
+                });
+            }
+            catch { }
+        };
         // 键盘显示直接吃 Raw Input 边沿：按下立刻亮，不再等 16ms 轮询，也不会漏掉快速点击。
         Pet.Input.KeyEdge += (vk, down) => Keyboard.OnKeyEdge(vk, down);
         Pet.GeometryChanged += LayoutKeyboard;
@@ -726,6 +738,7 @@ public sealed class App : ApplicationContext
             state = Room.State,
             roomNo = Room.RoomNo,
             connected = Room.IsConnected,
+            serviceUnavailable = Room.ServiceUnavailable,
             members,
             hiddenAll = Cfg.HideOtherPets,
             history = Cfg.RoomHistory,

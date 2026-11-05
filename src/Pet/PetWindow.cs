@@ -96,6 +96,8 @@ public sealed class PetWindow : Form
         _room.ForcedDisconnect += code => Safe(() => Notify(code == 90002 ? "账号已在其他设备登录" : "房间已关闭"));
         _room.SocketClosed += reason => Safe(() => { if (_room.State == "joined") Notify("连接断开：" + reason); });
         _room.JoinRejected += message => Safe(() => Notify(message));
+        _room.ServiceUnavailableChanged += down => Safe(() =>
+            Notify(down ? "联机服务暂不可用，正在自动重试…" : "联机服务已恢复"));
 
         _auth.Changed += () => Safe(OnAuthChanged);
         _room.ClicksChanged += () => Safe(() => { CaptureChanged?.Invoke(); RequestCompose(); });

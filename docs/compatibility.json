@@ -1,8 +1,8 @@
 {
   "schema": 1,
-  "updatedAt": "2026-11-05T11:33:48Z",
+  "updatedAt": "2026-11-05T12:05:49Z",
   "status": "safe",
-  "message": "官方客户端已更新至 1.0.4；当前协议验证基于 1.0.3，暂未发现破坏性变更。",
+  "message": "官方客户端 1.0.4 已确认为非强制更新，属于安全修复，当前版本可继续使用。",
   "native": {
     "latest": "0.1.0",
     "minSafe": "0.1.0"
@@ -19,7 +19,7 @@
     }
   },
   "protocol": {
-    "testedOfficial": "1.0.3",
+    "testedOfficial": "1.0.4",
     "generation": 1,
     "breaking": false
   },
