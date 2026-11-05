@@ -245,9 +245,9 @@ public static class PetComposer
         DrawChests(g, s, info);
         info.Wheel?.Draw(g, s, CatX, CatY);
 
-        DrawStrip(g, s, info);
+        DrawStrip(g, s, info, bmp.Height);
         // 手/手臂单独盖在计数条和工具栏上：角色本体在 UI 后面，但拍桌的手要压住 UI。
-        DrawHandsOverStrip(g, s, body, cat);
+        DrawHandsOverStrip(g, s, body, cat, bmp.Height);
         if (info.Loading) DrawLoading(g, s, info.LoadingPhase, CatX + CatSize - 30, CatY + 30);
         if (opacity < 0.999)
         {
@@ -261,12 +261,19 @@ public static class PetComposer
         }
     }
 
-    static void DrawStrip(Graphics g, float s, Info info)
+    static Rectangle AlignStripBottom(Rectangle rect, int windowHeight)
+    {
+        int delta = windowHeight - rect.Bottom;
+        if (delta != 0) rect.Height += delta;
+        return rect;
+    }
+
+    static void DrawStrip(Graphics g, float s, Info info, int windowHeight)
     {
         // 计数条 + 工具栏：原版为 136px 奶油底计数条与 61px 工具栏，底边对齐大猫。
-        var counter = Scaled(CounterRect, s);
-        var toolbar = new Rectangle((int)Math.Round(ToolbarX * s), (int)Math.Round(InfoY * s),
-            (int)Math.Round(ToolbarW * s), (int)Math.Round(CounterH * s));
+        var counter = AlignStripBottom(Scaled(CounterRect, s), windowHeight);
+        var toolbar = AlignStripBottom(new Rectangle((int)Math.Round(ToolbarX * s), (int)Math.Round(InfoY * s),
+            (int)Math.Round(ToolbarW * s), (int)Math.Round(CounterH * s)), windowHeight);
 
         using (var path = Rounded(counter, 16 * s))
         using (var brush = new SolidBrush(Cream))
@@ -307,12 +314,12 @@ public static class PetComposer
     static string FormatClicks(long n) => n.ToString();
 
     /// <summary>只把角色手部帧重新画在计数条/工具栏范围内，避免整只角色压到 HUD 上。</summary>
-    static void DrawHandsOverStrip(Graphics g, float s, Image body, Rectangle cat)
+    static void DrawHandsOverStrip(Graphics g, float s, Image body, Rectangle cat, int windowHeight)
     {
         if (body == null) return;
-        var counter = Scaled(CounterRect, s);
-        var toolbar = new Rectangle((int)Math.Round(ToolbarX * s), (int)Math.Round(InfoY * s),
-            (int)Math.Round(ToolbarW * s), (int)Math.Round(CounterH * s));
+        var counter = AlignStripBottom(Scaled(CounterRect, s), windowHeight);
+        var toolbar = AlignStripBottom(new Rectangle((int)Math.Round(ToolbarX * s), (int)Math.Round(InfoY * s),
+            (int)Math.Round(ToolbarW * s), (int)Math.Round(CounterH * s)), windowHeight);
         var state = g.Save();
         try
         {
