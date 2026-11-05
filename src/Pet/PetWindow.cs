@@ -41,6 +41,7 @@ public sealed class PetWindow : Form
     ContextMenuStrip _menu;
     NotifyIcon _tray;
     ToolStripMenuItem _topmostItem, _passthroughItem, _passthroughOffItem, _hoverItem, _scaleMenuItem, _opacityMenuItem;
+    ToolStripMenuItem _layoutHorizontalItem, _layoutVerticalItem;
     Icon _icon;
 
     bool _hiddenByHotkey;
@@ -976,6 +977,10 @@ public sealed class PetWindow : Form
         {
             OpenMainPanelRequested?.Invoke();
         }
+        else if (action == "catLayout")
+        {
+            ToggleCatLayout(true);
+        }
         else if (action == "rhythmMode")
         {
             _cfg.RhythmMode = !_cfg.RhythmMode;
@@ -1061,6 +1066,13 @@ public sealed class PetWindow : Form
         }
         _menu.Items.Add(_opacityMenuItem);
 
+        var layout = new ToolStripMenuItem("排列方向");
+        _layoutHorizontalItem = new ToolStripMenuItem("横向排列", null, (s, e) => SetCatLayout("horizontal"));
+        _layoutVerticalItem = new ToolStripMenuItem("纵向排列", null, (s, e) => SetCatLayout("vertical"));
+        layout.DropDownItems.Add(_layoutHorizontalItem);
+        layout.DropDownItems.Add(_layoutVerticalItem);
+        _menu.Items.Add(layout);
+
         var kb = new ToolStripMenuItem("桌面键盘");
         foreach (var (key, label) in new[] { ("hidden", "不显示"), ("letters", "26 键"), ("wuwa", "鸣潮专属"), ("rhythm", "音游模式"), ("controller", "手柄") })
         {
@@ -1105,6 +1117,9 @@ public sealed class PetWindow : Form
                     opacityItem.Checked = Math.Abs(_cfg.Opacity - preset) < 0.005;
             }
         }
+        bool verticalLayout = string.Equals(_cfg.CatLayout, "vertical", StringComparison.OrdinalIgnoreCase);
+        if (_layoutHorizontalItem != null) _layoutHorizontalItem.Checked = !verticalLayout;
+        if (_layoutVerticalItem != null) _layoutVerticalItem.Checked = verticalLayout;
         foreach (ToolStripItem item in _menu.Items)
         {
             if (item is not ToolStripMenuItem mi || mi.Text != "桌面键盘") continue;
@@ -1370,6 +1385,23 @@ public sealed class PetWindow : Form
         }
         return new Point(wa.Left, wa.Top);
     }
+
+    /// <summary>托盘/右键菜单切换排列方向；切换后立即按新方向重排桌宠。</summary>
+    public void SetCatLayout(string layout, bool announce = false)
+    {
+        string next = string.Equals(layout, "vertical", StringComparison.OrdinalIgnoreCase) ? "vertical" : "horizontal";
+        _cfg.CatLayout = next;
+        Save();
+        ResetCatOrder();
+        RefreshMenu();
+        NotifySettingsChanged();
+        if (announce)
+            NotifyHotkey(next == "vertical" ? "已切换为纵向排列" : "已切换为横向排列");
+    }
+
+    /// <summary>快捷键切换横纵排列。</summary>
+    public void ToggleCatLayout(bool announce = false)
+        => SetCatLayout(string.Equals(_cfg.CatLayout, "vertical", StringComparison.OrdinalIgnoreCase) ? "horizontal" : "vertical", announce);
 
     /// <summary>
     /// 联机面板“重置排序”：横向时主角贴右下、其他成员从右往左排成底部横排；

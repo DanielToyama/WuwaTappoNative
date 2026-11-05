@@ -2351,6 +2351,7 @@
     ...[1, 2, 3, 4, 5, 6].map(i => ({ id: 'emote' + i, label: '发送表情 · 槽位 ' + i, def: 'Ctrl+Alt+' + i })),
     { id: 'capture', label: 'OBS 绿幕窗口', def: '' },
     { id: 'mainPanel', label: '打开主面板', def: '' },
+    { id: 'catLayout', label: '切换横纵排列', def: '' },
     { id: 'rhythmMode', label: '开关音游模式', def: '' },
     { id: 'autoEmote', label: '开关自动表情', def: '' },
     { id: 'autoClick', label: '开关自动敲击', def: '' },
