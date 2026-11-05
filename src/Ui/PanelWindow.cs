@@ -330,6 +330,7 @@ public sealed class PanelWindow : Form
             remoteScale = _app.Cfg.RemoteScale,
             remoteFollowMain = _app.Cfg.RemoteFollowMainScale,
             remoteOpacity = _app.Cfg.RemoteOpacity,
+            remoteFollowMainOpacity = _app.Cfg.RemoteFollowMainOpacity,
             topmost = _app.Cfg.Topmost,
             clickThrough = _app.Cfg.ClickThrough,
             hoverFade = _app.Cfg.HoverFade,
@@ -885,7 +886,12 @@ public sealed class PanelWindow : Form
                             // 在联机面板/远程菜单主动调整大小时，退出“跟随主角”。
                             cfg.RemoteFollowMainScale = false;
                             break;
-                        case "remoteOpacity": cfg.RemoteOpacity = Math.Clamp(ReadDouble(kv.Value), 0.2, 1.0); break;
+                        case "remoteFollowMainOpacity": cfg.RemoteFollowMainOpacity = ApiClient.ReadBool(kv.Value); break;
+                        case "remoteOpacity":
+                            cfg.RemoteOpacity = Math.Clamp(ReadDouble(kv.Value), 0.2, 1.0);
+                            // 在联机面板/远程菜单主动调整透明度时，退出“跟随主角”。
+                            cfg.RemoteFollowMainOpacity = false;
+                            break;
                         case "catLayout":
                             cfg.CatLayout = string.Equals(ApiClient.ReadString(kv.Value), "vertical", StringComparison.OrdinalIgnoreCase)
                                 ? "vertical" : "horizontal";

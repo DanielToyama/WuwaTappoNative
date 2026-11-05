@@ -1535,10 +1535,6 @@
     state.roomSig = roomSignature(room);
     const joined = room.state === 'joined';
     const auth = state.boot?.auth || {};
-    const s = state.boot?.settings || {};
-    const remoteFollowMain = s.remoteFollowMain !== false;
-    const remoteScalePct = Math.max(25, Math.min(200, Math.round((Number(remoteFollowMain ? s.scale : s.remoteScale) || 1) * 100)));
-    const remoteOpacityPct = Math.max(20, Math.min(100, Math.round((Number(s.remoteOpacity) || 1) * 100)));
     const emotes = state.boot?.appearance?.emoteAssetIds || [];
     setPage(`
       <div class="room-layout">
@@ -1572,26 +1568,6 @@
               <div><div class="setting-title">隐藏其他成员桌宠</div><div class="setting-sub">只影响本机显示</div></div>
               <div class="switch ${state.boot?.settings?.hideOtherPets ? 'on' : ''}" id="hideOthers"></div>
             </div>
-          </div>
-          <div class="panel-box">
-            <div class="section-title" style="margin-left:0">联机角色样式</div>
-            <div class="setting-item" style="padding:6px 4px 8px">
-              <div><div class="setting-title">角色大小</div><div class="setting-sub">对所有联机角色生效 · <span id="remoteScaleVal">${remoteScalePct}%</span></div></div>
-              <input type="range" id="remoteScale" min="25" max="200" step="1" value="${remoteScalePct}" style="width:148px" />
-            </div>
-            <div class="setting-item" style="padding:6px 4px 0">
-              <div><div class="setting-title">角色透明度</div><div class="setting-sub">对所有联机角色生效 · <span id="remoteOpacityVal">${remoteOpacityPct}%</span></div></div>
-              <input type="range" id="remoteOpacity" min="20" max="100" step="1" value="${remoteOpacityPct}" style="width:148px" />
-            </div>
-          </div>
-          <div class="panel-box">
-            <div class="section-title" style="margin-left:0">宝箱</div>
-            <div style="display:flex;gap:10px">
-              <button class="btn ghost" data-chest="left" style="flex:1">开启左宝箱</button>
-              <button class="btn ghost" data-chest="right" style="flex:1">开启右宝箱</button>
-            </div>
-            <div class="hint muted" style="font-size:12px;margin-top:8px">每次消耗 1000 点击数，冷却 30 分钟，以服务器返回为准。</div>
-            <div class="muted" id="chestStatus" style="font-size:13px;margin-top:8px"></div>
           </div>
         </div>
         <div class="room-right">
@@ -1667,46 +1643,6 @@
         state.boot.room = r; renderRoom();
       } catch { }
     };
-    const bindRemoteStyle = (id, key, outId) => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      const out = document.getElementById(outId);
-      el.oninput = () => { if (out) out.textContent = el.value + '%'; };
-      el.onchange = async () => {
-        const val = Number(el.value) / 100;
-        try {
-          await tryCall('settings.set', { [key]: val });
-          if (state.boot?.settings) {
-            state.boot.settings[key] = val;
-            if (key === 'remoteScale') state.boot.settings.remoteFollowMain = false;
-          }
-        } catch { renderRoom(); }
-      };
-    };
-    bindRemoteStyle('remoteScale', 'remoteScale', 'remoteScaleVal');
-    bindRemoteStyle('remoteOpacity', 'remoteOpacity', 'remoteOpacityVal');
-    document.querySelectorAll('[data-chest]').forEach(b => b.onclick = async () => {
-      try {
-        const r = await tryCall('chest.open', { place: b.dataset.chest, clickNum: 1000 });
-        const id = Number(r?.asset_id) || 0;
-        await refreshAfterAcquire(id);
-        let thumb = '', name = '领取成功';
-        if (id) {
-          const list = await ensureCatalog('character_skin').catch(() => []);
-          const found = (state.catalog.character_skin || []).find(v => v.id === id)
-            || (state.catalog.accessory || []).find(v => v.id === id)
-            || (state.catalog.emote || []).find(v => v.id === id);
-          if (found) { thumb = found.thumb; name = found.name; }
-        }
-        modal(`<div class="reward">
-          <div class="rays"></div>
-          ${thumb ? img(thumb, 'prize', name) : '<div style="font-size:64px">🎁</div>'}
-          <div class="r-name">${esc(name)}</div>
-          <div class="r-sub">宝箱奖励</div>
-          <button class="btn" id="mOk" style="margin-top:8px">收下</button>
-        </div>`, host => host.querySelector('#mOk').onclick = closeModal);
-      } catch { }
-    });
     document.querySelectorAll('[data-hide]').forEach(b => b.onclick = async () => {
       const id = Number(b.dataset.hide);
       const hide = b.dataset.visible === '1';
@@ -1722,6 +1658,31 @@
     });
     if (!state.emoteCatalog)
       ensureEmotes().then(() => { if (state.page === 'room') renderRoom(); }).catch(() => { });
+  }
+
+  function bindChestButtons() {
+    document.querySelectorAll('[data-chest]').forEach(b => b.onclick = async () => {
+      try {
+        const r = await tryCall('chest.open', { place: b.dataset.chest, clickNum: 1000 });
+        const id = Number(r?.asset_id) || 0;
+        await refreshAfterAcquire(id);
+        let thumb = '', name = '领取成功';
+        if (id) {
+          await ensureCatalog('character_skin').catch(() => []);
+          const found = (state.catalog.character_skin || []).find(v => v.id === id)
+            || (state.catalog.accessory || []).find(v => v.id === id)
+            || (state.catalog.emote || []).find(v => v.id === id);
+          if (found) { thumb = found.thumb; name = found.name; }
+        }
+        modal(`<div class="reward">
+          <div class="rays"></div>
+          ${thumb ? img(thumb, 'prize', name) : '<div style="font-size:64px">🎁</div>'}
+          <div class="r-name">${esc(name)}</div>
+          <div class="r-sub">宝箱奖励</div>
+          <button class="btn" id="mOk" style="margin-top:8px">收下</button>
+        </div>`, host => host.querySelector('#mOk').onclick = closeModal);
+      } catch { }
+    });
   }
 
   async function ensureEmotes(force = false) {
@@ -2009,6 +1970,10 @@
     const remoteCustomPct = Math.max(25, Math.min(200, Math.round((Number(s.remoteScale) || 1) * 100)));
     const remoteScalePct = remoteFollowMain ? scalePct : remoteCustomPct;
     const remoteScalePreset = [25, 50, 75, 100, 125, 150, 200].includes(remoteScalePct);
+    const opacityPct = Math.max(20, Math.min(100, Math.round((Number(s.opacity) || 1) * 100)));
+    const remoteFollowMainOpacity = s.remoteFollowMainOpacity !== false;
+    const remoteCustomOpacityPct = Math.max(20, Math.min(100, Math.round((Number(s.remoteOpacity) || 1) * 100)));
+    const remoteOpacityPct = remoteFollowMainOpacity ? opacityPct : remoteCustomOpacityPct;
     const accX = Number(acc.accessoryOffsetX || 0);
     const accY = Number(acc.accessoryOffsetY || 0);
     // 快捷键/菜单改设置会触发 boot 重推；保留滚动位置，别把用户顶回顶部。
@@ -2096,8 +2061,19 @@
           <div class="setting-item">
             <div><div class="setting-title">桌宠不透明度</div><div class="setting-sub">100% 为完全不透明</div></div>
             <div class="setting-content">
-              <input type="range" min="20" max="100" value="${Math.round((s.opacity ?? 1) * 100)}" id="setOpacity" style="width:180px" />
-              <span id="opacityVal">${Math.round((s.opacity ?? 1) * 100)}%</span>
+              <input type="range" min="20" max="100" value="${opacityPct}" id="setOpacity" style="width:180px" />
+              <span id="opacityVal">${opacityPct}%</span>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">联机桌宠不透明度</div><div class="setting-sub">默认跟随主角；取消勾选后可单独调整所有联机角色</div></div>
+            <div class="setting-content">
+              <label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--ink);cursor:pointer;white-space:nowrap">
+                <input type="checkbox" id="remoteFollowMainOpacity" ${remoteFollowMainOpacity ? 'checked' : ''} style="width:16px;height:16px;accent-color:#e3a765" />
+                跟随主角
+              </label>
+              <input type="range" min="20" max="100" step="1" value="${remoteOpacityPct}" id="setRemoteOpacityRange" style="width:180px" ${remoteFollowMainOpacity ? 'disabled' : ''} />
+              <span id="remoteOpacityVal">${remoteOpacityPct}%</span>
             </div>
           </div>
           <div class="setting-item">
@@ -2226,6 +2202,16 @@
           <div class="setting-item">
             <div><div class="setting-title">自动领取宝箱</div><div class="setting-sub">倒计时结束后至少等待 5 秒再领取</div></div>
             <div class="switch ${s.autoChest ? 'on' : ''}" data-switch="autoChest"></div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">手动开启宝箱</div><div class="setting-sub">每次消耗 1000 点击数，冷却 30 分钟，以服务器返回为准</div></div>
+            <div class="setting-content">
+              <button class="btn ghost" data-chest="left">开启左宝箱</button>
+              <button class="btn ghost" data-chest="right">开启右宝箱</button>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">宝箱冷却</div><div class="setting-sub" id="chestStatus">正在读取…</div></div>
           </div>
         </div>
 
@@ -2435,6 +2421,7 @@
 
   function bindSettings() {
     const val = (id) => document.getElementById(id)?.value;
+    bindChestButtons();
     const scaleSel = document.getElementById('setScale');
     const scaleRange = document.getElementById('setScaleRange');
     const scaleVal = document.getElementById('scaleVal');
@@ -2565,8 +2552,66 @@
     };
     captureW?.addEventListener('change', applyCaptureSize);
     captureH?.addEventListener('change', applyCaptureSize);
+    const remoteFollowOpacity = document.getElementById('remoteFollowMainOpacity');
+    const remoteOpacityRange = document.getElementById('setRemoteOpacityRange');
+    const remoteOpacityVal = document.getElementById('remoteOpacityVal');
+    let lastRemoteOpacitySent = 0;
+    const syncRemoteOpacityUi = (pct) => {
+      if (remoteOpacityRange) remoteOpacityRange.value = String(pct);
+      if (remoteOpacityVal) remoteOpacityVal.textContent = pct + '%';
+    };
+    const applyRemoteOpacity = async (pct, final = false) => {
+      pct = Math.max(20, Math.min(100, Math.round(Number(pct) || 100)));
+      syncRemoteOpacityUi(pct);
+      if (state.boot?.settings) {
+        state.boot.settings.remoteOpacity = pct / 100;
+        state.boot.settings.remoteFollowMainOpacity = false;
+      }
+      try {
+        const boot = await tryCall('settings.set', { remoteOpacity: pct / 100, remoteFollowMainOpacity: false });
+        if (boot?.settings) state.boot = boot;
+        if (final) renderChrome();
+      } catch { }
+    };
+    remoteFollowOpacity?.addEventListener('change', async () => {
+      const follow = !!remoteFollowOpacity.checked;
+      if (remoteOpacityRange) remoteOpacityRange.disabled = follow;
+      if (follow) {
+        try {
+          const boot = await tryCall('settings.set', { remoteFollowMainOpacity: true });
+          if (boot?.settings) state.boot = boot;
+          renderSettings();
+        } catch { }
+        return;
+      }
+      const mainPct = Math.max(20, Math.min(100, Math.round((Number(state.boot?.settings?.opacity) || 1) * 100)));
+      syncRemoteOpacityUi(mainPct);
+      try {
+        const boot = await tryCall('settings.set', { remoteFollowMainOpacity: false, remoteOpacity: mainPct / 100 });
+        if (boot?.settings) state.boot = boot;
+        renderSettings();
+      } catch { }
+    });
+    remoteOpacityRange?.addEventListener('input', () => {
+      const pct = Math.max(20, Math.min(100, Math.round(Number(remoteOpacityRange.value) || 100)));
+      if (remoteOpacityVal) remoteOpacityVal.textContent = pct + '%';
+      const now = performance.now();
+      if (now - lastRemoteOpacitySent >= 80) {
+        lastRemoteOpacitySent = now;
+        applyRemoteOpacity(pct, false);
+      }
+    });
+    remoteOpacityRange?.addEventListener('change', () => {
+      lastRemoteOpacitySent = performance.now();
+      applyRemoteOpacity(Number(remoteOpacityRange.value), true);
+    });
     const op = document.getElementById('setOpacity');
-    op?.addEventListener('input', () => { document.getElementById('opacityVal').textContent = op.value + '%'; });
+    op?.addEventListener('input', () => {
+      const pct = Math.max(20, Math.min(100, Math.round(Number(op.value) || 100)));
+      const label = document.getElementById('opacityVal');
+      if (label) label.textContent = pct + '%';
+      if (remoteFollowOpacity?.checked) syncRemoteOpacityUi(pct);
+    });
     op?.addEventListener('change', async () => {
       try { await tryCall('settings.set', { opacity: Number(op.value) / 100 }); await syncBoot(); } catch { }
     });

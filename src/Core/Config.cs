@@ -36,7 +36,10 @@ public sealed class Settings
     public double RemoteScale { get; set; } = 1.0;
     /// <summary>联机角色大小是否跟随主角，默认开启。</summary>
     public bool RemoteFollowMainScale { get; set; } = true;
+    /// <summary>联机角色自定义不透明度；RemoteFollowMainOpacity=true 时忽略此值，直接跟随主角 Opacity。</summary>
     public double RemoteOpacity { get; set; } = 1.0;
+    /// <summary>联机角色不透明度是否跟随主角，默认开启。</summary>
+    public bool RemoteFollowMainOpacity { get; set; } = true;
     public bool Topmost { get; set; } = true;
     public bool ClickThrough { get; set; }
     public bool HoverFade { get; set; }

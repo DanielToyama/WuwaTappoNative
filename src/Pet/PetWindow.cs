@@ -119,6 +119,7 @@ public sealed class PetWindow : Form
 
     float DpiScale => DeviceDpi / 96f;
     double EffectiveRemoteScale => _cfg.RemoteFollowMainScale ? _cfg.Scale : _cfg.RemoteScale;
+    double EffectiveRemoteOpacity => _cfg.RemoteFollowMainOpacity ? _cfg.Opacity : _cfg.RemoteOpacity;
     float RemoteScaleFactor => DpiScale * (float)EffectiveRemoteScale;
 
     Size WindowSize()
@@ -1208,16 +1209,16 @@ public sealed class PetWindow : Form
             if (_cats.TryGetValue(id, out var existing))
             {
                 existing.SetScale(RemoteScaleFactor);
-                existing.SetWindowOptions(_cfg.RemoteOpacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
-                existing.SetRemoteStyle(EffectiveRemoteScale, _cfg.RemoteOpacity);
+                existing.SetWindowOptions(EffectiveRemoteOpacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
+                existing.SetRemoteStyle(EffectiveRemoteScale, EffectiveRemoteOpacity);
                 existing.RefreshMember();
             }
             else
             {
                 var cat = new RemoteCatWindow(m, _loader, _catalog, _store);
                 cat.SetScale(RemoteScaleFactor);
-                cat.SetWindowOptions(_cfg.RemoteOpacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
-                cat.SetRemoteStyle(EffectiveRemoteScale, _cfg.RemoteOpacity);
+                cat.SetWindowOptions(EffectiveRemoteOpacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
+                cat.SetRemoteStyle(EffectiveRemoteScale, EffectiveRemoteOpacity);
                 cat.RemoteScaleRequested += ApplyRemoteScale;
                 cat.RemoteOpacityRequested += ApplyRemoteOpacity;
                 cat.Location = PlaceNewCat(id);
@@ -1590,8 +1591,8 @@ public sealed class PetWindow : Form
             var c = pair.Value;
             int oldWidth = c.Width;
             c.SetScale(s);
-            c.SetWindowOptions(_cfg.RemoteOpacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
-            c.SetRemoteStyle(EffectiveRemoteScale, _cfg.RemoteOpacity);
+            c.SetWindowOptions(EffectiveRemoteOpacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
+            c.SetRemoteStyle(EffectiveRemoteScale, EffectiveRemoteOpacity);
             // 缩放后窗口从左上角变大，贴边排列的成员会被顶出屏幕；按可见猫体修正回工作区。
             if (c.Width != oldWidth) ClampCatToScreen(pair.Key, c);
         }
@@ -1623,6 +1624,7 @@ public sealed class PetWindow : Form
 
     void ApplyRemoteOpacity(double value)
     {
+        _cfg.RemoteFollowMainOpacity = false;
         _cfg.RemoteOpacity = Math.Clamp(value, 0.2, 1.0);
         Save();
         UpdateCatScales();
