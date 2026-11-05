@@ -10,6 +10,7 @@ namespace WuwatappoNative.Net;
 public sealed class AuthService
 {
     readonly Settings _cfg;
+    readonly object _sessionGate = new();
     public ApiClient Api { get; private set; }
     public event Action Changed;
 
@@ -29,49 +30,75 @@ public sealed class AuthService
     public AuthService(Settings cfg)
     {
         _cfg = cfg;
-        Api = new ApiClient(Guid.NewGuid().ToString("N"), ApiClient.ResolveBaseUrl(cfg.ServerRegion));
-        Api.SetToken(cfg.Token);
-        Api.TokenRefreshed += OnTokenRefreshed;
+        Api = CreateApi(Guid.NewGuid().ToString("N"), ApiClient.ResolveBaseUrl(cfg.ServerRegion), cfg.Token);
     }
 
-    void OnTokenRefreshed(string t)
+    ApiClient CreateApi(string cid, string baseUrl, string token)
     {
-        _cfg.Token = t;
-        ConfigStore.Save(_cfg);
+        var api = new ApiClient(cid, baseUrl);
+        api.SetToken(token);
+        api.TokenRefreshed += refreshed => TryUseSession(api, () =>
+        {
+            _cfg.Token = refreshed;
+            ConfigStore.Save(_cfg);
+        });
+        return api;
+    }
+
+    internal ApiClient CaptureSession()
+    {
+        lock (_sessionGate) return IsLoggedIn ? Api : null;
+    }
+
+    internal bool TryUseSession(ApiClient session, Action action)
+    {
+        lock (_sessionGate)
+        {
+            if (session == null || !ReferenceEquals(Api, session) || !IsLoggedIn) return false;
+            action();
+            return true;
+        }
+    }
+
+    // Each login gets its own client and cookie jar. Late requests cannot use the next login's cookies.
+    void ReplaceSession(string token, long expires, string baseUrl = null)
+    {
+        var previous = Api;
+        Api = CreateApi(baseUrl == null ? previous.Cid : Guid.NewGuid().ToString("N"), baseUrl ?? previous.BaseUrl, token);
+        _cfg.Token = token;
+        _cfg.TokenExpireMs = expires;
+        _cfg.UserId = 0;
+        UserInfo = null;
+        TotalClickCount = TotalClickConsume = 0;
+        previous.Dispose();
     }
 
     public void UpdateBaseUrl(string newBaseUrl)
     {
-        if (Api != null)
-        {
-            Api.TokenRefreshed -= OnTokenRefreshed;
-            try { Api.Dispose(); } catch { }
-        }
-        Api = new ApiClient(Guid.NewGuid().ToString("N"), newBaseUrl);
-        Api.SetToken(_cfg.Token);
-        Api.TokenRefreshed += OnTokenRefreshed;
+        lock (_sessionGate) ReplaceSession(_cfg.Token, _cfg.TokenExpireMs, newBaseUrl);
     }
 
     public async Task<bool> TryRestoreAsync()
     {
-        if (string.IsNullOrEmpty(_cfg.Token)) return false;
+        var session = CaptureSession();
+        if (session == null) return false;
         try
         {
             if (_cfg.TokenExpireMs > 0 && _cfg.TokenExpireMs - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() < 48L * 3600 * 1000)
-                await RenewAsync();
-            await WhoAmIAsync();
-            return true;
+                await RenewAsync(session);
+            await ReadUserAsync(session, ApplyUserInfo);
+            return CaptureSession() == session;
         }
         catch (ApiException ex) when (ex.Code == 10002 || ex.Code == 10003 || ex.Code == 401 || ex.Code == 403)
         {
             Log.Write("token 失效：" + ex.Code);
-            ClearLocal();
+            TryUseSession(session, ClearLocal);
             return false;
         }
         catch (Exception ex)
         {
             Log.Write("恢复登录失败：" + ex.Message);
-            return IsLoggedIn;
+            return CaptureSession() == session;
         }
     }
 
@@ -261,13 +288,20 @@ public sealed class AuthService
         }
     }
 
-    public async Task RenewAsync()
+    public Task RenewAsync() => RenewAsync(CaptureSession());
+
+    async Task RenewAsync(ApiClient session)
     {
-        var data = await Api.GetAsync("api/frontend/user/renew-token");
+        Task<JsonNode> request = null;
+        if (!TryUseSession(session, () => request = session.GetAsync("api/frontend/user/renew-token"))) return;
+        var data = await request;
         if (data is JsonValue v && v.TryGetValue<bool>(out var ok) && ok)
         {
-            if (_cfg.TokenExpireMs > 0) _cfg.TokenExpireMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 7L * 24 * 3600 * 1000;
-            ConfigStore.Save(_cfg);
+            TryUseSession(session, () =>
+            {
+                if (_cfg.TokenExpireMs > 0) _cfg.TokenExpireMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + 7L * 24 * 3600 * 1000;
+                ConfigStore.Save(_cfg);
+            });
         }
     }
 
@@ -282,20 +316,34 @@ public sealed class AuthService
     }
 
     /// <summary>轻量刷新：只同步点击数、宝箱时间戳等运行时字段，不回写本地外观。</summary>
-    public async Task RefreshClicksAsync()
+    public Task RefreshClicksAsync() => RefreshClicksAsync(CaptureSession());
+
+    internal Task<bool> RefreshClicksAsync(ApiClient session) => ReadUserAsync(session, me =>
     {
-        var data = await Api.GetAsync("api/frontend/user/me");
-        if (data is not JsonObject me) return;
         UserInfo = me;
         TotalClickCount = ApiClient.ReadLong(me["total_click_count"]);
         TotalClickConsume = ApiClient.ReadLong(me["total_click_consume"]);
         Changed?.Invoke();
+    });
+
+    async Task<bool> ReadUserAsync(ApiClient session, Action<JsonObject> apply)
+    {
+        Task<JsonNode> request = null;
+        if (!TryUseSession(session, () => request = session.GetAsync("api/frontend/user/me"))) return false;
+        try
+        {
+            var data = await request;
+            return data is JsonObject me && TryUseSession(session, () => apply(me));
+        }
+        catch (OperationCanceledException) when (CaptureSession() != session) { return false; }
     }
 
-    public async Task WhoAmIAsync()
+    public Task WhoAmIAsync() => WhoAmIAsync(CaptureSession());
+
+    internal Task<bool> WhoAmIAsync(ApiClient session) => ReadUserAsync(session, ApplyUserInfo);
+
+    void ApplyUserInfo(JsonObject me)
     {
-        var data = await Api.GetAsync("api/frontend/user/me");
-        if (data is not JsonObject me) return;
         UserInfo = me;
         string serverCuid = ApiClient.ReadString(me["cuid"]);
         bool accountChanged = !string.IsNullOrEmpty(_cfg.Cuid) && !string.IsNullOrEmpty(serverCuid) && _cfg.Cuid != serverCuid;
@@ -344,32 +392,36 @@ public sealed class AuthService
 
     public async Task LogoutAsync()
     {
-        try { await Api.PostAsync("api/frontend/user/logout", new { click_num = 0 }); } catch (Exception ex) { Log.Write("登出请求失败：" + ex.Message); }
-        ClearLocal();
+        var session = CaptureSession();
+        try
+        {
+            Task<JsonNode> request = null;
+            if (!TryUseSession(session, () => request = session.PostAsync("api/frontend/user/logout", new { click_num = 0 }))) return;
+            await request;
+        }
+        catch (Exception ex) { Log.Write("登出请求失败：" + ex.Message); }
+        TryUseSession(session, ClearLocal);
     }
 
     public void ClearLocal()
     {
-        _cfg.Token = "";
-        _cfg.TokenExpireMs = 0;
-        _cfg.RoomNo = "";
-        _cfg.UserId = 0;
-        _cfg.PlayerId = 0;
-        _cfg.Nickname = "";
-        _cfg.CloudCharacterAssetId = 0;
-        _cfg.CloudAccessoryAssetId = 0;
-        _cfg.CloudEmoteAssetIds = new long[5];
-        Api.SetToken("");
-        ConfigStore.Save(_cfg);
-        Changed?.Invoke();
+        lock (_sessionGate)
+        {
+            ReplaceSession("", 0);
+            _cfg.RoomNo = "";
+            _cfg.PlayerId = 0;
+            _cfg.Nickname = "";
+            _cfg.CloudCharacterAssetId = 0;
+            _cfg.CloudAccessoryAssetId = 0;
+            _cfg.CloudEmoteAssetIds = new long[5];
+            ConfigStore.Save(_cfg);
+            Changed?.Invoke();
+        }
     }
 
     public void SetTokenManually(string token)
     {
-        _cfg.Token = (token ?? "").Trim();
-        Api.SetToken(_cfg.Token);
-        ConfigStore.Save(_cfg);
-        Changed?.Invoke();
+        StoreSession((token ?? "").Trim(), 0);
     }
 
     void ApplyAuthToken(JsonNode data)
@@ -377,11 +429,17 @@ public sealed class AuthService
         if (data is not JsonObject obj) throw new ApiException(-1, "登录响应缺少 data");
         string token = ApiClient.ReadString(obj["token"]);
         if (string.IsNullOrEmpty(token)) throw new ApiException(-1, "登录响应缺少 token");
-        _cfg.Token = token;
-        _cfg.TokenExpireMs = ParseExpire(obj["expire_time"]);
-        Api.SetToken(token);
-        ConfigStore.Save(_cfg);
-        Changed?.Invoke();
+        StoreSession(token, ParseExpire(obj["expire_time"]));
+    }
+
+    void StoreSession(string token, long expires)
+    {
+        lock (_sessionGate)
+        {
+            ReplaceSession(token, expires);
+            ConfigStore.Save(_cfg);
+            Changed?.Invoke();
+        }
     }
 
     static long ParseExpire(JsonNode node)
