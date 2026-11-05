@@ -2078,6 +2078,13 @@
             </div>
           </div>
           <div class="setting-item">
+            <div><div class="setting-title">联机玩家名字大小</div><div class="setting-sub">相对默认字号 50%–200%，只影响联机成员昵称</div></div>
+            <div class="setting-content">
+              <input type="range" min="50" max="200" step="1" value="${remoteNameScalePct}" id="setRemoteNameScale" style="width:180px" />
+              <span id="remoteNameScaleVal">${remoteNameScalePct}%</span>
+            </div>
+          </div>
+          <div class="setting-item">
             <div><div class="setting-title">窗口置顶</div><div class="setting-sub">桌宠始终显示在其他窗口上方</div></div>
             <div class="switch ${s.topmost ? 'on' : ''}" data-switch="topmost"></div>
           </div>
@@ -2195,13 +2202,6 @@
           <div class="setting-item">
             <div><div class="setting-title">隐藏其他成员桌宠</div><div class="setting-sub">本机显示设置，不影响他人</div></div>
             <div class="switch ${s.hideOtherPets ? 'on' : ''}" data-switch="hideOtherPets"></div>
-          </div>
-          <div class="setting-item">
-            <div><div class="setting-title">联机玩家名字大小</div><div class="setting-sub">相对默认字号 50%–200%，只影响联机成员昵称</div></div>
-            <div class="setting-content">
-              <input type="range" min="50" max="200" step="1" value="${remoteNameScalePct}" id="setRemoteNameScale" style="width:180px" />
-              <span id="remoteNameScaleVal">${remoteNameScalePct}%</span>
-            </div>
           </div>
           <div class="setting-item">
             <div><div class="setting-title">总是显示宝箱</div><div class="setting-sub">显示宝箱倒计时</div></div>
