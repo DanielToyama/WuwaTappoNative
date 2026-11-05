@@ -15,8 +15,9 @@ DefaultDirName={localappdata}\Programs\Wuwatappo Native
 UsePreviousAppDir=yes
 DisableDirPage=yes
 DisableProgramGroupPage=yes
-; 以 lowest 启动，由 [Code] 主动请求管理员权限；拒绝 UAC 时继续标准权限安装。
-PrivilegesRequired=lowest
+; 默认带管理员清单，Windows 会直接弹出 UAC；安装模式对话框可选择“仅当前用户”标准权限安装。
+PrivilegesRequired=admin
+PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\dist
@@ -55,17 +56,6 @@ var
   ResultCode: Integer;
 begin
   Result := True;
-
-  // 默认尝试以管理员权限重新启动安装器，便于结束以管理员模式运行的桌宠。
-  // 用户取消 UAC 时 ShellExec 返回 False，继续以当前标准权限安装。
-  if (not IsAdmin) and (ParamStr(1) <> '/ELEVATED') then
-  begin
-    if ShellExec('runas', ExpandConstant('{srcexe}'), '/ELEVATED', '', SW_SHOW, ewNoWait, ResultCode) then
-    begin
-      Result := False;
-      Exit;
-    end;
-  end;
 
   if CheckForMutexes('Local\WuwatappoNative.SingleInstance.v1') then
   begin
