@@ -270,15 +270,14 @@ public static class PetComposer
 
     static void DrawStrip(Graphics g, float s, Info info, int windowHeight)
     {
-        // 计数条 + 工具栏：原版为 136px 奶油底计数条与 61px 工具栏，底边对齐大猫。
-        var counter = AlignStripBottom(Scaled(CounterRect, s), windowHeight);
-        var toolbar = AlignStripBottom(new Rectangle((int)Math.Round(ToolbarX * s), (int)Math.Round(InfoY * s),
-            (int)Math.Round(ToolbarW * s), (int)Math.Round(CounterH * s)), windowHeight);
+        // 官方底栏是一整块圆角奶油条：计数与右侧按钮共用一个轮廓，不再画成两个分离的小胶囊。
+        var counter = Scaled(CounterRect, s);
+        var toolbar = new Rectangle((int)Math.Round(ToolbarX * s), (int)Math.Round(InfoY * s),
+            (int)Math.Round(ToolbarW * s), (int)Math.Round(CounterH * s));
+        var bar = AlignStripBottom(new Rectangle(counter.X, counter.Y, toolbar.Right - counter.X,
+            Math.Max(counter.Height, toolbar.Height)), windowHeight);
 
-        using (var path = Rounded(counter, 16 * s))
-        using (var brush = new SolidBrush(Cream))
-            g.FillPath(brush, path);
-        using (var path = Rounded(toolbar, 16 * s))
+        using (var path = Rounded(bar, 16 * s))
         using (var brush = new SolidBrush(Cream))
             g.FillPath(brush, path);
 
@@ -286,7 +285,7 @@ public static class PetComposer
         using (var brush = new SolidBrush(InkStrong))
         using (var fmt = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center })
         {
-            var textRect = new RectangleF(counter.X + 18 * s, counter.Y, counter.Width - 18 * s, counter.Height);
+            var textRect = new RectangleF(counter.X + 18 * s, bar.Y, counter.Width - 18 * s, bar.Height);
             g.DrawString(FormatClicks(info.Clicks), font, brush, textRect, fmt);
         }
 
@@ -317,15 +316,15 @@ public static class PetComposer
     static void DrawHandsOverStrip(Graphics g, float s, Image body, Rectangle cat, int windowHeight)
     {
         if (body == null) return;
-        var counter = AlignStripBottom(Scaled(CounterRect, s), windowHeight);
-        var toolbar = AlignStripBottom(new Rectangle((int)Math.Round(ToolbarX * s), (int)Math.Round(InfoY * s),
-            (int)Math.Round(ToolbarW * s), (int)Math.Round(CounterH * s)), windowHeight);
+        var counter = Scaled(CounterRect, s);
+        var toolbar = new Rectangle((int)Math.Round(ToolbarX * s), (int)Math.Round(InfoY * s),
+            (int)Math.Round(ToolbarW * s), (int)Math.Round(CounterH * s));
+        var bar = AlignStripBottom(new Rectangle(counter.X, counter.Y, toolbar.Right - counter.X,
+            Math.Max(counter.Height, toolbar.Height)), windowHeight);
         var state = g.Save();
         try
         {
-            using var clip = new GraphicsPath();
-            using (var a = Rounded(counter, 16 * s)) clip.AddPath(a, false);
-            using (var b = Rounded(toolbar, 16 * s)) clip.AddPath(b, false);
+            using var clip = Rounded(bar, 16 * s);
             g.SetClip(clip, CombineMode.Intersect);
             g.DrawImage(body, cat);
         }

@@ -15,9 +15,11 @@ DefaultDirName={localappdata}\Programs\Wuwatappo Native
 UsePreviousAppDir=yes
 DisableDirPage=yes
 DisableProgramGroupPage=yes
-; 默认带管理员清单，Windows 会直接弹出 UAC；安装模式对话框可选择“仅当前用户”标准权限安装。
+; 默认管理员模式；安装模式对话框可选择“为所有用户安装（推荐）”或“仅当前用户”标准权限安装。
 PrivilegesRequired=admin
 PrivilegesRequiredOverridesAllowed=dialog
+; 旧版本是以 lowest 安装的；不能沿用旧安装模式，否则 admin 默认值不会生效。
+UsePreviousPrivileges=no
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\dist

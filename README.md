@@ -38,7 +38,7 @@ Wuwatappo Native 是 WuwaTappo 1.0.2 的 Windows 原生实现，使用 C# / .NET
 
 从 [GitHub Releases](https://github.com/DanielToyama/WuwaTappoNative/releases) 下载：
 
-- `WuwatappoNative-<版本>-Setup.exe`：安装到 `%LOCALAPPDATA%\Programs\Wuwatappo Native`；默认带管理员清单，启动时自动请求 UAC，以便关闭管理员模式桌宠；可在安装模式中选择仅当前用户的标准权限安装。
+- `WuwatappoNative-<版本>-Setup.exe`：安装到 `%LOCALAPPDATA%\Programs\Wuwatappo Native`；默认带管理员清单，启动时显示安装模式并默认“为所有用户安装（推荐）”，选择后请求 UAC，以便关闭管理员模式桌宠；也可选择仅当前用户的标准权限安装。
 - `WuwatappoNative-<版本>-portable.zip`：解压后直接运行 `WuwatappoNative.exe`。
 
 系统要求：
