@@ -9,6 +9,8 @@
 
 直接编辑 `compatibility.json` 并提交到 `main`，GitHub Pages 会自动更新；不需要发布新的 Native 版本。
 
+官方 `official.cn.latest` / `official.global.latest` 由 `.github/workflows/update-compatibility.yml` 每 6 小时从官方更新清单同步一次；`native.latest`、`native.minSafe` 和兼容性状态仍由发布流程手动维护。
+
 常用字段：
 
 | 字段 | 说明 |

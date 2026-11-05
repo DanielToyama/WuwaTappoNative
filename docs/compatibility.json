@@ -1,21 +1,21 @@
 {
   "schema": 1,
-  "updatedAt": "2026-11-05T06:46:33Z",
+  "updatedAt": "2026-11-05T11:33:48Z",
   "status": "safe",
-  "message": "当前版本与官方 1.0.3 兼容，可继续使用。",
+  "message": "官方客户端已更新至 1.0.4；当前协议验证基于 1.0.3，暂未发现破坏性变更。",
   "native": {
     "latest": "0.1.0",
     "minSafe": "0.1.0"
   },
   "official": {
     "cn": {
-      "latest": "1.0.3",
+      "latest": "1.0.4",
       "minOta": "1.0.0"
     },
     "global": {
-      "latest": null,
-      "minOta": null,
-      "inheritCn": true
+      "latest": "1.0.4",
+      "minOta": "1.0.0",
+      "inheritCn": false
     }
   },
   "protocol": {
