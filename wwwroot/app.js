@@ -2328,7 +2328,7 @@
     { id: 'reload', label: '刷新界面', def: 'F5' },
     ...[1, 2, 3, 4, 5, 6].map(i => ({ id: 'emote' + i, label: '发送表情 · 槽位 ' + i, def: 'Ctrl+Alt+' + i })),
     { id: 'capture', label: 'OBS 绿幕窗口', def: '' },
-    { id: 'settingsPanel', label: '打开设置面板', def: '' },
+    { id: 'mainPanel', label: '打开主面板', def: '' },
     { id: 'rhythmMode', label: '开关音游模式', def: '' },
     { id: 'autoEmote', label: '开关自动表情', def: '' },
     { id: 'autoClick', label: '开关自动敲击', def: '' },

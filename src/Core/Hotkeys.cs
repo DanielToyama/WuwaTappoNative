@@ -27,7 +27,7 @@ public static class Hotkeys
         ("emote5", "发送表情 · 槽位 5", "Ctrl+Alt+5"),
         ("emote6", "发送表情 · 槽位 6", "Ctrl+Alt+6"),
         ("capture", "OBS 绿幕窗口", ""),
-        ("settingsPanel", "打开设置面板", ""),
+        ("mainPanel", "打开主面板", ""),
         ("rhythmMode", "开关音游模式", ""),
         ("autoEmote", "开关自动表情", ""),
         ("autoClick", "开关自动敲击", ""),
@@ -169,11 +169,19 @@ public static class Hotkeys
     /// <summary>读取配置中的快捷键表，缺失或非法项回落到默认值。</summary>
     public static Dictionary<string, string> FromSettings(Dictionary<string, string> saved)
     {
+        // 0.0.48 曾使用 settingsPanel 这个动作 id；升级后沿用旧绑定，避免用户重新录制。
+        var source = saved;
+        if (saved != null && !saved.ContainsKey("mainPanel") &&
+            saved.TryGetValue("settingsPanel", out var legacy))
+        {
+            source = new Dictionary<string, string>(saved);
+            source["mainPanel"] = legacy;
+        }
         var result = new Dictionary<string, string>();
         foreach (var (id, _, def) in Actions)
         {
             string value = def;
-            if (saved != null && saved.TryGetValue(id, out var raw))
+            if (source != null && source.TryGetValue(id, out var raw))
             {
                 string normalized = Normalize(raw);
                 // 空串表示用户主动禁用；非法值（非空但规范化失败）回落到默认。

@@ -51,7 +51,7 @@ public sealed class PetWindow : Form
     public GlobalInputHook Input => _hook;
 
     public event Action OpenPanelRequested;
-    public event Action OpenSettingsRequested;
+    public event Action OpenMainPanelRequested;
     /// <summary>自动敲击/自动表情开关变化后，让 App 立即启停相关定时器。</summary>
     public event Action AutoSettingsChanged;
     public event Action<string> ChestOpenRequested;
@@ -967,9 +967,9 @@ public sealed class PetWindow : Form
             NotifyHotkey(_cfg.CaptureMode ? "已开启 OBS 绿幕窗口" : "已关闭 OBS 绿幕窗口");
             NotifySettingsChanged();
         }
-        else if (action == "settingsPanel")
+        else if (action == "mainPanel")
         {
-            OpenSettingsRequested?.Invoke();
+            OpenMainPanelRequested?.Invoke();
         }
         else if (action == "rhythmMode")
         {

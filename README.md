@@ -96,7 +96,7 @@ Wuwatappo Native 是 WuwaTappo 1.0.2 的 Windows 原生实现，使用 C# / .NET
 | 刷新界面 | `F5` |
 | 发送表情槽位 1–6 | `Ctrl+Alt+1` 至 `Ctrl+Alt+6` |
 
-`OBS 绿幕窗口`、`打开设置面板`、`开关音游模式`、`开关自动表情`、`开关自动敲击` 默认不占用按键，可在设置页按需绑定。
+`OBS 绿幕窗口`、`打开主面板`、`开关音游模式`、`开关自动表情`、`开关自动敲击` 默认不占用按键，可在设置页按需绑定。`打开主面板` 会回到“我的背包”主页，不保留上次停留的页面。
 
 快捷键可在 `设置 → 桌面键盘 → 快捷键` 中录制、清除或恢复默认值；保存后立即生效。快捷键通过 Raw Input 被动监听，不注册系统级热键。
 
@@ -170,14 +170,14 @@ dotnet build -c Release
 需要 PowerShell 7 和 Inno Setup 6.7 或更高版本。
 
 ```powershell
-pwsh -File .\installer\build.ps1 -Version 0.0.48
+pwsh -File .\installer\build.ps1 -Version 0.0.49
 ```
 
 输出：
 
 ```text
-dist/WuwatappoNative-0.0.48-Setup.exe
-dist/WuwatappoNative-0.0.48-portable.zip
+dist/WuwatappoNative-0.0.49-Setup.exe
+dist/WuwatappoNative-0.0.49-portable.zip
 dist/WuwatappoTokenExtractor-1.0.0-x64.zip
 ```
 
