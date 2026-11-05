@@ -17,6 +17,8 @@ public sealed class CompatibilityInfo
     [JsonPropertyName("official")] public CompatibilityOfficial Official { get; set; } = new();
     [JsonPropertyName("protocol")] public CompatibilityProtocol Protocol { get; set; } = new();
     [JsonPropertyName("killSwitch")] public CompatibilityKillSwitch KillSwitch { get; set; } = new();
+    /// <summary>由客户端直接读取官方清单后生成的判断，不来自 compatibility.json。</summary>
+    [JsonPropertyName("officialCheck")] public OfficialCheckStatus OfficialCheck { get; set; }
 
     [JsonIgnore] public string SourceUrl { get; set; } = "";
     [JsonIgnore] public bool IsOfflineRequested => KillSwitch != null && KillSwitch.ForceOffline;
@@ -27,7 +29,9 @@ public sealed class CompatibilityInfo
 
 public sealed class CompatibilityNative
 {
+    /// <summary>最新发布版本；每次发版更新。</summary>
     [JsonPropertyName("latest")] public string Latest { get; set; } = "";
+    /// <summary>仍兼容当前官方协议的最低版本；只在兼容基线变化时提升，不随普通修复版更新。</summary>
     [JsonPropertyName("minSafe")] public string MinSafe { get; set; } = "";
 }
 
@@ -71,7 +75,7 @@ public static class CompatibilityChecker
 
     static HttpClient CreateClient()
     {
-        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(8) };
+        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(20) };
         client.DefaultRequestHeaders.UserAgent.ParseAdd(
             "WuwatappoNative/" + (typeof(CompatibilityChecker).Assembly.GetName().Version?.ToString(3) ?? "0"));
         client.DefaultRequestHeaders.Accept.ParseAdd("application/json");

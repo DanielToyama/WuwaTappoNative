@@ -121,12 +121,15 @@ public sealed class Settings
     /// <summary>游戏模式规则：检测到这些进程启动时自动开启鼠标穿透；进程退出后恢复。</summary>
     public string[] GameModeRules { get; set; } = Array.Empty<string>();
 
-    public int PetX { get; set; } = -1;
-    public int PetY { get; set; } = -1;
-    public string RoomNo { get; set; } = "";
-    public string LastRoom { get; set; } = "";
-    public string[] RoomHistory { get; set; } = Array.Empty<string>();
-    public Dictionary<string, int[]> MemberPositions { get; set; } = new();
+    [JsonIgnore] public int PetX { get; set; } = -1;
+    [JsonIgnore] public int PetY { get; set; } = -1;
+    [JsonIgnore] public string RoomNo { get; set; } = "";
+    [JsonIgnore] public string LastRoom { get; set; } = "";
+    [JsonIgnore] public string[] RoomHistory { get; set; } = Array.Empty<string>();
+    /// <summary>成员位置：key = 成员 id；由 StateStore 持久化，不写入 config.json。</summary>
+    [JsonIgnore] public Dictionary<string, int[]> MemberPositions { get; set; } = new();
+    /// <summary>联机成员单独显示/隐藏；key = 成员 id，false 表示隐藏，缺省为显示。</summary>
+    [JsonIgnore] public Dictionary<string, bool> MemberVisibility { get; set; } = new();
     /// <summary>服务器区服：cn（国服） | global（国际服），默认 cn。</summary>
     public string ServerRegion { get; set; } = "cn";
     public string Locale { get; set; } = "zh";
@@ -226,6 +229,8 @@ public static class ConfigStore
 
     public static void Save(Settings cfg)
     {
+        // 先写独立状态，再写 config；避免状态写入失败时 config 已经丢掉旧字段。
+        StateStore.Save(cfg);
         try
         {
             var tmp = Paths.ConfigFile + ".tmp";

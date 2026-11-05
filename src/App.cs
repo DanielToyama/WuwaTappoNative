@@ -44,6 +44,9 @@ public sealed class App : ApplicationContext
     public App()
     {
         Cfg = ConfigStore.Load();
+        // 先迁移/加载独立状态文件，再保存 config.json 以移除旧的状态字段。
+        StateStore.Load(Cfg);
+        ConfigStore.Save(Cfg);
         // 配置与注册表对齐：用户手动删了 Run 项、或换过安装目录，都在启动时修正。
         Cfg.LaunchAtLogin = AutoStart.Sync(Cfg.LaunchAtLogin, Cfg.RunAsAdmin);
         Auth = new AuthService(Cfg);
@@ -193,9 +196,22 @@ public sealed class App : ApplicationContext
     public async Task RefreshCompatibilityAsync(bool force = false)
     {
         var info = await CompatibilityChecker.CheckAsync(force);
-        if (info == null) return;
+        // 官方版本由客户端直接读取官方清单；即使 compatibility.json 暂时不可用，
+        // 也能提示“官方已更新但 Native 尚未验证/已被官方强制更新”。
+        var official = await OfficialVersionChecker.FetchAsync(Cfg.ServerRegion, force);
+        var officialCheck = OfficialVersionChecker.Evaluate(official);
+        if (info == null)
+        {
+            info = new CompatibilityInfo
+            {
+                Status = "unknown",
+                Message = "暂时无法读取版本状态。",
+                UpdatedAt = DateTimeOffset.UtcNow.ToString("O"),
+            };
+        }
+        info.OfficialCheck = officialCheck;
         Compatibility = info;
-        Log.Write($"版本状态：{info.Status} {info.Message}");
+        Log.Write($"版本状态：{info.Status} {info.Message}；官方客户端：{officialCheck.State} {officialCheck.OfficialVersion}");
         try { Panel?.Push("compatibility", info); } catch { }
     }
 
@@ -293,6 +309,7 @@ public sealed class App : ApplicationContext
             }
         }
         catch { }
+        _ = RefreshCompatibilityAsync(force: true);
     }
 
     /// <summary>自动敲击定时器：按设置频率产生一次本地敲击，由 RoomManager 批量上传。</summary>

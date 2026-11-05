@@ -28,6 +28,7 @@
           <button class="icon-btn" id="winCloseBtn" title="关闭">×</button>
         </div>
       </header>
+      <section class="notice-host" id="noticeHost"></section>
       <section class="page-host" id="pageHost"></section>
     </main>
   </div>
@@ -35,6 +36,25 @@
   <div class="toast-host" id="toastHost"></div>
   <div class="modal-host hidden" id="modalHost"></div>
 
+  <script>
+    // 仅用于本地浏览器预览：?preview=... 时提供最小 WebView 消息桥。
+    (() => {
+      const params = new URLSearchParams(location.search);
+      if (!params.has('preview')) return;
+      const listeners = [];
+      window.chrome = window.chrome || {};
+      window.chrome.webview = {
+        addEventListener(type, fn) { if (type === 'message') listeners.push(fn); },
+        postMessage(msg) {
+          const reply = data => listeners.forEach(fn => {
+            try { fn({ data: { id: msg.id, ok: true, data } }); } catch { }
+          });
+          if (msg.cmd === 'atlas.list') reply({ items: [{ mainId: 1971, name: '预览表情', thumb: '' }] });
+          else reply(null);
+        },
+      };
+    })();
+  </script>
   <script src="app.js"></script>
 </body>
 </html>

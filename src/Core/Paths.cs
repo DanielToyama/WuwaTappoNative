@@ -11,6 +11,7 @@ public static class Paths
     public static string CacheDir => Path.Combine(Root, "cache");
     public static string ImageCacheDir => Path.Combine(CacheDir, "images");
     public static string ConfigFile => Path.Combine(Root, "config.json");
+    public static string StateFile => Path.Combine(Root, "state.json");
     public static string LogFile => Path.Combine(Root, "log.txt");
     public static string CatalogCache => Path.Combine(CacheDir, "appearance_asset.json");
     public static string CatalogMeta => Path.Combine(CacheDir, "appearance_meta.json");

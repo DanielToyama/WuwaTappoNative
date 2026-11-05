@@ -262,6 +262,37 @@ public sealed class RoomManager : IDisposable
         ConfigStore.Save(_cfg);
     }
 
+    string MemberVisibilityKey(long id) => id.ToString();
+
+    RoomMember NewMember(long id) => new RoomMember { Id = id, Visible = IsMemberVisible(id) };
+
+    /// <summary>成员是否显示；按成员 id 全局记忆，没有单独设置过时默认显示。</summary>
+    public bool IsMemberVisible(long id)
+    {
+        if (_cfg.MemberVisibility == null || _cfg.MemberVisibility.Count == 0) return true;
+        if (_cfg.MemberVisibility.TryGetValue(MemberVisibilityKey(id), out bool visible)) return visible;
+        // 兼容早期测试版写入的“房间号:成员 id”键；即使房间已销毁也能沿用。
+        string suffix = ":" + id;
+        foreach (var pair in _cfg.MemberVisibility)
+            if (pair.Key.EndsWith(suffix, StringComparison.Ordinal)) return pair.Value;
+        return true;
+    }
+
+    /// <summary>保存单个成员的显示/隐藏设置；按成员 id 记忆，不随房间销毁丢失。</summary>
+    public void SetMemberVisible(long id, bool visible)
+    {
+        if (id <= 0) return;
+        _cfg.MemberVisibility ??= new Dictionary<string, bool>();
+        string key = MemberVisibilityKey(id);
+        string suffix = ":" + id;
+        foreach (string oldKey in _cfg.MemberVisibility.Keys
+                     .Where(k => k == key || k.EndsWith(suffix, StringComparison.Ordinal)).ToList())
+            _cfg.MemberVisibility.Remove(oldKey);
+        if (!visible) _cfg.MemberVisibility[key] = false;
+        if (Members.TryGetValue(id, out var member)) member.Visible = visible;
+        ConfigStore.Save(_cfg);
+    }
+
     async Task EnterAsync(string roomNo, bool announce = true)
     {
         RoomNo = roomNo;
@@ -436,7 +467,7 @@ public sealed class RoomManager : IDisposable
                 continue;
             }
             seen.Add(id);
-            var member = Members.GetOrAdd(id, _ => new RoomMember { Id = id });
+            var member = Members.GetOrAdd(id, _ => NewMember(id));
             member.Nickname = ApiClient.ReadString(m["n"]);
             member.IsOwner = ApiClient.ReadBool(m["o"]);
             member.Online = !m.ContainsKey("l") || ApiClient.ReadBool(m["l"]);
@@ -463,7 +494,7 @@ public sealed class RoomManager : IDisposable
                 {
                     long id = ParseId(payload?["a"]);
                     if (id <= 0 || id == SelfId) return;
-                    var m = Members.GetOrAdd(id, _ => new RoomMember { Id = id });
+                    var m = Members.GetOrAdd(id, _ => NewMember(id));
                     if (!string.IsNullOrEmpty(ApiClient.ReadString(payload?["n"])))
                         m.Nickname = ApiClient.ReadString(payload?["n"]);
                     ApplyAppearance(m, payload as JsonObject);
@@ -580,7 +611,7 @@ public sealed class RoomManager : IDisposable
         long id = ParseId(o["a"]);
         if (id > 0 && id != SelfId)
         {
-            var m = Members.GetOrAdd(id, _ => new RoomMember { Id = id });
+            var m = Members.GetOrAdd(id, _ => NewMember(id));
             string nick = ApiClient.ReadString(o["n"]);
             bool nickChanged = !string.IsNullOrEmpty(nick) && nick != m.Nickname;
             if (nickChanged) m.Nickname = nick;

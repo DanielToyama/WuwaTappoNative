@@ -9,7 +9,7 @@
 
 直接编辑 `compatibility.json` 并提交到 `main`，GitHub Pages 会自动更新；不需要发布新的 Native 版本。
 
-官方 `official.cn.latest` / `official.global.latest` 由 `.github/workflows/update-compatibility.yml` 每 6 小时从官方更新清单同步一次；`native.latest`、`native.minSafe` 和兼容性状态仍由发布流程手动维护。
+官方 `official.cn.latest` / `official.global.latest` 由 `.github/workflows/update-compatibility.yml` 每 6 小时从官方更新清单同步一次，用于状态页展示；客户端还会直接读取官方 `latest_host.json`，因此不依赖 Actions 的同步延迟。`native.latest`、`native.minSafe` 和兼容性状态仍由发布流程手动维护。
 
 常用字段：
 
@@ -27,6 +27,6 @@
 | `killSwitch.forceOffline` | 是否要求客户端进入安全模式 |
 | `killSwitch.reason` | 安全模式原因 |
 
-客户端会请求同一份 JSON，并在设置页显示状态；拉取失败时保留上次结果，不阻塞本地功能。
+客户端会请求同一份 JSON，并直接读取官方版本清单；拉取失败时保留上次结果，不阻塞本地功能。
 
 发布新版本时更新 `native.latest`；只有协议/服务器兼容基线发生变化时，才提升 `native.minSafe`。普通 bug 修复、界面调整和安装器修改不需要推进最低兼容版本。

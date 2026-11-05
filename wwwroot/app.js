@@ -135,7 +135,9 @@
     return `<img class="${cls}" loading="lazy" src="${esc(url)}" alt="${esc(alt)}" onerror="this.style.visibility='hidden'">`;
   }
 
-  const DEMO = new URLSearchParams(location.search).has('demo');
+  const PARAMS = new URLSearchParams(location.search);
+  const PREVIEW = PARAMS.get('preview');
+  const DEMO = PARAMS.has('demo') || !!PREVIEW;
 
   function isLogged() { return DEMO || !!(state.boot && state.boot.auth && state.boot.auth.loggedIn); }
 
@@ -354,6 +356,7 @@
     if (evt === 'navigate') { if (data?.page) navigate(data.page); return; }
     if (evt === 'compatibility') {
       state.compatibility = data;
+      renderNotices();
       if (state.page === 'settings') renderSettings();
       return;
     }
@@ -406,6 +409,7 @@
     document.querySelectorAll('.tab').forEach(btn => btn.classList.toggle('active', btn.dataset.page === state.page));
     const page = PAGES.find(p => p.key === state.page);
     document.getElementById('pageTitle').textContent = page ? page.title : '';
+    renderNotices();
   }
 
   function navigate(key) {
@@ -1591,12 +1595,14 @@
                 <div class="member ${m.owner ? 'owner' : ''}">
                   <span class="dot ${m.online ? '' : 'off'}"></span>
                   <span class="m-name">${esc(m.nickname || '漂泊者')}</span>
-                  ${m.owner ? '<span class="m-role">房主</span>' : ''}
-                  ${m.self ? '<span class="m-role">我</span>' : ''}
-                  ${!m.online ? '<span class="m-role">离线</span>' : ''}
-                  ${!m.self ? (room.hiddenAll
-                    ? '<span class="m-role" title="已开启“隐藏其他成员桌宠”">已隐藏</span>'
-                    : `<button class="chip" style="margin-left:8px;padding:2px 10px" data-hide="${m.id}" data-visible="${m.visible ? 1 : 0}">${m.visible ? '隐藏' : '显示'}</button>`) : ''}
+                  <span class="m-actions">
+                    ${m.owner ? '<span class="m-role">房主</span>' : ''}
+                    ${m.self ? '<span class="m-role">我</span>' : ''}
+                    ${!m.online ? '<span class="m-role">离线</span>' : ''}
+                    ${!m.self ? (room.hiddenAll
+                      ? '<span class="m-role" title="已开启“隐藏其他成员桌宠”">已隐藏</span>'
+                      : `<button class="chip" style="padding:2px 10px" data-hide="${m.id}" data-visible="${m.visible ? 1 : 0}">${m.visible ? '隐藏' : '显示'}</button>`) : ''}
+                  </span>
                 </div>`).join('') || '<div class="empty-state">还没有加入房间</div>'}
             </div>
           </div>
@@ -1864,10 +1870,66 @@
     return out.join('');
   }
 
+  function compareVersions(left, right) {
+    const a = String(left || '').replace(/^v/i, '').split(/[.+-]/).map(x => parseInt(x, 10) || 0);
+    const b = String(right || '').replace(/^v/i, '').split(/[.+-]/).map(x => parseInt(x, 10) || 0);
+    for (let i = 0; i < Math.max(a.length, b.length); i++) {
+      const av = i < a.length ? a[i] : 0;
+      const bv = i < b.length ? b[i] : 0;
+      if (av !== bv) return av < bv ? -1 : 1;
+    }
+    return 0;
+  }
+
+  /// 官方版本提醒固定在内容区顶部，跨页面可见；同一个状态+版本关闭后不再重复。
+  function renderNotices() {
+    const host = document.getElementById('noticeHost');
+    if (!host) return;
+    const oc = state.compatibility?.officialCheck;
+    if (!oc || (oc.state !== 'unverified' && oc.state !== 'forced')) {
+      host.innerHTML = '';
+      return;
+    }
+    const key = `wn_official_notice_${oc.state}_${oc.officialVersion || ''}`;
+    try {
+      if (localStorage.getItem(key) === '1') {
+        host.innerHTML = '';
+        return;
+      }
+    } catch { }
+    const danger = oc.state === 'forced';
+    host.innerHTML = `<section class="official-notice ${danger ? 'danger' : 'warning'}">
+      <div class="official-notice-main">
+        <div class="official-notice-icon">${danger ? '!' : '?'}</div>
+        <div class="official-notice-copy">
+          <div class="official-notice-title">官方客户端已${danger ? '强制' : ''}更新至 ${esc(oc.officialVersion || '新版本')}</div>
+          <div class="official-notice-text">${esc(oc.message || '')}</div>
+          <div class="official-notice-meta">当前 Native 验证基线：${esc(oc.testedVersion || '—')}${oc.stale ? ' · 显示上次检查结果' : ''}</div>
+        </div>
+        <button class="official-notice-close" data-official-dismiss title="关闭">×</button>
+      </div>
+      <div class="official-notice-actions">
+        <a class="btn ghost" href="https://github.com/DanielToyama/WuwaTappoNative/releases/latest" target="_blank" rel="noreferrer">查看项目状态</a>
+        <button class="btn ghost" data-official-dismiss>${danger ? '暂时继续（联机可能不可用）' : '继续使用'}</button>
+      </div>
+    </section>`;
+    const dismiss = () => {
+      try { localStorage.setItem(key, '1'); } catch { }
+      host.innerHTML = '';
+    };
+    host.querySelectorAll('[data-official-dismiss]').forEach(el => { el.onclick = dismiss; });
+  }
+
   function compatibilityBannerHtml() {
     const c = state.compatibility;
     if (!c) return '';
-    const status = String(c.status || 'unknown').toLowerCase();
+    const native = c.native || {};
+    const officialCheck = c.officialCheck;
+    const currentNative = state.boot?.version || '';
+    const belowMinSafe = !!(native.minSafe && currentNative && compareVersions(currentNative, native.minSafe) < 0);
+    let status = String(c.status || 'unknown').toLowerCase();
+    if (status === 'safe' && (belowMinSafe || officialCheck?.state === 'unverified' || officialCheck?.state === 'forced'))
+      status = officialCheck?.state === 'forced' ? 'unsafe' : 'warning';
     const meta = ({
       safe: { cls: 'safe', icon: '✓', label: '安全', title: '当前版本可继续使用' },
       warning: { cls: 'warning', icon: '!', label: '注意', title: '当前版本需要关注' },
@@ -1875,7 +1937,6 @@
       maintenance: { cls: 'maintenance', icon: '…', label: '维护中', title: '官方服务可能正在维护' },
       unknown: { cls: 'unknown', icon: '?', label: '未知', title: '暂时无法确认版本状态' }
     })[status] || { cls: 'unknown', icon: '?', label: '未知', title: '暂时无法确认版本状态' };
-    const native = c.native || {};
     const official = c.official || {};
     const cn = official.cn || {};
     const global = official.global || {};
@@ -1890,10 +1951,14 @@
       : '';
     const bits = [];
     if (native.latest) bits.push(`最新 ${esc(native.latest)}`);
-    if (native.minSafe) bits.push(`最低安全 ${esc(native.minSafe)}`);
+    if (native.minSafe) bits.push(`最低兼容 ${esc(native.minSafe)}`);
     if (cn.latest) bits.push(`官方 CN ${esc(cn.latest)}`);
     if (globalLatest) bits.push(`官方 Global ${esc(globalLatest)}${globalUsesCn ? '（沿用 CN）' : ''}`);
     if (protocol.testedOfficial) bits.push(`验证基线 ${esc(protocol.testedOfficial)}`);
+    if (officialCheck?.officialVersion) {
+      const label = ({ verified: '已验证', unverified: '未验证', forced: '强制更新', unavailable: '检查失败' })[officialCheck.state] || '未知';
+      bits.push(`官方检查 ${esc(officialCheck.officialVersion)}（${label}）`);
+    }
     if (updatedText) bits.push(`更新于 ${esc(updatedText)}`);
     return `<section class="compat-banner ${meta.cls}">
       <div class="compat-head">
@@ -1903,6 +1968,7 @@
       </div>
       <div class="compat-sub">${esc(c.message || '暂无说明')}</div>
       <div class="compat-meta">${bits.join(' · ')}</div>
+      ${belowMinSafe ? `<div class="compat-force">当前 Native ${esc(currentNative)} 低于最低兼容版本 ${esc(native.minSafe)}，不保证兼容当前官方服务，请更新后再使用联机。</div>` : ''}
       ${force ? `<div class="compat-force">安全模式：${esc(kill.reason || '维护者要求暂停联网')}</div>` : ''}
       ${protocol.breaking ? '<div class="compat-force">检测到破坏性协议变更，请尽快更新。</div>' : ''}
     </section>`;
@@ -2818,6 +2884,7 @@
         const r = await tryCall('compatibility.check');
         if (r) {
           state.compatibility = r;
+          renderNotices();
           renderSettings();
           toast('版本状态已更新');
         } else {
@@ -2921,6 +2988,134 @@
     renderChrome();
   }
 
-  init();
-  boot();
+  // 仅供本地浏览器预览更新提示：?preview=verified|unverified|forced|minSafe|unavailable
+  function previewBoot(mode) {
+    return {
+      version: '0.1.4',
+      disclaimerShown: true,
+      uacPromptShown: true,
+      auth: {
+        loggedIn: true,
+        nickname: 'Daniel兔兔',
+        uid: '103242655',
+        clicks: 114514,
+        clickTotal: 120000,
+        clickConsume: 5486,
+      },
+      room: mode === 'room'
+        ? {
+            joined: true,
+            roomNo: 'RYOlbDDRN',
+            lastRoom: '',
+            history: [],
+            hiddenAll: false,
+            members: [
+              { id: 1, nickname: 'Daniel兔兔', owner: true, self: true, online: true, visible: true },
+              { id: 2, nickname: '在线成员', owner: false, self: false, online: true, visible: true },
+              { id: 3, nickname: '在线房主', owner: true, self: false, online: true, visible: false },
+              { id: 4, nickname: '离线成员', owner: false, self: false, online: false, visible: true },
+            ],
+          }
+        : { joined: false, members: [], history: [], roomNo: '', lastRoom: '' },
+      settings: {
+        scale: 0.83,
+        opacity: 1,
+        remoteScale: 1,
+        remoteFollowMain: true,
+        remoteOpacity: 1,
+        remoteFollowMainOpacity: true,
+        remoteNameScale: 1.19,
+        topmost: true,
+        clickThrough: false,
+        hoverFade: true,
+        keyboardMode: 'hidden',
+        showMappingControls: true,
+        hideOtherPets: false,
+        allowOverlap: true,
+        catLayout: 'vertical',
+        captureMode: false,
+        autoChest: true,
+        autoEmoteEnabled: false,
+        autoClickEnabled: false,
+        notifyChestClaimed: false,
+        notifyHotkeys: false,
+        launchAtLogin: true,
+        runAsAdmin: false,
+        serverRegion: 'cn',
+        gameModeRules: [],
+        hotkeys: {},
+      },
+      appearance: {
+        characterAssetId: 3060,
+        accessoryAssetId: 1604,
+        emoteAssetIds: [1971, 1965, 1969, 1970, 1968],
+      },
+      catalog: {},
+      update: null,
+    };
+  }
+
+  function previewCompatibility(mode) {
+    const checkedAt = new Date().toISOString();
+    const base = {
+      schema: 1,
+      updatedAt: checkedAt,
+      status: 'safe',
+      message: 'Wuwatappo Native 0.1.4 已发布；最低兼容版本为 0.1.3。官方客户端 1.0.4 为非强制更新，当前版本可继续使用。',
+      native: { latest: '0.1.4', minSafe: '0.1.3' },
+      official: {
+        cn: { latest: '1.0.4', minOta: '1.0.0' },
+        global: { latest: '1.0.4', minOta: '1.0.0' },
+      },
+      protocol: { testedOfficial: '1.0.4', generation: 1, breaking: false },
+      killSwitch: { forceOffline: false, reason: '' },
+    };
+    const official = (state, version, forced, message) => ({
+      state,
+      officialVersion: version,
+      testedVersion: '1.0.4',
+      forceManualDownload: forced,
+      minOtaClientVersion: '1.0.0',
+      message,
+      checkedAt,
+      stale: false,
+    });
+    if (mode === 'unverified') {
+      base.status = 'warning';
+      base.message = '官方客户端已更新至 1.0.5，当前 Native 尚未验证该版本。';
+      base.official.cn.latest = '1.0.5';
+      base.official.global.latest = '1.0.5';
+      base.officialCheck = official('unverified', '1.0.5', false,
+        '官方客户端已更新至 1.0.5，当前 Native 尚未验证该版本。大多数情况下，如果当前功能正常，不必立即更新；如果联机异常，建议暂停联机并等待 Native 更新。');
+    } else if (mode === 'forced') {
+      base.status = 'unsafe';
+      base.message = '官方客户端已强制更新至 1.0.5，旧版 Native 的联机功能可能已经失效。';
+      base.official.cn.latest = '1.0.5';
+      base.official.global.latest = '1.0.5';
+      base.officialCheck = official('forced', '1.0.5', true,
+        '官方客户端已强制更新至 1.0.5，旧版 Native 的联机功能可能已经失效。建议暂停联机并等待 Native 更新；单机功能仍可继续使用。');
+    } else if (mode === 'minSafe') {
+      base.status = 'warning';
+      base.message = '当前 Native 0.1.4 低于最低兼容版本 0.1.5，不保证兼容当前官方服务。';
+      base.native.minSafe = '0.1.5';
+      base.officialCheck = official('verified', '1.0.4', false, '当前 Native 已验证官方 1.0.4，可继续使用。');
+    } else if (mode === 'unavailable') {
+      base.officialCheck = official('unavailable', '', false, '暂时无法检查官方版本，不影响当前使用。');
+    } else {
+      base.officialCheck = official('verified', '1.0.4', false, '当前 Native 已验证官方 1.0.4，可继续使用。');
+    }
+    return base;
+  }
+
+  if (PREVIEW) {
+    state.boot = previewBoot(PREVIEW);
+    state.compatibility = previewCompatibility(PREVIEW);
+    state.page = PREVIEW === 'room' ? 'room' : 'settings';
+    init();
+    renderChrome();
+    renderPage();
+  } else {
+    init();
+    boot();
+  }
 })();

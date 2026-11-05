@@ -780,11 +780,9 @@ public sealed class PanelWindow : Form
             {
                 long memberId = ApiClient.ReadLong(data["id"]);
                 bool hide = ApiClient.ReadBool(data["hide"]);
-                if (_app.Room.Members.TryGetValue(memberId, out var member))
-                {
-                    member.Visible = !hide;
-                    _app.Pet.BeginInvoke(new Action(() => _app.Pet.RefreshMembers()));
-                }
+                // 按成员 id 持久化；重启/重新进房后由 RoomManager 创建成员时恢复。
+                _app.Room.SetMemberVisible(memberId, !hide);
+                _app.Pet.BeginInvoke(new Action(() => _app.Pet.RefreshMembers()));
                 return _app.RoomState();
             }
 

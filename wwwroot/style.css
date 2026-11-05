@@ -208,12 +208,13 @@ img { -webkit-user-drag: none; }
 .room-no { font-size: 30px; font-weight: 900; color: var(--ink-strong); letter-spacing: 1px; display: flex; align-items: center; gap: 10px; }
 .room-no .copy { font-size: 13px; font-weight: 700; padding: 4px 10px; border-radius: 8px; background: var(--cream-4); border: 1.5px solid var(--border); cursor: pointer; }
 .member-list { display: flex; flex-direction: column; gap: 8px; overflow-y: auto; }
-.member { height: 46px; border-radius: 10px; background: #fdf3e2; display: flex; align-items: center; padding: 0 14px; gap: 10px; }
+.member { height: 46px; border-radius: 10px; background: #fdf3e2; display: flex; align-items: center; padding: 0 14px; gap: 10px; min-width: 0; }
 .member.owner { background: var(--cream-3); }
-.member .dot { width: 9px; height: 9px; border-radius: 50%; background: #8dc878; }
+.member .dot { flex: 0 0 9px; width: 9px; height: 9px; border-radius: 50%; background: #8dc878; }
 .member .dot.off { background: #c9beb9; }
-.member .m-name { font-weight: 700; color: var(--ink-strong); }
-.member .m-role { margin-left: auto; font-size: 12px; color: var(--ink-dim); }
+.member .m-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 700; color: var(--ink-strong); }
+.member .m-actions { flex: 0 0 auto; margin-left: auto; display: flex; align-items: center; gap: 8px; }
+.member .m-role { flex: 0 0 auto; font-size: 12px; color: var(--ink-dim); }
 .chips { display: flex; gap: 8px; flex-wrap: wrap; }
 .chip { padding: 6px 12px; border-radius: 10px; background: var(--cream-4); border: 1.5px solid var(--border); font-size: 13px; cursor: pointer; }
 .chip:hover { background: var(--active); }
@@ -378,6 +379,39 @@ img { -webkit-user-drag: none; }
   .tab .badge { display: none; }
 }
 
+/* ---------------- 官方版本提醒 ---------------- */
+.notice-host { flex: 0 0 auto; padding: 14px 22px 0; }
+.notice-host:empty { display: none; }
+.official-notice {
+  padding: 12px 14px;
+  border: 2px solid #e2bc7c;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #fffaf0, #fff0d2);
+  box-shadow: 0 3px 10px rgba(142, 94, 67, .08);
+}
+.official-notice.danger {
+  border-color: #d99a90;
+  background: linear-gradient(135deg, #fff5f2, #ffe6df);
+}
+.official-notice-main { display: flex; align-items: flex-start; gap: 10px; }
+.official-notice-icon {
+  flex: 0 0 34px; width: 34px; height: 34px; border-radius: 50%;
+  display: grid; place-items: center; font-size: 18px; font-weight: 900;
+  background: #f4d48f; color: #8e5e43;
+}
+.official-notice.danger .official-notice-icon { background: #f0b4aa; color: #8e3028; }
+.official-notice-copy { flex: 1; min-width: 0; }
+.official-notice-title { font-size: 14px; font-weight: 800; color: var(--ink-strong); line-height: 1.45; }
+.official-notice-text { margin-top: 4px; font-size: 12px; line-height: 1.6; color: var(--ink); }
+.official-notice-meta { margin-top: 5px; font-size: 11px; color: var(--ink-dim); }
+.official-notice-close {
+  flex: 0 0 26px; width: 26px; height: 26px; border-radius: 50%;
+  color: var(--ink-dim); font-size: 20px; line-height: 24px;
+}
+.official-notice-close:hover { background: rgba(231, 183, 124, .25); color: var(--ink-strong); }
+.official-notice-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.official-notice-actions .btn { height: 30px; padding: 0 12px; font-size: 12px; box-shadow: none; }
+
 /* ---------------- 版本兼容状态 ---------------- */
 .compat-banner {
   margin: 0 0 14px; padding: 12px 16px;
@@ -459,3 +493,10 @@ img { -webkit-user-drag: none; }
 .update-entry + .update-entry { border-top: 1px dashed rgba(231, 183, 124, .55); margin-top: 4px; padding-top: 10px; }
 .update-entry-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; font-size: 14px; font-weight: 800; color: var(--ink-strong); }
 .update-entry-date { font-size: 11px; font-weight: 500; color: var(--ink-dim); }
+
+@media (max-width: 850px) {
+  .notice-host { padding: 10px 12px 0; }
+}
+@media (max-width: 640px) {
+  .notice-host { padding: 8px 16px 0; }
+}

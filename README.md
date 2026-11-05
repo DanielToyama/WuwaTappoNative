@@ -21,6 +21,7 @@ Wuwatappo Native 是 WuwaTappo 1.0.2 的 Windows 原生实现，使用 C# / .NET
 - ✅ 支持一键继承官方登录状态
 - ✅ 支持主播模式 OBS 绿幕窗口采集
 - ✅ 支持联机角色自动避让、横向/纵向排列与重置排序
+- ✅ 支持单独显示/隐藏联机成员，并按成员保存设置
 
 **细节优化：**
 
@@ -63,11 +64,12 @@ Wuwatappo Native 是 WuwaTappo 1.0.2 的 Windows 原生实现，使用 C# / .NET
 
 ```text
 %LOCALAPPDATA%\WuwatappoNative\config.json
+%LOCALAPPDATA%\WuwatappoNative\state.json
 %LOCALAPPDATA%\WuwatappoNative\log.txt
 %LOCALAPPDATA%\WuwatappoNative\cache\
 ```
 
-`config.json` 保存登录状态、外观、窗口设置、快捷键和房间记录；`log.txt` 保存运行日志；`cache\` 保存外观和图片缓存。
+`config.json` 保存登录状态、外观和设置；`state.json` 保存窗口位置、房间状态、成员位置和成员可见性；`log.txt` 保存运行日志；`cache\` 保存外观和图片缓存。
 
 ## 用法与配置
 
@@ -172,14 +174,14 @@ dotnet build -c Release
 需要 PowerShell 7 和 Inno Setup 6.7 或更高版本。
 
 ```powershell
-pwsh -File .\installer\build.ps1 -Version 0.1.4
+pwsh -File .\installer\build.ps1 -Version 0.1.5
 ```
 
 输出：
 
 ```text
-dist/WuwatappoNative-0.1.4-Setup.exe
-dist/WuwatappoNative-0.1.4-portable.zip
+dist/WuwatappoNative-0.1.5-Setup.exe
+dist/WuwatappoNative-0.1.5-portable.zip
 dist/WuwatappoTokenExtractor-1.0.0-x64.zip
 ```
 

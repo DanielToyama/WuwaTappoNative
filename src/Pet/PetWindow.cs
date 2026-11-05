@@ -1251,7 +1251,7 @@ public sealed class PetWindow : Form
         }
     }
 
-    string CatKey(long id) => (_room.RoomNo ?? "") + ":" + id;
+    string CatKey(long id) => id.ToString();
 
     Point? StoredCatPoint(long id)
     {
@@ -1431,11 +1431,6 @@ public sealed class PetWindow : Form
             .Where(id => _room.Members.TryGetValue(id, out var m) && m.Online && m.Visible)
             .OrderBy(id => id)
             .ToList();
-        string prefix = (_room.RoomNo ?? "") + ":";
-        foreach (string key in _cfg.MemberPositions.Keys
-                     .Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList())
-            _cfg.MemberPositions.Remove(key);
-
         if (memberIds.Count > 0)
         {
             int rw = Math.Max(1, (int)Math.Round(RemoteCatWindow.W * s));
