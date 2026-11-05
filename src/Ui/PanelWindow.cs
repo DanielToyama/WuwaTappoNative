@@ -331,6 +331,7 @@ public sealed class PanelWindow : Form
             remoteFollowMain = _app.Cfg.RemoteFollowMainScale,
             remoteOpacity = _app.Cfg.RemoteOpacity,
             remoteFollowMainOpacity = _app.Cfg.RemoteFollowMainOpacity,
+            remoteNameScale = _app.Cfg.RemoteNameScale,
             topmost = _app.Cfg.Topmost,
             clickThrough = _app.Cfg.ClickThrough,
             hoverFade = _app.Cfg.HoverFade,
@@ -892,6 +893,7 @@ public sealed class PanelWindow : Form
                             // 在联机面板/远程菜单主动调整透明度时，退出“跟随主角”。
                             cfg.RemoteFollowMainOpacity = false;
                             break;
+                        case "remoteNameScale": cfg.RemoteNameScale = Math.Clamp(ReadDouble(kv.Value), 0.5, 2.0); break;
                         case "catLayout":
                             cfg.CatLayout = string.Equals(ApiClient.ReadString(kv.Value), "vertical", StringComparison.OrdinalIgnoreCase)
                                 ? "vertical" : "horizontal";

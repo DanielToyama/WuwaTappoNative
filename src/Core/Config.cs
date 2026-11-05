@@ -38,6 +38,8 @@ public sealed class Settings
     public bool RemoteFollowMainScale { get; set; } = true;
     /// <summary>联机角色自定义不透明度；RemoteFollowMainOpacity=true 时忽略此值，直接跟随主角 Opacity。</summary>
     public double RemoteOpacity { get; set; } = 1.0;
+    /// <summary>联机角色昵称字号倍率，限制在 50%–200%。</summary>
+    public double RemoteNameScale { get; set; } = 1.0;
     /// <summary>联机角色不透明度是否跟随主角，默认开启。</summary>
     public bool RemoteFollowMainOpacity { get; set; } = true;
     public bool Topmost { get; set; } = true;
@@ -185,6 +187,7 @@ public static class ConfigStore
                     cfg.HoverFadeOpacity = Math.Clamp(cfg.HoverFadeOpacity, 0.1, 1.0);
                     cfg.RemoteScale = Math.Clamp(cfg.RemoteScale, 0.25, 2.0);
                     cfg.RemoteOpacity = Math.Clamp(cfg.RemoteOpacity, 0.2, 1.0);
+                    cfg.RemoteNameScale = Math.Clamp(cfg.RemoteNameScale, 0.5, 2.0);
                     cfg.GameModeRules = GameModeRules.Normalize(cfg.GameModeRules);
                     if (cfg.AutoEmoteMode != "specific" && cfg.AutoEmoteMode != "library") cfg.AutoEmoteMode = "quickbar";
                     cfg.ServerRegion = NormalizeRegion(cfg.ServerRegion);

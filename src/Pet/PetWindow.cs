@@ -1210,7 +1210,7 @@ public sealed class PetWindow : Form
             {
                 existing.SetScale(RemoteScaleFactor);
                 existing.SetWindowOptions(EffectiveRemoteOpacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
-                existing.SetRemoteStyle(EffectiveRemoteScale, EffectiveRemoteOpacity);
+                existing.SetRemoteStyle(EffectiveRemoteScale, EffectiveRemoteOpacity, _cfg.RemoteNameScale);
                 existing.RefreshMember();
             }
             else
@@ -1218,7 +1218,7 @@ public sealed class PetWindow : Form
                 var cat = new RemoteCatWindow(m, _loader, _catalog, _store);
                 cat.SetScale(RemoteScaleFactor);
                 cat.SetWindowOptions(EffectiveRemoteOpacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
-                cat.SetRemoteStyle(EffectiveRemoteScale, EffectiveRemoteOpacity);
+                cat.SetRemoteStyle(EffectiveRemoteScale, EffectiveRemoteOpacity, _cfg.RemoteNameScale);
                 cat.RemoteScaleRequested += ApplyRemoteScale;
                 cat.RemoteOpacityRequested += ApplyRemoteOpacity;
                 cat.Location = PlaceNewCat(id);
@@ -1406,7 +1406,6 @@ public sealed class PetWindow : Form
         {
             int rw = Math.Max(1, (int)Math.Round(RemoteCatWindow.W * s));
             int catH = Math.Max(1, (int)Math.Round(RemoteCatWindow.CatH * s));
-            int rh = Math.Max(1, (int)Math.Round(RemoteCatWindow.H * s));
             int head = (int)Math.Round(RemoteCatWindow.Headroom * s);
             int leftLimit = wa.Left;
 
@@ -1460,7 +1459,11 @@ public sealed class PetWindow : Form
                 // 底部横排：主角贴右下，其他成员从右往左排；一行放不下时向上换行。
                 int rowStep = Math.Max(1, catH + gap);
                 int rightEdge = localX + mainVisibleOffsetX - gap;
-                int baseY = Math.Max(wa.Top, wa.Bottom - rh);
+                // 按主角实际猫体底边定位，避免远程猫窗口的 11px 底部留白和缩放取整造成 1px 错位。
+                int mainCatBottom = localY + (int)Math.Round(PetComposer.CatY * ms) + (int)Math.Round(PetComposer.CatSize * ms);
+                int remoteHead = (int)Math.Round(RemoteCatWindow.Headroom * s);
+                int remoteCatSize = (int)Math.Round(RemoteCatWindow.CatSize * s);
+                int baseY = Math.Max(wa.Top, mainCatBottom - remoteHead - remoteCatSize);
                 int cursorRight = rightEdge;
                 int row = 0;
 
@@ -1592,7 +1595,7 @@ public sealed class PetWindow : Form
             int oldWidth = c.Width;
             c.SetScale(s);
             c.SetWindowOptions(EffectiveRemoteOpacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
-            c.SetRemoteStyle(EffectiveRemoteScale, EffectiveRemoteOpacity);
+            c.SetRemoteStyle(EffectiveRemoteScale, EffectiveRemoteOpacity, _cfg.RemoteNameScale);
             // 缩放后窗口从左上角变大，贴边排列的成员会被顶出屏幕；按可见猫体修正回工作区。
             if (c.Width != oldWidth) ClampCatToScreen(pair.Key, c);
         }

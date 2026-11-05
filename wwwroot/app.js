@@ -1974,6 +1974,7 @@
     const remoteFollowMainOpacity = s.remoteFollowMainOpacity !== false;
     const remoteCustomOpacityPct = Math.max(20, Math.min(100, Math.round((Number(s.remoteOpacity) || 1) * 100)));
     const remoteOpacityPct = remoteFollowMainOpacity ? opacityPct : remoteCustomOpacityPct;
+    const remoteNameScalePct = Math.max(50, Math.min(200, Math.round((Number(s.remoteNameScale) || 1) * 100)));
     const accX = Number(acc.accessoryOffsetX || 0);
     const accY = Number(acc.accessoryOffsetY || 0);
     // 快捷键/菜单改设置会触发 boot 重推；保留滚动位置，别把用户顶回顶部。
@@ -2194,6 +2195,13 @@
           <div class="setting-item">
             <div><div class="setting-title">隐藏其他成员桌宠</div><div class="setting-sub">本机显示设置，不影响他人</div></div>
             <div class="switch ${s.hideOtherPets ? 'on' : ''}" data-switch="hideOtherPets"></div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">联机玩家名字大小</div><div class="setting-sub">相对默认字号 50%–200%，只影响联机成员昵称</div></div>
+            <div class="setting-content">
+              <input type="range" min="50" max="200" step="1" value="${remoteNameScalePct}" id="setRemoteNameScale" style="width:180px" />
+              <span id="remoteNameScaleVal">${remoteNameScalePct}%</span>
+            </div>
           </div>
           <div class="setting-item">
             <div><div class="setting-title">总是显示宝箱</div><div class="setting-sub">显示宝箱倒计时</div></div>
@@ -2604,6 +2612,19 @@
     remoteOpacityRange?.addEventListener('change', () => {
       lastRemoteOpacitySent = performance.now();
       applyRemoteOpacity(Number(remoteOpacityRange.value), true);
+    });
+    const remoteNameScale = document.getElementById('setRemoteNameScale');
+    const remoteNameScaleVal = document.getElementById('remoteNameScaleVal');
+    remoteNameScale?.addEventListener('input', () => {
+      if (remoteNameScaleVal) remoteNameScaleVal.textContent = remoteNameScale.value + '%';
+    });
+    remoteNameScale?.addEventListener('change', async () => {
+      const pct = Math.max(50, Math.min(200, Math.round(Number(remoteNameScale.value) || 100)));
+      if (remoteNameScaleVal) remoteNameScaleVal.textContent = pct + '%';
+      try {
+        const boot = await tryCall('settings.set', { remoteNameScale: pct / 100 });
+        if (boot?.settings) state.boot = boot;
+      } catch { }
     });
     const op = document.getElementById('setOpacity');
     op?.addEventListener('input', () => {

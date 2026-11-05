@@ -16,7 +16,7 @@ public sealed class RemoteCatWindow : Form
 {
     public const int CatW = 200, CatH = 211, Headroom = 130;
     public const int W = CatW, H = CatH + Headroom;
-    const int CatSize = 200;
+    public const int CatSize = 200;
     readonly RoomMember _member;
     readonly PetImageLoader _loader;
     readonly Catalog _catalog;
@@ -26,7 +26,7 @@ public sealed class RemoteCatWindow : Form
     readonly EmoteBubbleLayer _bubbles = new(6);
     ContextMenuStrip _menu;
     ToolStripMenuItem _scaleMenu, _opacityMenu;
-    double _remoteScale = 1.0, _remoteOpacity = 1.0;
+    double _remoteScale = 1.0, _remoteOpacity = 1.0, _remoteNameScale = 1.0;
     public event Action<double> RemoteScaleRequested;
     public event Action<double> RemoteOpacityRequested;
     System.Windows.Forms.Timer _handReset, _hoverFadeTimer, _hoverFadeAnimTimer;
@@ -106,11 +106,15 @@ public sealed class RemoteCatWindow : Form
         _menu.Opening += (s, e) => RefreshRemoteMenu();
     }
 
-    public void SetRemoteStyle(double scale, double opacity)
+    public void SetRemoteStyle(double scale, double opacity, double nameScale = 1.0)
     {
+        double oldNameScale = _remoteNameScale;
         _remoteScale = Math.Clamp(scale, 0.25, 2.0);
         _remoteOpacity = Math.Clamp(opacity, 0.2, 1.0);
+        _remoteNameScale = Math.Clamp(nameScale, 0.5, 2.0);
         RefreshRemoteMenu();
+        if (Math.Abs(oldNameScale - _remoteNameScale) > 0.001 && IsHandleCreated)
+            Compose();
     }
 
     void RefreshRemoteMenu()
@@ -383,11 +387,13 @@ public sealed class RemoteCatWindow : Form
                 if (_frames.Accessory != null)
                     g.DrawImage(_frames.Accessory, (float)(_frames.AccOffsetX * s), (float)(_frames.AccOffsetY * s) + top, cat, cat);
 
-                var pill = new RectangleF(10 * s, (Headroom + 179) * s, 180 * s, 32 * s);
+                float nameFontPx = 13.5f * s * (float)_remoteNameScale;
+                float pillH = Math.Max(32f * s, nameFontPx * 1.35f);
+                var pill = new RectangleF(10 * s, (Headroom + 179) * s - (pillH - 32 * s) / 2f, 180 * s, pillH);
                 using (var path = PetComposer.Rounded(pill, 16 * s))
                 using (var brush = new SolidBrush(PetComposer.Cream))
                     g.FillPath(brush, path);
-                using (var font = new Font("Microsoft YaHei UI", 13.5f * s, FontStyle.Bold, GraphicsUnit.Pixel))
+                using (var font = new Font("Microsoft YaHei UI", nameFontPx, FontStyle.Bold, GraphicsUnit.Pixel))
                 using (var brush = new SolidBrush(PetComposer.InkStrong))
                 using (var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter })
                     g.DrawString(string.IsNullOrEmpty(_member.Nickname) ? "漂泊者" : _member.Nickname, font, brush, pill, fmt);
@@ -464,22 +470,22 @@ public sealed class RemoteCatWindow : Form
         var p = Cursor.Position;
         int dx = p.X - _dragCursor.X, dy = p.Y - _dragCursor.Y;
         if (Math.Abs(dx) + Math.Abs(dy) > 2) _movedDuringDrag = true;
-        Location = new Point(_dragOrigin.X + dx, _dragOrigin.Y + dy);
-        SnapToWorkingArea(p);
+        // 先算好贴边后的目标位置，再一次性移动，避免先移出边缘再吸回来造成左右闪烁。
+        Location = SnapToWorkingArea(new Point(_dragOrigin.X + dx, _dragOrigin.Y + dy), p);
     }
 
     /// <summary>联机成员桌宠与主角一样，拖到屏幕/任务栏边缘附近时自动贴边。</summary>
-    void SnapToWorkingArea(Point cursor)
+    Point SnapToWorkingArea(Point target, Point cursor)
     {
         var wa = Screen.FromPoint(cursor).WorkingArea;
         float dpi = DeviceDpi / 96f;
         int threshold = Math.Max(8, (int)Math.Round(28 * dpi));
-        int left = Left, top = Top;
-        if (Math.Abs(Left - wa.Left) <= threshold) left = wa.Left;
-        else if (Math.Abs(Left + Width - wa.Right) <= threshold) left = wa.Right - Width;
-        if (Math.Abs(Top - wa.Top) <= threshold) top = wa.Top;
-        else if (Math.Abs(Top + Height - wa.Bottom) <= threshold) top = wa.Bottom - Height;
-        if (left != Left || top != Top) Location = new Point(left, top);
+        int left = target.X, top = target.Y;
+        if (Math.Abs(left - wa.Left) <= threshold) left = wa.Left;
+        else if (Math.Abs(left + Width - wa.Right) <= threshold) left = wa.Right - Width;
+        if (Math.Abs(top - wa.Top) <= threshold) top = wa.Top;
+        else if (Math.Abs(top + Height - wa.Bottom) <= threshold) top = wa.Bottom - Height;
+        return new Point(left, top);
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
@@ -496,7 +502,7 @@ public sealed class RemoteCatWindow : Form
             return;
         }
         if (e.Button != MouseButtons.Left) return;
-        if (_movedDuringDrag) SnapToWorkingArea(Cursor.Position);
+        if (_movedDuringDrag) Location = SnapToWorkingArea(Location, Cursor.Position);
         _dragging = false;
         if (_movedDuringDrag) Moved?.Invoke(Location);
     }
