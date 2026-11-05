@@ -1,8 +1,8 @@
-# 版本状态页
+# 项目主页
 
 `docs/` 通过 GitHub Pages 发布，地址：
 
-- 状态页：<https://code.danieluu.top/WuwaTappoNative/>
+- 项目主页（含版本状态）：<https://code.danieluu.top/WuwaTappoNative/>
 - 状态 JSON：<https://code.danieluu.top/WuwaTappoNative/compatibility.json>
 
 ## 更新状态
@@ -17,8 +17,8 @@
 |---|---|
 | `status` | `safe` / `warning` / `unsafe` / `maintenance` |
 | `message` | 状态页和客户端显示的说明 |
-| `native.latest` | 当前已发布的最新 Native 版本 |
-| `native.minSafe` | 低于此版本时客户端提示更新 |
+| `native.latest` | 当前已发布的最新 Native 版本，每次发版更新 |
+| `native.minSafe` | 仍兼容当前官方协议的最低版本；只在兼容基线变化时更新，不随普通修复版提升 |
 | `official.cn.latest` | 当前官方国服最新版本 |
 | `official.global.latest` | 当前官方国际服最新版本，没有清单时可为 `null` |
 | `official.global.inheritCn` | 为 `true` 时页面沿用国服的版本判断，并标注“沿用国服判断（未单独校验）” |
@@ -29,4 +29,4 @@
 
 客户端会请求同一份 JSON，并在设置页显示状态；拉取失败时保留上次结果，不阻塞本地功能。
 
-发布新版本时，记得同步更新 `native.latest` 和 `native.minSafe`。
+发布新版本时更新 `native.latest`；只有协议/服务器兼容基线发生变化时，才提升 `native.minSafe`。普通 bug 修复、界面调整和安装器修改不需要推进最低兼容版本。

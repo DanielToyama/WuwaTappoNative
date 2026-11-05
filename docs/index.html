@@ -3,19 +3,25 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="description" content="Wuwatappo Native：WuwaTappo 的 Windows 原生实现，支持国服/国际服联机、官方登录继承、桌宠互动和 OBS 绿幕采集。" />
   <link rel="canonical" href="https://code.danieluu.top/WuwaTappoNative/" />
-  <title>Wuwatappo Native 版本状态</title>
+  <meta name="theme-color" content="#fff8e9" />
+  <title>Wuwatappo Native · Windows 原生桌宠</title>
   <style>
     :root {
-      --cream: #fff8e9;
-      --cream-2: #fbedd5;
-      --cream-3: #f4e1c8;
-      --cream-4: #fffdf6;
-      --ink: #8e5e43;
-      --ink-strong: #6e452d;
-      --ink-dim: #8e7b6a;
-      --border: #e7b77c;
-      --active: #fed291;
+      --bg: #fff8e9;
+      --bg-soft: #fbedd5;
+      --panel: #fffdf7;
+      --ink: #473024;
+      --muted: #8e7767;
+      --faint: #a68e7b;
+      --line: #ecd8bb;
+      --line-strong: #d9b98d;
+      --accent: #d96f86;
+      --teal: #4c978d;
+      --gold: #c9923f;
+      --gold-soft: #fff0cf;
+      --dark: #2c1d15;
       --safe: #4f8a5b;
       --safe-bg: #eaf4e4;
       --warn: #b7792f;
@@ -24,180 +30,513 @@
       --danger-bg: #ffe8e2;
       --maint: #5d7f9c;
       --maint-bg: #e8f1f7;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
     }
     * { box-sizing: border-box; }
-    html, body { margin: 0; min-height: 100%; }
+    html { scroll-behavior: smooth; }
     body {
-      font-family: "Microsoft YaHei", "PingFang SC", "Helvetica Neue", Arial, sans-serif;
-      color: var(--ink);
+      margin: 0; min-height: 100vh;
       background:
-        radial-gradient(circle at 12% 8%, rgba(254, 210, 145, .45), transparent 32%),
-        radial-gradient(circle at 88% 92%, rgba(231, 183, 124, .35), transparent 36%),
-        var(--cream-2);
-      min-height: 100vh;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 28px 18px;
+        radial-gradient(circle at 8% 0%, rgba(255, 222, 180, .55), transparent 34%),
+        radial-gradient(circle at 92% 8%, rgba(217, 111, 134, .08), transparent 28%),
+        var(--bg);
+      color: var(--ink);
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", "Helvetica Neue", Arial, sans-serif;
+      -webkit-font-smoothing: antialiased;
     }
-    .page {
-      width: min(860px, 100%);
-      background: var(--cream-4);
-      border: 2px solid var(--border);
-      border-radius: 26px;
-      box-shadow: 0 18px 50px rgba(142, 94, 67, .16), 0 3px 0 rgba(231, 183, 124, .55);
-      overflow: hidden;
-    }
-    header {
-      padding: 26px 30px 20px;
-      background: linear-gradient(135deg, var(--cream), var(--cream-2));
-      border-bottom: 2px solid rgba(231, 183, 124, .45);
-    }
-    .brand { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-    .brand-mark {
-      width: 44px; height: 44px; border-radius: 14px;
-      display: grid; place-items: center;
-      background: var(--cream-4); border: 2px solid var(--border);
-      font-size: 22px; box-shadow: 0 3px 0 rgba(231, 183, 124, .45);
-    }
-    .brand-name { font-size: 24px; font-weight: 800; color: var(--ink-strong); letter-spacing: .4px; }
-    .brand-sub { font-size: 12px; color: var(--ink-dim); letter-spacing: 2px; margin-top: 2px; }
-    .badge {
-      margin-left: auto;
-      display: inline-flex; align-items: center; gap: 8px;
-      padding: 8px 14px; border-radius: 999px;
-      font-size: 13px; font-weight: 800; white-space: nowrap;
-      border: 2px solid currentColor;
-    }
-    .badge .dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; }
-    .badge.safe { color: var(--safe); background: var(--safe-bg); }
-    .badge.warning, .badge.unknown { color: var(--warn); background: var(--warn-bg); }
-    .badge.unsafe { color: var(--danger); background: var(--danger-bg); }
-    .badge.maintenance { color: var(--maint); background: var(--maint-bg); }
+    a { color: inherit; }
+    .site { width: min(1240px, 100%); margin: 0 auto; padding: 0 32px 80px; }
 
-    main { padding: 26px 30px 30px; }
-    .status-head { display: flex; align-items: flex-start; gap: 14px; margin-bottom: 22px; }
+    /* ---------- header ---------- */
+    .topbar {
+      height: 74px; display: flex; align-items: center; gap: 26px;
+      border-bottom: 1px solid var(--line);
+    }
+    .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+    .brand-name { font-size: 14px; font-weight: 650; letter-spacing: -.01em; }
+    .brand-sub { font-size: 11px; color: var(--faint); margin-left: 2px; }
+    .nav { display: flex; align-items: center; gap: 26px; margin-left: auto; font-size: 13px; color: var(--muted); }
+    .nav a { text-decoration: none; transition: color .15s; }
+    .nav a:hover { color: var(--ink); }
+    .nav .nav-download {
+      padding: 7px 13px; border-radius: 999px;
+      color: var(--bg); background: var(--ink); font-weight: 600;
+    }
+    .nav .nav-download:hover { background: #5f4231; color: var(--bg); }
+
+    /* ---------- hero ---------- */
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1.02fr) minmax(360px, .98fr) 176px;
+      gap: 26px; align-items: center;
+      min-height: 650px; padding: 72px 0 78px;
+      border-bottom: 1px solid var(--line);
+    }
+    .hero-copy { padding: 8px 0; }
+    .hero-kicker {
+      display: inline-flex; align-items: center; gap: 8px;
+      color: var(--muted); font-size: 12px; margin-bottom: 26px;
+      font-family: var(--mono); letter-spacing: -.01em;
+    }
+    .hero-kicker .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
+    .hero h1 {
+      margin: 0; color: var(--ink);
+      font-size: clamp(42px, 5.2vw, 72px);
+      font-weight: 500; line-height: 1.02; letter-spacing: -.065em;
+    }
+    .hero h1 .line { display: block; }
+    .hero h1 .accent { color: var(--accent); }
+    .hero-lead {
+      max-width: 540px; margin: 24px 0 0;
+      color: var(--muted); font-size: 14px; line-height: 1.85;
+    }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 28px; }
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      min-height: 40px; padding: 0 16px; border-radius: 999px;
+      border: 1px solid var(--line-strong); background: var(--panel);
+      color: var(--ink); text-decoration: none; font-size: 13px; font-weight: 600;
+      cursor: pointer; transition: background .15s, border-color .15s, transform .15s;
+    }
+    .btn:hover { border-color: #c9a271; background: var(--gold-soft, #fff0cf); transform: translateY(-1px); }
+    .btn.primary { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+    .btn.primary:hover { background: #5f4231; border-color: #5f4231; }
+    .hero-meta {
+      display: flex; flex-wrap: wrap; gap: 8px 18px;
+      margin-top: 28px; color: var(--faint); font-size: 11px;
+    }
+    .hero-meta span { display: inline-flex; align-items: center; gap: 6px; }
+    .hero-meta span::before { content: ""; width: 4px; height: 4px; border-radius: 50%; background: var(--line-strong); }
+
+    .hero-art { position: relative; display: flex; align-items: center; justify-content: center; min-height: 470px; }
+    .hero-art::before {
+      content: ""; position: absolute; width: 84%; aspect-ratio: 1; border-radius: 50%;
+      background: radial-gradient(circle, rgba(217, 111, 134, .10), rgba(76, 151, 141, .06) 48%, transparent 70%);
+      filter: blur(10px);
+    }
+    .hero-art .pet-frame {
+      position: relative; z-index: 1; width: min(100%, 512px);
+      filter: drop-shadow(0 24px 26px rgba(0, 0, 0, .13));
+      animation: pet-float 5.2s ease-in-out infinite;
+    }
+    .hero-art .pet-frame img { display: block; width: 100%; height: auto; }
+    .hero-art .pet-pat { position: absolute; inset: 0; opacity: 0; }
+    .hero-art .pat-a { animation: pet-pat-a .62s steps(1, end) infinite; }
+    .hero-art .pat-b { animation: pet-pat-b .62s steps(1, end) infinite; }
+    @keyframes pet-pat-a { 0%, 49.9% { opacity: 1; } 50%, 100% { opacity: 0; } }
+    @keyframes pet-pat-b { 0%, 49.9% { opacity: 0; } 50%, 100% { opacity: 1; } }
+    @keyframes pet-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-7px); } }
+    .art-caption {
+      position: absolute; z-index: 2; bottom: 4px;
+      color: var(--faint); font-size: 10px; letter-spacing: .04em;
+    }
+
+    .hero-side { border-left: 1px solid var(--line); padding-left: 22px; display: grid; gap: 0; }
+    .side-item { padding: 17px 0; border-bottom: 1px solid var(--line); }
+    .side-item:first-child { padding-top: 0; }
+    .side-item:last-child { border-bottom: 0; }
+    .side-label { display: block; color: var(--faint); font-family: var(--mono); font-size: 10px; margin-bottom: 5px; }
+    .side-value { display: block; color: var(--ink); font-size: 13px; line-height: 1.45; }
+
+    .tech-strip {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 12px 26px;
+      padding: 18px 0; border-bottom: 1px solid var(--line);
+      color: var(--faint); font-family: var(--mono); font-size: 10px; letter-spacing: .04em;
+    }
+    .tech-strip .tech-label { color: var(--muted); margin-right: 8px; }
+    .tech-strip span:not(.tech-label) { white-space: nowrap; }
+
+    /* ---------- sections ---------- */
+    .section { padding-top: 96px; }
+    .section-head {
+      display: grid; grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr);
+      gap: 40px; align-items: end;
+      padding-bottom: 28px; border-bottom: 1px solid var(--line);
+    }
+    .section-kicker { color: var(--faint); font-family: var(--mono); font-size: 10px; letter-spacing: .14em; text-transform: uppercase; }
+    .section-head h2 {
+      margin: 10px 0 0; color: var(--ink);
+      font-size: clamp(30px, 3.4vw, 45px); font-weight: 500; letter-spacing: -.05em; line-height: 1.08;
+    }
+    .section-head p { margin: 0 0 4px; color: var(--muted); font-size: 14px; line-height: 1.8; justify-self: end; max-width: 520px; }
+
+    .feature-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border-left: 1px solid var(--line); border-top: 1px solid var(--line); }
+    .feature-card { padding: 30px 30px 34px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); background: var(--panel); }
+    .feature-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 25px; }
+    .feature-no { color: var(--faint); font-family: var(--mono); font-size: 10px; letter-spacing: .08em; }
+    .feature-glyph { color: var(--ink); font-size: 18px; line-height: 1; }
+    .feature-card h3 { margin: 0 0 18px; color: var(--ink); font-size: 19px; font-weight: 600; letter-spacing: -.02em; }
+    .check-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 10px; }
+    .check-list li { position: relative; padding-left: 18px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+    .check-list li::before { content: "→"; position: absolute; left: 0; top: 0; color: var(--faint); font-size: 12px; }
+
+    .dark-band { margin-top: 96px; background: var(--dark); color: var(--bg); }
+    .dark-band .site-inner { padding-top: 70px; padding-bottom: 70px; }
+    .dark-band .section-head { border-color: #4b3428; }
+    .dark-band .section-kicker { color: #b9a391; }
+    .dark-band h2 { color: var(--bg); }
+    .dark-band .section-head p { color: #c7b3a2; }
+    .detail-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid #4b3428; }
+    .detail-card { padding: 30px 26px 0; border-right: 1px solid #4b3428; }
+    .detail-card:last-child { border-right: 0; }
+    .detail-number { color: var(--bg); font-size: clamp(42px, 5vw, 70px); font-weight: 500; letter-spacing: -.06em; line-height: 1; }
+    .detail-number small { color: #b9a391; font-size: 12px; font-weight: 500; letter-spacing: 0; }
+    .detail-card h3 { margin: 18px 0 8px; color: var(--bg); font-size: 14px; font-weight: 600; }
+    .detail-card p { margin: 0; color: #b9a391; font-size: 12px; line-height: 1.75; }
+
+    /* ---------- status ---------- */
+    .status-panel { margin-top: 30px; padding: 30px; border: 1px solid var(--line); background: var(--bg-soft); }
+    .status-head { display: flex; align-items: flex-start; gap: 14px; }
     .status-icon {
-      width: 54px; height: 54px; flex: 0 0 54px; border-radius: 18px;
-      display: grid; place-items: center; font-size: 26px; font-weight: 900;
-      border: 2px solid currentColor;
+      width: 40px; height: 40px; flex: 0 0 40px; border-radius: 50%;
+      display: grid; place-items: center; font-size: 18px; font-weight: 700;
+      border: 1px solid currentColor;
     }
     .status-head.safe .status-icon { color: var(--safe); background: var(--safe-bg); }
     .status-head.warning .status-icon, .status-head.unknown .status-icon { color: var(--warn); background: var(--warn-bg); }
     .status-head.unsafe .status-icon { color: var(--danger); background: var(--danger-bg); }
     .status-head.maintenance .status-icon { color: var(--maint); background: var(--maint-bg); }
-    h1 { margin: 0 0 6px; font-size: 22px; line-height: 1.3; color: var(--ink-strong); }
-    .message { margin: 0; font-size: 15px; line-height: 1.7; color: var(--ink); }
-    .updated { margin-top: 8px; font-size: 12px; color: var(--ink-dim); }
-
-    .force {
-      display: none; margin: 0 0 20px; padding: 12px 14px;
-      border-radius: 14px; background: var(--danger-bg);
-      border: 1.5px solid rgba(179, 74, 63, .45); color: var(--danger);
-      font-size: 13px; line-height: 1.6;
+    .status-head h3 { margin: 2px 0 5px; font-size: 21px; font-weight: 550; letter-spacing: -.025em; color: var(--ink); }
+    .status-message { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.65; }
+    .updated { margin-top: 7px; color: var(--faint); font-family: var(--mono); font-size: 10px; }
+    .badge {
+      margin-left: auto; display: inline-flex; align-items: center; gap: 6px;
+      padding: 5px 10px; border-radius: 999px; font-size: 11px; font-weight: 600;
+      white-space: nowrap; border: 1px solid currentColor;
     }
+    .badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .badge.safe { color: var(--safe); background: var(--safe-bg); }
+    .badge.warning, .badge.unknown { color: var(--warn); background: var(--warn-bg); }
+    .badge.unsafe { color: var(--danger); background: var(--danger-bg); }
+    .badge.maintenance { color: var(--maint); background: var(--maint-bg); }
+    .force { display: none; margin: 22px 0 0; padding: 10px 12px; border: 1px solid rgba(180,35,24,.35); background: var(--danger-bg); color: var(--danger); font-size: 12px; line-height: 1.6; }
     .force.show { display: block; }
+    .status-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 28px; border-left: 1px solid var(--line); border-top: 1px solid var(--line); background: var(--panel); }
+    .card { padding: 17px 18px 19px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+    .card-label { color: var(--faint); font-family: var(--mono); font-size: 10px; letter-spacing: .05em; margin-bottom: 10px; }
+    .card-value { color: var(--ink); font-size: 18px; font-weight: 550; letter-spacing: -.02em; line-height: 1.35; overflow-wrap: anywhere; }
+    .card-note { margin-top: 5px; color: var(--faint); font-size: 10px; line-height: 1.5; }
+    .status-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 24px; }
+    .status-actions .btn { min-height: 36px; font-size: 12px; }
+    .status-actions .muted { margin-left: auto; color: var(--faint); font-family: var(--mono); font-size: 10px; }
 
-    .grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-    .card { background: var(--cream); border: 1.5px solid rgba(231, 183, 124, .65); border-radius: 16px; padding: 13px 15px; }
-    .card-label { font-size: 12px; color: var(--ink-dim); margin-bottom: 5px; }
-    .card-value { font-size: 18px; font-weight: 800; color: var(--ink-strong); line-height: 1.35; overflow-wrap: anywhere; }
-    .card-note { margin-top: 4px; font-size: 11px; color: var(--ink-dim); }
+    /* ---------- steps / footer ---------- */
+    .steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border-top: 1px solid var(--line); }
+    .step { padding: 26px 24px 28px 0; border-right: 1px solid var(--line); }
+    .step:last-child { border-right: 0; padding-right: 0; }
+    .step:not(:first-child) { padding-left: 24px; }
+    .step-no { color: var(--faint); font-family: var(--mono); font-size: 10px; letter-spacing: .1em; }
+    .step h3 { margin: 24px 0 8px; font-size: 16px; font-weight: 600; letter-spacing: -.02em; }
+    .step p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.75; }
+    .requirements { margin: 24px 0 0; color: var(--faint); font-size: 11px; line-height: 1.8; }
+    code { font-family: var(--mono); font-size: .92em; background: var(--bg-soft); border: 1px solid var(--line); padding: 1px 4px; }
 
-    .actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; margin-top: 22px; padding-top: 20px; border-top: 1.5px dashed rgba(231, 183, 124, .6); }
-    .btn {
-      display: inline-flex; align-items: center; justify-content: center;
-      height: 38px; padding: 0 16px; border-radius: 12px;
-      border: 1.5px solid var(--border); background: var(--cream);
-      color: var(--ink-strong); font-size: 13px; font-weight: 700;
-      text-decoration: none; cursor: pointer; transition: background .15s, transform .15s;
+    footer { margin-top: 84px; padding-top: 20px; border-top: 1px solid var(--line); color: var(--faint); font-size: 11px; line-height: 1.8; }
+    footer .footer-row { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; }
+    footer a { color: var(--muted); text-decoration: none; }
+    footer a:hover { color: var(--ink); text-decoration: underline; }
+    footer .footer-spacer { flex: 1; }
+
+    @media (max-width: 1100px) {
+      .hero { grid-template-columns: minmax(0, 1fr) minmax(320px, .92fr); min-height: 580px; }
+      .hero-side { display: none; }
     }
-    .btn:hover { background: var(--active); transform: translateY(-1px); }
-    .btn.primary { background: var(--active); }
-    .muted { font-size: 12px; color: var(--ink-dim); }
-    .spacer { flex: 1; }
-    footer { padding: 0 30px 24px; font-size: 12px; color: var(--ink-dim); line-height: 1.7; }
-    footer a { color: var(--ink); }
-    @media (max-width: 640px) {
-      body { padding: 12px; align-items: flex-start; }
-      .page { border-radius: 20px; }
-      header, main, footer { padding-left: 18px; padding-right: 18px; }
+    @media (max-width: 760px) {
+      .site { padding: 0 20px 56px; }
+      .topbar { height: 64px; }
+      .brand-sub { display: none; }
+      .nav { display: none; }
+      .hero { grid-template-columns: 1fr; gap: 12px; min-height: auto; padding: 48px 0 48px; }
+      .hero-copy { padding: 0; }
+      .hero h1 { font-size: clamp(38px, 10vw, 54px); }
+      .hero-lead { font-size: 13px; }
+      .hero-art { min-height: 340px; margin-top: 10px; }
+      .hero-art .pet-frame { width: min(100%, 360px); }
+      .hero-art::before { width: 92%; }
+      .tech-strip { gap: 9px 18px; padding: 15px 0; }
+      .section { padding-top: 68px; }
+      .section-head { grid-template-columns: 1fr; gap: 14px; }
+      .section-head p { justify-self: start; }
+      .feature-grid { grid-template-columns: 1fr; }
+      .feature-card { padding: 24px 20px 27px; }
+      .dark-band { margin-top: 68px; }
+      .dark-band .site-inner { padding-top: 48px; padding-bottom: 48px; }
+      .detail-grid { grid-template-columns: 1fr; }
+      .detail-card { padding: 26px 0 0; border-right: 0; border-bottom: 1px solid #4b3428; }
+      .detail-card:last-child { border-bottom: 0; padding-bottom: 0; }
+      .status-panel { padding: 20px; }
+      .status-head { flex-wrap: wrap; }
       .badge { margin-left: 0; }
-      .grid { grid-template-columns: 1fr; }
-      .actions .spacer { display: none; }
+      .status-grid { grid-template-columns: 1fr 1fr; }
+      .status-actions .muted { width: 100%; margin-left: 0; }
+      .steps { grid-template-columns: 1fr; }
+      .step, .step:not(:first-child) { padding: 22px 0; border-right: 0; border-bottom: 1px solid var(--line); }
+      .step:last-child { border-bottom: 0; padding-bottom: 0; }
+      .step h3 { margin-top: 16px; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .hero-art .pet-frame { animation: none; }
+      .hero-art .pat-a, .hero-art .pat-b { animation: none; }
     }
   </style>
 </head>
 <body>
-  <div class="page">
-    <header>
-      <div class="brand">
-        <div class="brand-mark">🐾</div>
-        <div>
-          <div class="brand-name">Wuwatappo Native</div>
-          <div class="brand-sub">版本兼容状态</div>
-        </div>
-        <span class="badge unknown" id="statusBadge"><span class="dot"></span><span id="statusBadgeText">读取中</span></span>
-      </div>
+  <div class="site">
+    <header class="topbar">
+      <a class="brand" href="#top" aria-label="Wuwatappo Native 首页">
+        <span class="brand-name">Wuwatappo Native</span>
+        <span class="brand-sub">WINDOWS APP</span>
+      </a>
+      <nav class="nav" aria-label="页面导航">
+        <a href="#features">功能</a>
+        <a href="#details">细节</a>
+        <a href="#status">版本状态</a>
+        <a href="https://github.com/DanielToyama/WuwaTappoNative" target="_blank" rel="noreferrer">GitHub</a>
+        <a class="nav-download" href="https://github.com/DanielToyama/WuwaTappoNative/releases/latest" target="_blank" rel="noreferrer">下载</a>
+      </nav>
     </header>
 
-    <main>
-      <div class="status-head unknown" id="statusHead">
-        <div class="status-icon" id="statusIcon">…</div>
-        <div>
-          <h1 id="statusTitle">正在读取版本状态…</h1>
-          <p class="message" id="statusMessage">页面会请求 compatibility.json 获取最新状态。</p>
-          <div class="updated" id="updatedAt">—</div>
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy">
+          <div class="hero-kicker"><span class="dot"></span> Wuwatappo Native / Windows</div>
+          <h1>
+            <span class="line">更轻更快，</span>
+            <span class="line">更多自定义的</span>
+            <span class="line accent">鸣潮 WuwaTappo</span>
+          </h1>
+          <p class="hero-lead">
+            WuwaTappo 1.0.2 的 Windows 原生实现。使用 C# / .NET 8、WinForms 和 WebView2 编写，连接库洛官方桌宠服务。
+            支持国服与国际服联机、官方登录继承、桌宠互动和主播采集。
+          </p>
+          <div class="hero-actions">
+            <a class="btn primary" href="https://github.com/DanielToyama/WuwaTappoNative/releases/latest" target="_blank" rel="noreferrer">下载最新版</a>
+            <a class="btn" href="https://github.com/DanielToyama/WuwaTappoNative" target="_blank" rel="noreferrer">GitHub 仓库</a>
+          </div>
+          <div class="hero-meta">
+            <span>Windows 10 / 11 x64</span>
+            <span>自包含发布</span>
+            <span>国服 / 国际服</span>
+          </div>
         </div>
+
+        <div class="hero-art">
+          <div class="pet-frame" role="img" aria-label="Wuwatappo Native 桌宠预览：粉色头发角色与奶油色底栏，计数为 114514">
+            <img src="assets/pet-hero-1.png" alt="" />
+            <img class="pet-pat pat-a" src="assets/pet-hero-2.png" alt="" aria-hidden="true" />
+            <img class="pet-pat pat-b" src="assets/pet-hero-3.png" alt="" aria-hidden="true" />
+          </div>
+          <span class="art-caption">CURRENT SKIN / 114514</span>
+        </div>
+
+        <aside class="hero-side" aria-label="项目要点">
+          <div class="side-item">
+            <span class="side-label">01 / NATIVE</span>
+            <span class="side-value">原生 Windows 程序，不是网页套壳</span>
+          </div>
+          <div class="side-item">
+            <span class="side-label">02 / ONLINE</span>
+            <span class="side-value">国服与国际服联机，官方登录继承</span>
+          </div>
+          <div class="side-item">
+            <span class="side-label">03 / LIGHT</span>
+            <span class="side-value">12 人同屏约 80 MB 内存占用</span>
+          </div>
+        </aside>
+      </section>
+
+      <div class="tech-strip" aria-label="技术栈">
+        <span class="tech-label">BUILT WITH</span>
+        <span>C#</span>
+        <span>.NET 8</span>
+        <span>WinForms</span>
+        <span>WebView2</span>
+        <span>Windows 10 / 11</span>
+        <span>OBS Capture</span>
       </div>
 
-      <div class="force" id="forceBox"></div>
+      <section class="section" id="features">
+        <div class="section-head">
+          <div>
+            <div class="section-kicker">01 — FEATURES</div>
+            <h2>已经实现的功能</h2>
+          </div>
+          <p>保留原版在线内容和联机体验，同时把桌宠、登录、直播采集和多人排列做成了更适合桌面长期使用的原生版本。</p>
+        </div>
+        <div class="feature-grid">
+          <article class="feature-card">
+            <div class="feature-top"><span class="feature-no">01 / ONLINE</span><span class="feature-glyph">◇</span></div>
+            <h3>联机与账号</h3>
+            <ul class="check-list">
+              <li>支持原版全部在线内容与联机</li>
+              <li>支持国服与国际服（Global）切换与官方登录继承</li>
+              <li>支持国服手机号 + 短信验证码登录（库洛通行证）</li>
+              <li>支持一键继承官方登录状态</li>
+            </ul>
+          </article>
+          <article class="feature-card">
+            <div class="feature-top"><span class="feature-no">02 / LOOK</span><span class="feature-glyph">✦</span></div>
+            <h3>外观与互动</h3>
+            <ul class="check-list">
+              <li>支持自定义所有皮肤</li>
+              <li>支持发送任意表情（无视拥有状态、无视角色限制，他人可见）</li>
+              <li>支持本地微调头饰位置</li>
+              <li>支持自动领取宝箱</li>
+            </ul>
+          </article>
+          <article class="feature-card">
+            <div class="feature-top"><span class="feature-no">03 / PLAY</span><span class="feature-glyph">⌘</span></div>
+            <h3>桌面玩法</h3>
+            <ul class="check-list">
+              <li>支持自动表情、自动敲击和游戏模式规则</li>
+              <li>支持快捷键</li>
+              <li>支持显示当前键盘/手柄键位（含鸣潮专属键位）</li>
+              <li>音游模式支持 4K / 5K / 6K，每个模式分别保存键位</li>
+              <li>支持刷 Key 数量（一键 +10000）</li>
+            </ul>
+          </article>
+          <article class="feature-card">
+            <div class="feature-top"><span class="feature-no">04 / MULTI</span><span class="feature-glyph">◌</span></div>
+            <h3>多人体验</h3>
+            <ul class="check-list">
+              <li>支持联机角色自动避让、横向/纵向排列与重置排序</li>
+              <li>多人联机保存每一个人的位置，掉线、重进、重启软件都保持原位</li>
+              <li>支持主播模式 OBS 绿幕窗口采集</li>
+            </ul>
+          </article>
+        </div>
+      </section>
 
-      <div class="grid">
-        <div class="card">
-          <div class="card-label">Native 最新版本</div>
-          <div class="card-value" id="nativeLatest">—</div>
-          <div class="card-note" id="nativeLatestNote">GitHub Releases</div>
+      <section class="dark-band" id="details">
+        <div class="site-inner" style="width:min(1240px,100%);margin:0 auto;padding-left:32px;padding-right:32px">
+          <div class="section-head">
+            <div>
+              <div class="section-kicker">02 — WHY NATIVE</div>
+              <h2>为长时间挂桌面而做的细节</h2>
+            </div>
+            <p>不是简单套一层网页壳：桌宠窗口、点击账本、多人位置和直播采集都按长时间运行场景处理。</p>
+          </div>
+          <div class="detail-grid">
+            <article class="detail-card">
+              <div class="detail-number">80 MB <small>vs 650 MB</small></div>
+              <h3>更轻的同屏占用</h3>
+              <p>12 人同屏场景下，官方版本约 650 MB，本版本约 80 MB，长时间挂着更安心。</p>
+            </article>
+            <article class="detail-card">
+              <div class="detail-number">100% <small>位置记忆</small></div>
+              <h3>每个人都在原位</h3>
+              <p>联机成员的位置独立保存；对方掉线、重新进房，或你重启软件，都不会把所有人打回默认位置。</p>
+            </article>
+            <article class="detail-card">
+              <div class="detail-number">OBS <small>绿幕采集</small></div>
+              <h3>独立采集窗口</h3>
+              <p>使用独立可采集窗口，自定义采集分辨率，避免把整个桌面或低画质画面推给直播软件。</p>
+            </article>
+          </div>
         </div>
-        <div class="card">
-          <div class="card-label">最低安全版本</div>
-          <div class="card-value" id="nativeMinSafe">—</div>
-          <div class="card-note">低于此版本会提示更新</div>
-        </div>
-        <div class="card">
-          <div class="card-label">官方国服（CN）</div>
-          <div class="card-value" id="officialCn">—</div>
-          <div class="card-note" id="officialCnNote">—</div>
-        </div>
-        <div class="card">
-          <div class="card-label">官方国际服（Global）</div>
-          <div class="card-value" id="officialGlobal">—</div>
-          <div class="card-note" id="officialGlobalNote">—</div>
-        </div>
-        <div class="card">
-          <div class="card-label">协议验证基线</div>
-          <div class="card-value" id="testedOfficial">—</div>
-          <div class="card-note" id="protocolNote">—</div>
-        </div>
-        <div class="card">
-          <div class="card-label">状态更新时间</div>
-          <div class="card-value" id="updatedShort">—</div>
-          <div class="card-note" id="sourceNote">compatibility.json</div>
-        </div>
-      </div>
+      </section>
 
-      <div class="actions">
-        <a class="btn primary" href="https://github.com/DanielToyama/WuwaTappoNative/releases/latest" target="_blank" rel="noreferrer">下载最新版</a>
-        <a class="btn" href="https://github.com/DanielToyama/WuwaTappoNative" target="_blank" rel="noreferrer">GitHub 仓库</a>
-        <button class="btn" id="refreshBtn" type="button">刷新状态</button>
-        <span class="spacer"></span>
-        <span class="muted" id="fetchHint"></span>
-      </div>
+      <section class="section" id="status">
+        <div class="section-head">
+          <div>
+            <div class="section-kicker">03 — STATUS</div>
+            <h2>版本状态</h2>
+          </div>
+          <p>查看 Native 最新版本、最低兼容版本，以及当前官方国服/国际服客户端版本。状态仅供参考，最终以实际使用情况为准。</p>
+        </div>
+        <div class="status-panel">
+          <div class="status-head unknown" id="statusHead">
+            <div class="status-icon" id="statusIcon">…</div>
+            <div>
+              <h3 id="statusTitle">正在读取版本状态…</h3>
+              <p class="status-message" id="statusMessage">页面会请求 compatibility.json 获取最新状态。</p>
+              <div class="updated" id="updatedAt">—</div>
+            </div>
+            <span class="badge unknown" id="statusBadge"><span class="dot"></span><span id="statusBadgeText">读取中</span></span>
+          </div>
+          <div class="force" id="forceBox"></div>
+          <div class="status-grid">
+            <div class="card">
+              <div class="card-label">NATIVE LATEST</div>
+              <div class="card-value" id="nativeLatest">—</div>
+              <div class="card-note" id="nativeLatestNote">GitHub Releases</div>
+            </div>
+            <div class="card">
+              <div class="card-label">MIN COMPATIBLE</div>
+              <div class="card-value" id="nativeMinSafe">—</div>
+              <div class="card-note">低于此版本不保证兼容当前官方服务</div>
+            </div>
+            <div class="card">
+              <div class="card-label">OFFICIAL / CN</div>
+              <div class="card-value" id="officialCn">—</div>
+              <div class="card-note" id="officialCnNote">—</div>
+            </div>
+            <div class="card">
+              <div class="card-label">OFFICIAL / GLOBAL</div>
+              <div class="card-value" id="officialGlobal">—</div>
+              <div class="card-note" id="officialGlobalNote">—</div>
+            </div>
+            <div class="card">
+              <div class="card-label">TESTED BASELINE</div>
+              <div class="card-value" id="testedOfficial">—</div>
+              <div class="card-note" id="protocolNote">—</div>
+            </div>
+            <div class="card">
+              <div class="card-label">UPDATED AT</div>
+              <div class="card-value" id="updatedShort">—</div>
+              <div class="card-note" id="sourceNote">compatibility.json</div>
+            </div>
+          </div>
+          <div class="status-actions">
+            <a class="btn primary" href="https://github.com/DanielToyama/WuwaTappoNative/releases/latest" target="_blank" rel="noreferrer">下载最新版</a>
+            <a class="btn" href="https://github.com/DanielToyama/WuwaTappoNative" target="_blank" rel="noreferrer">GitHub 仓库</a>
+            <button class="btn" id="refreshBtn" type="button">刷新状态</button>
+            <span class="muted" id="fetchHint"></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" id="start">
+        <div class="section-head">
+          <div>
+            <div class="section-kicker">04 — GET STARTED</div>
+            <h2>三步开始使用</h2>
+          </div>
+          <p>下载发布包，登录账号，然后创建或加入房间。Setup 安装版和 portable 绿色版都可以直接使用。</p>
+        </div>
+        <div class="steps">
+          <article class="step">
+            <div class="step-no">01 / DOWNLOAD</div>
+            <h3>下载安装包</h3>
+            <p>从 GitHub Releases 下载 Setup 安装包；也可以使用 portable ZIP 解压即用。发布包自包含，不需要安装 .NET 8 Runtime。</p>
+          </article>
+          <article class="step">
+            <div class="step-no">02 / LOGIN</div>
+            <h3>登录账号</h3>
+            <p>在面板选择国服或国际服，使用 UID、手机号，或直接继承本机官方 WuwaTappo 的登录状态。</p>
+          </article>
+          <article class="step">
+            <div class="step-no">03 / PLAY</div>
+            <h3>创建或加入房间</h3>
+            <p>打开「联机」创建房间或输入房间号。联机桌宠会按当前横向/纵向排列方案自动就位。</p>
+          </article>
+        </div>
+        <p class="requirements">Windows 10/11 x64 · WebView2 Runtime（通常已内置）· 发布包无需安装 .NET Runtime · 首次启动创建 <code>%LOCALAPPDATA%\WuwatappoNative</code></p>
+      </section>
     </main>
 
     <footer>
-      <div>本页面只读取静态 <code>compatibility.json</code>，不会上传任何数据。</div>
-      <div>安全状态由项目维护者更新；客户端也会请求同一份 JSON。状态仅供参考，最终以实际使用情况为准。</div>
+      <div class="footer-row">
+        <span>Wuwatappo Native · 本项目不是库洛官方项目，角色素材版权归库洛游戏所有。</span>
+        <span class="footer-spacer"></span>
+        <a href="https://github.com/DanielToyama/WuwaTappoNative" target="_blank" rel="noreferrer">GitHub</a>
+        <a href="https://github.com/DanielToyama/WuwaTappoNative/releases" target="_blank" rel="noreferrer">Releases</a>
+        <a href="https://www.bilibili.com/video/BV1nRxk6dERS/" target="_blank" rel="noreferrer">演示视频</a>
+        <a href="https://github.com/DanielToyama/WuwaTappoNative/blob/main/NOTICE.md" target="_blank" rel="noreferrer">NOTICE</a>
+      </div>
+      <div class="footer-row" style="margin-top:7px">
+        <span>状态页只读取静态 compatibility.json，不会上传任何数据。交流 QQ 群：1130030892。</span>
+      </div>
     </footer>
   </div>
 
@@ -214,7 +553,6 @@
       };
 
       const $ = id => document.getElementById(id);
-      const esc = s => String(s ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
       const text = (id, value) => { const el = $(id); if (el) el.textContent = value == null || value === '' ? '—' : String(value); };
       const fmt = s => {
         if (!s) return '—';
@@ -234,7 +572,7 @@
         $('statusBadgeText').textContent = meta.label;
         $('statusTitle').textContent = meta.title;
         $('statusMessage').textContent = data.message || '暂无说明。';
-        $('updatedAt').textContent = data.updatedAt ? '状态更新时间：' + fmt(data.updatedAt) : '状态更新时间：—';
+        $('updatedAt').textContent = data.updatedAt ? 'STATUS UPDATED ' + fmt(data.updatedAt) : 'STATUS UPDATED —';
 
         const native = data.native || {};
         const official = data.official || {};
@@ -270,8 +608,8 @@
           ? '安全模式已启用：' + (kill.reason || '维护者要求暂停联网，请更新或等待通知。')
           : '';
 
-        $('fetchHint').textContent = fromCache ? '当前显示缓存，刷新失败' : '已读取最新状态';
-        document.title = 'Wuwatappo Native 版本状态 · ' + meta.label;
+        $('fetchHint').textContent = fromCache ? 'CACHE / OFFLINE' : 'LIVE / compatibility.json';
+        document.title = 'Wuwatappo Native · Windows 原生桌宠 · ' + meta.label;
       }
 
       function readCache() {
@@ -305,7 +643,7 @@
             $('statusBadgeText').textContent = '读取失败';
             $('statusTitle').textContent = '暂时无法读取版本状态';
             $('statusMessage').textContent = '请检查网络后重试，或直接前往 GitHub Releases 查看最新版本。';
-            $('fetchHint').textContent = '读取失败';
+            $('fetchHint').textContent = 'FETCH FAILED';
           }
         } finally {
           btn.disabled = false;
