@@ -195,6 +195,7 @@ public static class PetComposer
         public bool KeyboardOn;
         public string Nickname;
         public EmoteBubbleLayer Bubbles;
+        public KeyBubbleLayer KeyBubbles;
         public EmoteWheelLayer Wheel;
         public long ChestLeftTs, ChestRightTs;
         public long NowMs;
@@ -241,6 +242,7 @@ public static class PetComposer
 
         if (info.Bubbles != null)
             info.Bubbles.Draw(g, s, (CatX + CatSize / 2f) * s, (CatY + CatSize / 2f) * s);
+        info.KeyBubbles?.Draw(g, s, (CatX + CatSize / 2f) * s, (CatY + CatSize / 2f) * s);
 
         DrawChests(g, s, info);
         info.Wheel?.Draw(g, s, CatX, CatY);

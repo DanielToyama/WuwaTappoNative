@@ -224,6 +224,26 @@ public sealed class PanelWindow : Form
         else _pendingPage = page;
     }
 
+    /// <summary>切换区服/账号后强制重载 WebView，清空上一会话的背包、图鉴等页面缓存。</summary>
+    public void ReloadPage()
+    {
+        if (IsDisposed) return;
+        if (InvokeRequired)
+        {
+            Safe(ReloadPage);
+            return;
+        }
+        try
+        {
+            _ready = false;
+            _web?.CoreWebView2?.Reload();
+        }
+        catch (Exception ex)
+        {
+            Log.Write("重载面板失败：" + ex.Message);
+        }
+    }
+
     async Task CheckUpdateAsync()
     {
         if (_updateChecked) return;
@@ -332,6 +352,7 @@ public sealed class PanelWindow : Form
             remoteOpacity = _app.Cfg.RemoteOpacity,
             remoteFollowMainOpacity = _app.Cfg.RemoteFollowMainOpacity,
             remoteNameScale = _app.Cfg.RemoteNameScale,
+            keyBubbles = _app.Cfg.KeyBubbles,
             topmost = _app.Cfg.Topmost,
             clickThrough = _app.Cfg.ClickThrough,
             hoverFade = _app.Cfg.HoverFade,
@@ -344,6 +365,7 @@ public sealed class PanelWindow : Form
             rhythmKeys = _app.Cfg.RhythmKeys,
             allowOverlap = _app.Cfg.AllowOverlap,
             catLayout = _app.Cfg.CatLayout,
+            synthCheckMode = _app.Cfg.SynthCheckMode,
             captureMode = _app.Cfg.CaptureMode,
             captureWidth = _app.Cfg.CaptureWidth,
             captureHeight = _app.Cfg.CaptureHeight,
@@ -891,10 +913,17 @@ public sealed class PanelWindow : Form
                             cfg.RemoteFollowMainOpacity = false;
                             break;
                         case "remoteNameScale": cfg.RemoteNameScale = Math.Clamp(ReadDouble(kv.Value), 0.5, 2.0); break;
+                        case "keyBubbles": cfg.KeyBubbles = ApiClient.ReadBool(kv.Value); break;
                         case "catLayout":
                             cfg.CatLayout = string.Equals(ApiClient.ReadString(kv.Value), "vertical", StringComparison.OrdinalIgnoreCase)
                                 ? "vertical" : "horizontal";
                             break;
+                        case "synthCheckMode":
+                        {
+                            string mode = ApiClient.ReadString(kv.Value);
+                            cfg.SynthCheckMode = mode == "same" || mode == "off" ? mode : "up";
+                            break;
+                        }
                         case "captureMode": cfg.CaptureMode = ApiClient.ReadBool(kv.Value); break;
                         case "captureWidth": cfg.CaptureWidth = Math.Clamp((int)ApiClient.ReadLong(kv.Value), 160, 1600); break;
                         case "captureHeight": cfg.CaptureHeight = Math.Clamp((int)ApiClient.ReadLong(kv.Value), 160, 1600); break;
@@ -1009,8 +1038,11 @@ public sealed class PanelWindow : Form
             }
 
             case "redeem":
-                await auth.Api.PostAsync("api/frontend/redeems/use", new { code = ApiClient.ReadString(data["code"]) });
-                return new { ok = true };
+            {
+                // 官方接口的 data 不保证包含奖励明细；前端会结合兑换前后背包 diff 显示实际到账物品。
+                var resp = await auth.Api.PostAsync("api/frontend/redeems/use", new { code = ApiClient.ReadString(data["code"]) });
+                return new { ok = true, data = resp };
+            }
 
             case "presets.list":
                 return await auth.Api.GetAsync("api/frontend/presets");

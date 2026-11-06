@@ -34,6 +34,7 @@ public sealed class PetWindow : Form
     long _lastGeometryMs;
     Point _dragCursor, _dragOrigin;
     readonly EmoteBubbleLayer _bubbles = new(10);
+    readonly KeyBubbleLayer _keyBubbles = new(10);
     readonly EmoteWheelLayer _wheel = new();
     System.Windows.Forms.Timer _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _wheelShowTimer, _hoverFadeTimer, _loadingTimer, _hoverFadeAnimTimer, _hoverPollTimer;
     long _lastSkin = -1, _lastAcc = -1;
@@ -113,6 +114,7 @@ public sealed class PetWindow : Form
             if (!_dragging) HandDown();
         });
         _hook.KeyUp += vk => Safe(() => { if (!_dragging) HandUp(); });
+        _hook.KeyEdge += (vk, down) => Safe(() => { if (down) PushKeyBubble(vk); });
         _hook.HotkeyKeyDown += OnHotkeyKeyDown;
         RebuildHotkeyMap();
         _hook.Start();
@@ -238,6 +240,7 @@ public sealed class PetWindow : Form
             KeyboardOn = _cfg.KeyboardMode != "hidden",
             Nickname = _auth.Nickname,
             Bubbles = _bubbles,
+            KeyBubbles = _keyBubbles,
             Wheel = _wheel,
             ChestLeftTs = leftTs,
             ChestRightTs = rightTs,
@@ -352,8 +355,9 @@ public sealed class PetWindow : Form
         _emoteTimer.Tick += (s, e) =>
         {
             bool active = _bubbles.Tick();
+            bool keyActive = _keyBubbles.Tick();
             Compose();
-            if (!active) _emoteTimer.Stop();
+            if (!active && !keyActive) _emoteTimer.Stop();
         };
         // 表情轮盘展开是低频动画，30fps 足够；每次淡入都按 60fps 全量重绘会把 CPU 拉高。
         _wheelTimer = new System.Windows.Forms.Timer { Interval = 33 };
@@ -883,6 +887,32 @@ public sealed class PetWindow : Form
         }
     }
 
+    /// <summary>按键边沿生成一个键帽气泡；高频输入由 _emoteTimer 统一按 50ms 合并重绘。</summary>
+    void PushKeyBubble(int vk)
+    {
+        if (!_cfg.KeyBubbles || _hiddenByHotkey || !Visible) return;
+        if (vk == 0x01 || vk == 0x02) return; // 鼠标按键只计入点击，不生成键帽气泡
+        if (!_keyBubbles.Add(vk)) return;
+        if (!_emoteTimer.Enabled)
+        {
+            Compose();
+            _emoteTimer.Start();
+        }
+    }
+
+    /// <summary>手柄按键边沿生成一个键帽气泡；肩键/扳机用浅金色强调。</summary>
+    public void PushGamepadBubble(string label)
+    {
+        if (!_cfg.KeyBubbles || _hiddenByHotkey || !Visible) return;
+        bool accent = label is "LB" or "RB" or "LT" or "RT";
+        if (!_keyBubbles.AddLabel(label, accent)) return;
+        if (!_emoteTimer.Enabled)
+        {
+            Compose();
+            _emoteTimer.Start();
+        }
+    }
+
     // ---------- 全局快捷键 ----------
     //
     // 不用 RegisterHotKey：那会独占按键，其他程序收不到 F5/F7/F8/F9，
@@ -980,6 +1010,15 @@ public sealed class PetWindow : Form
         else if (action == "catLayout")
         {
             ToggleCatLayout(true);
+        }
+        else if (action == "keyBubbles")
+        {
+            _cfg.KeyBubbles = !_cfg.KeyBubbles;
+            if (!_cfg.KeyBubbles) _keyBubbles.Clear();
+            Save();
+            Compose();
+            NotifyHotkey(_cfg.KeyBubbles ? "已开启按键气泡" : "已关闭按键气泡");
+            NotifySettingsChanged();
         }
         else if (action == "rhythmMode")
         {
@@ -1717,6 +1756,7 @@ public sealed class PetWindow : Form
         foreach (var t in new[] { _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _wheelShowTimer, _hoverFadeTimer, _hoverFadeAnimTimer, _hoverPollTimer, _loadingTimer, _composeTimer }) { try { t?.Stop(); t?.Dispose(); } catch { } }
         foreach (var c in _cats.Values.ToList()) { try { c.Close(); c.Dispose(); } catch { } }
         _cats.Clear();
+        _keyBubbles.Dispose();
         _surface.Dispose();
         _hook.Dispose();
         _tray.Visible = false;

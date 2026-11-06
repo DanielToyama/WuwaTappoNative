@@ -57,6 +57,12 @@ img { -webkit-user-drag: none; }
   margin-left: auto; min-width: 22px; height: 22px; padding: 0 6px; border-radius: 11px;
   background: #ba7c5a; color: #fff; font-size: 12px; display: flex; align-items: center; justify-content: center;
 }
+.tab .tab-dot {
+  width: 9px; height: 9px; margin-left: auto; flex: 0 0 9px;
+  border-radius: 50%; background: #d9534f; display: none;
+  box-shadow: 0 0 0 3px rgba(217, 83, 79, .16);
+}
+.tab .tab-dot.show { display: block; }
 .sidebar-foot { margin-top: auto; display: flex; align-items: center; gap: 8px; padding: 8px 4px 0; }
 .user-chip {
   flex: 1; min-width: 0; height: 36px; border-radius: 18px; background: var(--cream-4);
@@ -236,6 +242,14 @@ img { -webkit-user-drag: none; }
 
 /* 合成 */
 /* 三组各占一行，稀有度 5 个按钮平分宽度，永远不会被挤到第二行。 */
+.synth-top { display: flex; gap: 16px; align-items: flex-start; margin-bottom: 12px; }
+.synth-top .synth-bar { flex: 1 1 auto; min-width: 0; margin-bottom: 0; }
+.synth-check-card {
+  flex: 0 0 220px; padding: 12px 14px;
+  background: var(--cream-2); border: 1.5px solid rgba(231, 183, 124, .55);
+  border-radius: 12px;
+}
+.synth-check-card .setting-sub { margin-top: 4px; font-size: 11px; line-height: 1.5; }
 .synth-bar { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
 .synth-group { display: flex; gap: 8px; align-items: center; }
 .synth-group .synth-label { flex: 0 0 52px; font-size: 12px; font-weight: 700; color: var(--ink-dim); }
@@ -290,6 +304,18 @@ img { -webkit-user-drag: none; }
 @keyframes drop-in { from { transform: translateY(-80px) scale(.6); opacity: 0; } to { transform: none; opacity: 1; } }
 .reward .r-name { font-size: 20px; font-weight: 900; color: var(--ink-strong); }
 .reward .r-sub { font-size: 13px; color: var(--ink-dim); }
+.redeem-items {
+  position: relative; z-index: 1; display: flex; flex-wrap: wrap; justify-content: center;
+  gap: 10px; max-width: 430px; max-height: 280px; overflow-y: auto; padding: 4px;
+}
+.redeem-item {
+  width: 92px; min-height: 104px; padding: 7px 6px; border-radius: 12px;
+  background: var(--cream-2); border: 1.5px solid rgba(231, 183, 124, .65);
+  display: flex; flex-direction: column; align-items: center; gap: 3px;
+}
+.redeem-thumb { width: 54px; height: 54px; object-fit: contain; display: grid; place-items: center; font-size: 30px; }
+.redeem-name { width: 100%; font-size: 11px; line-height: 1.3; color: var(--ink-strong); text-align: center; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.redeem-qty { font-size: 12px; font-weight: 800; color: var(--ink); }
 
 /* 免责声明 / 关于 */
 .about { display: flex; flex-direction: column; gap: 14px; max-height: 66vh; overflow-y: auto; scrollbar-gutter: stable; padding-right: 4px; }
@@ -361,6 +387,8 @@ img { -webkit-user-drag: none; }
   .room-layout { flex-direction: column; overflow-y: auto; }
   .room-left { width: 100%; flex: 0 0 auto; }
   .room-right { flex: 0 0 auto; }
+  .synth-top { flex-direction: column; }
+  .synth-check-card { width: 100%; flex: 0 0 auto; }
   .setting-item { flex-wrap: wrap; align-items: flex-start; }
   .setting-content { flex-wrap: wrap; justify-content: flex-end; }
   .hotkey-row { flex-wrap: wrap; }

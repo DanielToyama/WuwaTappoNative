@@ -58,8 +58,18 @@ public sealed class KeyboardWindow : Form
     public int CaptureWidth => W;
     /// <summary>手柄有新按键按下：驱动主角挥手与点击数（摇杆不参与）。</summary>
     public event Action PadButtonDown;
+    /// <summary>手柄具体按键按下：用于按键气泡，每个新按下的键各触发一次。</summary>
+    public event Action<string> PadButtonPressed;
     /// <summary>手柄所有按键都松开。</summary>
     public event Action PadButtonUp;
+
+    static readonly (ushort Flag, string Label)[] PadButtonLabels =
+    {
+        (0x0001, "↑"), (0x0002, "↓"), (0x0004, "←"), (0x0008, "→"),
+        (0x0010, "Start"), (0x0020, "Back"), (0x0040, "LS"), (0x0080, "RS"),
+        (0x0100, "LB"), (0x0200, "RB"), (0x1000, "A"), (0x2000, "B"),
+        (0x4000, "X"), (0x8000, "Y"),
+    };
 
     public KeyboardWindow()
     {
@@ -329,6 +339,7 @@ public sealed class KeyboardWindow : Form
             {
                 bool wasConnected = _padConnected;
                 ushort prev = _padButtons;
+                byte prevLt = _lt, prevRt = _rt;
                 _padConnected = true;
                 _padPacket = state.dwPacketNumber;
                 _padButtons = g.wButtons;
@@ -346,6 +357,13 @@ public sealed class KeyboardWindow : Form
                     ushort newlyPressed = (ushort)(_padButtons & ~prev);
                     if (newlyPressed != 0) PadButtonDown?.Invoke();
                     else if (prev != 0 && _padButtons == 0) PadButtonUp?.Invoke();
+
+                    foreach (var (flag, label) in PadButtonLabels)
+                    {
+                        if ((newlyPressed & flag) != 0) PadButtonPressed?.Invoke(label);
+                    }
+                    if (_lt > 4 && prevLt <= 4) PadButtonPressed?.Invoke("LT");
+                    if (_rt > 4 && prevRt <= 4) PadButtonPressed?.Invoke("RT");
                 }
                 if (render) Render();
             }

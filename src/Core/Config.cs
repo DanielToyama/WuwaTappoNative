@@ -40,6 +40,8 @@ public sealed class Settings
     public double RemoteOpacity { get; set; } = 1.0;
     /// <summary>联机角色昵称字号倍率，限制在 50%–200%。</summary>
     public double RemoteNameScale { get; set; } = 1.0;
+    /// <summary>按键时是否在桌宠上方冒出键帽气泡。</summary>
+    public bool KeyBubbles { get; set; } = true;
     /// <summary>联机角色不透明度是否跟随主角，默认开启。</summary>
     public bool RemoteFollowMainOpacity { get; set; } = true;
     public bool Topmost { get; set; } = true;
@@ -90,6 +92,8 @@ public sealed class Settings
     public bool AllowOverlap { get; set; } = true;
     /// <summary>联机桌宠排列方向：horizontal = 底部横向，vertical = 右侧纵向。</summary>
     public string CatLayout { get; set; } = "horizontal";
+    /// <summary>获得新道具后的合成提醒检查偏好：up / same / off。</summary>
+    public string SynthCheckMode { get; set; } = "up";
     /// <summary>OBS 绿幕采集窗口：只显示主角，背景纯绿。</summary>
     public bool CaptureMode { get; set; }
     public int CaptureWidth { get; set; } = 400;
@@ -195,6 +199,12 @@ public static class ConfigStore
                     if (cfg.AutoEmoteMode != "specific" && cfg.AutoEmoteMode != "library") cfg.AutoEmoteMode = "quickbar";
                     cfg.ServerRegion = NormalizeRegion(cfg.ServerRegion);
                     cfg.CatLayout = string.Equals(cfg.CatLayout, "vertical", StringComparison.OrdinalIgnoreCase) ? "vertical" : "horizontal";
+                    cfg.SynthCheckMode = cfg.SynthCheckMode switch
+                    {
+                        "same" => "same",
+                        "off" => "off",
+                        _ => "up",
+                    };
                     if (string.IsNullOrWhiteSpace(cfg.SdkDeviceNum) || cfg.SdkDeviceNum.Length < 16)
                         cfg.SdkDeviceNum = Guid.NewGuid().ToString("N");
                     return cfg;

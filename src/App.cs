@@ -108,6 +108,7 @@ public sealed class App : ApplicationContext
         // 手柄按键和键盘按键走同一条链路：计数、广播、挥手。
         Keyboard.PadButtonDown += () => Pet.BeginInvoke(new Action(Pet.GamepadTap));
         Keyboard.PadButtonUp += () => Pet.BeginInvoke(new Action(Pet.GamepadRelease));
+        Keyboard.PadButtonPressed += label => Pet.BeginInvoke(new Action(() => Pet.PushGamepadBubble(label)));
         Pet.FormClosed += (s, e) => ExitThread();
 
         Pet.Show();
@@ -309,6 +310,8 @@ public sealed class App : ApplicationContext
             }
         }
         catch { }
+        // 旧会话的背包/图鉴缓存在 WebView 里，仅 PushBoot 不会清空；切服后强制重载页面。
+        try { Panel?.ReloadPage(); } catch { }
         _ = RefreshCompatibilityAsync(force: true);
     }
 

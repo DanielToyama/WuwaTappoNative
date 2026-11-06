@@ -57,6 +57,7 @@
     synthType: 'character_skin',
     synthRarity: 'all',
     synthSlots: [],
+    synthCanCraft: false,
     presets: null,
     presetBusy: false,
     emoteNames: {},
@@ -149,7 +150,7 @@
     const initialPage = hashParams.get('page');
     if (initialPage && PAGES.some(p => p.key === initialPage)) state.page = initialPage;
     document.getElementById('tabs').innerHTML = PAGES.map(p =>
-      `<button class="tab" data-page="${p.key}">${ICONS[p.icon]}<span>${p.title}</span></button>`).join('');
+      `<button class="tab" data-page="${p.key}">${ICONS[p.icon]}<span>${p.title}</span>${p.key === 'synth' ? '<span class="tab-dot" data-tab-badge="synth" title="有可合成物资"></span>' : ''}</button>`).join('');
     document.querySelectorAll('.tab').forEach(btn => btn.onclick = () => navigate(btn.dataset.page));
     document.getElementById('closeBtn').onclick = () => call('win.close');
     document.getElementById('winCloseBtn').onclick = () => call('win.close');
@@ -176,6 +177,7 @@
       state.update = b.update || state.update;
       renderChrome();
       renderPage();
+      if (isLogged()) ensureBag().catch(() => { });
       maybeShowDisclaimer();
       maybeShowUacPrompt();
       maybeOpenEmoteEditor();
@@ -409,6 +411,7 @@
     document.querySelectorAll('.tab').forEach(btn => btn.classList.toggle('active', btn.dataset.page === state.page));
     const page = PAGES.find(p => p.key === state.page);
     document.getElementById('pageTitle').textContent = page ? page.title : '';
+    updateSynthBadge();
     renderNotices();
   }
 
@@ -629,6 +632,7 @@
     if (state.bag && !force) return state.bag;
     const r = await tryCall('bag.list');
     state.bag = r.items || [];
+    updateSynthBadge();
     return state.bag;
   }
 
@@ -1218,6 +1222,43 @@
   }
   function synthAnchor() { const id = state.synthSlots.find(x => x !== null); return id ? synthBagById(id) : null; }
 
+  function synthMaxRarityForCheck(type) {
+    if ((state.atlas?.[type] || []).length) return synthMaxRarity(type);
+    const order = { common: 1, uncommon: 2, rare: 3, epic: 4 };
+    let max = 'common';
+    for (const item of state.bag || []) {
+      if (item.type !== type) continue;
+      if ((order[effRarity(item.rarity)] || 0) > (order[max] || 0)) max = effRarity(item.rarity);
+    }
+    return max;
+  }
+
+  /** 按当前检查偏好判断是否有任何一组材料足够合成；不看当前页面筛选。 */
+  function synthCanCraftAny() {
+    const mode = state.boot?.settings?.synthCheckMode || 'up';
+    if (mode === 'off' || !state.bag?.length) return false;
+    const need = mode === 'same' ? 5 : 10;
+    const groups = new Map();
+    for (const item of state.bag) {
+      if (!['character_skin', 'accessory', 'emote'].includes(item.type)) continue;
+      const rarity = effRarity(item.rarity);
+      if (mode === 'up' && rarity === synthMaxRarityForCheck(item.type)) continue;
+      const usable = Math.max(0, (Number(item.quantity) || 1) - 1);
+      if (usable <= 0) continue;
+      const key = item.type + '|' + rarity;
+      groups.set(key, (groups.get(key) || 0) + usable);
+    }
+    return [...groups.values()].some(count => count >= need);
+  }
+
+  function updateSynthBadge() {
+    const ready = synthCanCraftAny();
+    state.synthCanCraft = ready;
+    const badge = document.querySelector('[data-tab-badge="synth"]');
+    if (badge) badge.classList.toggle('show', ready);
+    return ready;
+  }
+
   async function renderSynth() {
     setPage(`<div class="loading">正在读取背包…</div>`);
     try { await ensureBag(); } catch { setPage('<div class="empty-state">背包读取失败</div>'); return; }
@@ -1246,6 +1287,7 @@
 
     const filled = state.synthSlots.filter(x => x !== null).length;
     const anchor = synthAnchor();
+    const checkMode = state.boot?.settings?.synthCheckMode || 'up';
     const slotHtml = state.synthSlots.map((id, i) => {
       const item = id ? synthBagById(id) : null;
       return `<div class="synth-slot ${item ? 'filled' : ''}" data-slot="${i}" title="${item ? esc(item.name) : '空槽位'}">
@@ -1253,21 +1295,32 @@
     }).join('');
 
     setPage(`
-      <div class="synth-bar">
-        <div class="synth-group">
-          <span class="synth-label">方式</span>
-          ${[['up', '升阶合成（10）'], ['same', '平阶合成（5）']].map(([k, label]) =>
-            `<button class="pill ${state.synthMode === k ? 'active' : ''}" data-sm="${k}">${label}</button>`).join('')}
+      <div class="synth-top">
+        <div class="synth-bar">
+          <div class="synth-group">
+            <span class="synth-label">方式</span>
+            ${[['up', '升阶合成（10）'], ['same', '平阶合成（5）']].map(([k, label]) =>
+              `<button class="pill ${state.synthMode === k ? 'active' : ''}" data-sm="${k}">${label}</button>`).join('')}
+          </div>
+          <div class="synth-group">
+            <span class="synth-label">类型</span>
+            ${['character_skin', 'accessory', 'emote'].map(t =>
+              `<button class="pill ${type === t ? 'active' : ''}" data-st="${t}">${TYPE_TEXT[t]}</button>`).join('')}
+          </div>
+          <div class="synth-group synth-group-rarity">
+            <span class="synth-label">稀有度</span>
+            ${['all', 'common', 'uncommon', 'rare', 'epic'].map(r =>
+              `<button class="pill ${rarity === r ? 'active' : ''}" data-sr="${r}">${r === 'all' ? '全部' : RARITY_TEXT[r]}</button>`).join('')}
+          </div>
         </div>
-        <div class="synth-group">
-          <span class="synth-label">类型</span>
-          ${['character_skin', 'accessory', 'emote'].map(t =>
-            `<button class="pill ${type === t ? 'active' : ''}" data-st="${t}">${TYPE_TEXT[t]}</button>`).join('')}
-        </div>
-        <div class="synth-group synth-group-rarity">
-          <span class="synth-label">稀有度</span>
-          ${['all', 'common', 'uncommon', 'rare', 'epic'].map(r =>
-            `<button class="pill ${rarity === r ? 'active' : ''}" data-sr="${r}">${r === 'all' ? '全部' : RARITY_TEXT[r]}</button>`).join('')}
+        <div class="synth-check-card">
+          <div class="setting-title">合成提醒</div>
+          <div class="setting-sub">获得新物品后检查是否可合成</div>
+          <div class="pill-row" style="margin-top:8px">
+            <button class="pill ${checkMode === 'up' ? 'active' : ''}" data-scm="up">升阶</button>
+            <button class="pill ${checkMode === 'same' ? 'active' : ''}" data-scm="same">平阶</button>
+            <button class="pill ${checkMode === 'off' ? 'active' : ''}" data-scm="off">关闭</button>
+          </div>
         </div>
       </div>
       <div class="synth-slots">${slotHtml}</div>
@@ -1288,6 +1341,16 @@
     });
     document.querySelectorAll('[data-sr]').forEach(b => b.onclick = () => {
       state.synthRarity = b.dataset.sr; synthResetSlots(); renderSynth();
+    });
+    document.querySelectorAll('[data-scm]').forEach(b => b.onclick = async () => {
+      const mode = b.dataset.scm;
+      try {
+        const boot = await tryCall('settings.set', { synthCheckMode: mode });
+        if (boot?.settings) state.boot = boot;
+        updateSynthBadge();
+        renderSynth();
+        toast(mode === 'off' ? '已关闭合成提醒' : (mode === 'same' ? '合成提醒改为平阶检查' : '合成提醒改为升阶检查'));
+      } catch { }
     });
     document.querySelectorAll('[data-slot]').forEach(el => el.onclick = () => {
       const idx = Number(el.dataset.slot);
@@ -1333,6 +1396,7 @@
         renderSynth();
       };
     });
+    updateSynthBadge();
   }
 
   async function synthOneClick() {
@@ -1418,6 +1482,7 @@
     }
     if (loaded) {
       state.bagNewReady = false;
+      updateSynthBadge();
       refreshNewAssets();
       if (acquiredId) {
         const owned = new Set((state.bag || []).map(x => x.id));
@@ -1430,6 +1495,98 @@
     }
     if (state.page === 'bag') renderBag();
     if (!loaded) toast('背包刷新失败，请稍后手动刷新', 'err');
+  }
+
+  function bagDelta(before, after) {
+    const oldQty = new Map((before || []).map(x => [String(x.id), Number(x.quantity) || 1]));
+    const gained = [];
+    for (const item of after || []) {
+      const qty = Number(item.quantity) || 1;
+      const diff = qty - (oldQty.get(String(item.id)) || 0);
+      if (diff > 0) gained.push({ ...item, gained: diff });
+    }
+    return gained;
+  }
+
+  function directRedeemItems(result) {
+    const candidates = [result?.items, result?.data?.items, result?.assets, result?.data];
+    for (const candidate of candidates) {
+      if (!Array.isArray(candidate)) continue;
+      return candidate.map(x => {
+        const id = Number(x.asset_id || x.id || 0);
+        const bagItem = (state.bag || []).find(v => v.id === id);
+        return {
+          ...(bagItem || {}),
+          ...x,
+          id: id || bagItem?.id || 0,
+          name: x.name || x.asset_name || bagItem?.name || '新物品',
+          thumb: x.thumb || bagItem?.thumb || '',
+          gained: Number(x.quantity || x.count || 1) || 1,
+        };
+      }).filter(x => x.id > 0 || x.name);
+    }
+    return [];
+  }
+
+  function showRedeemReward(items, code) {
+    const list = (items || []).filter(Boolean);
+    const body = list.length
+      ? `<div class="redeem-items">${list.map(x => `
+          <div class="redeem-item">
+            ${x.thumb ? img(x.thumb, 'redeem-thumb', x.name) : '<div class="redeem-thumb">🎁</div>'}
+            <div class="redeem-name">${esc(x.name || '新物品')}</div>
+            <div class="redeem-qty">×${x.gained || 1}</div>
+          </div>`).join('')}</div>`
+      : '<div class="r-sub">奖励已发放到背包，请查看背包。</div>';
+    modal(`<div class="reward">
+      <div class="r-name">兑换成功</div>
+      <div class="r-sub">${esc(code)}</div>
+      ${body}
+      <button class="btn" id="mOk" style="margin-top:8px">收下</button>
+    </div>`, host => host.querySelector('#mOk').onclick = closeModal);
+  }
+
+  async function redeemCode(code) {
+    // 先取一份兑换前背包，用于兼容官方接口不返回奖励明细的情况。
+    let before = [];
+    let beforeOk = false;
+    try {
+      const r = await call('bag.list');
+      before = r.items || [];
+      state.bag = before;
+      beforeOk = true;
+    } catch { }
+
+    const result = await tryCall('redeem', { code });
+    let gained = [];
+    if (beforeOk) {
+      for (let attempt = 0; attempt < 10; attempt++) {
+        try {
+          const r = await call('bag.list');
+          state.bag = r.items || [];
+          gained = bagDelta(before, state.bag);
+          updateSynthBadge();
+          if (gained.length) break;
+        } catch { }
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+    }
+    if (!beforeOk) {
+      try {
+        const r = await call('bag.list');
+        state.bag = r.items || [];
+        updateSynthBadge();
+      } catch { }
+    }
+    if (!gained.length) {
+      const direct = directRedeemItems(result);
+      if (direct.length) gained = direct;
+    }
+    state.bagNewReady = false;
+    refreshNewAssets();
+    if (state.page === 'bag') renderBag();
+    if (gained.length) showRedeemReward(gained, code);
+    else toast('兑换成功，奖励已发放到背包');
   }
 
   async function doSynth() {
@@ -2158,6 +2315,10 @@
             </div>
           </div>
           <div class="setting-item">
+            <div><div class="setting-title">按键气泡</div><div class="setting-sub">按键时在桌宠上方冒出键帽，默认开启</div></div>
+            <div class="switch ${s.keyBubbles !== false ? 'on' : ''}" data-switch="keyBubbles"></div>
+          </div>
+          <div class="setting-item">
             <div><div class="setting-title">窗口置顶</div><div class="setting-sub">桌宠始终显示在其他窗口上方</div></div>
             <div class="switch ${s.topmost ? 'on' : ''}" data-switch="topmost"></div>
           </div>
@@ -2420,6 +2581,7 @@
     { id: 'capture', label: 'OBS 绿幕窗口', def: '' },
     { id: 'mainPanel', label: '打开主面板', def: '' },
     { id: 'catLayout', label: '切换横纵排列', def: '' },
+    { id: 'keyBubbles', label: '开关按键气泡', def: '' },
     { id: 'rhythmMode', label: '开关音游模式', def: '' },
     { id: 'autoEmote', label: '开关自动表情', def: '' },
     { id: 'autoClick', label: '开关自动敲击', def: '' },
@@ -2899,9 +3061,13 @@
     });
     bindHotkeys();
     document.getElementById('redeemBtn')?.addEventListener('click', async () => {
-      const code = document.getElementById('redeemCode').value.trim();
+      const input = document.getElementById('redeemCode');
+      const code = input.value.trim();
       if (!code) return toast('请输入兑换码', 'err');
-      try { await tryCall('redeem', { code }); toast('兑换成功'); document.getElementById('redeemCode').value = ''; } catch { }
+      try {
+        await redeemCode(code);
+        input.value = '';
+      } catch { }
     });
     document.getElementById('logoutBtn')?.addEventListener('click', async () => {
       try {
@@ -3110,7 +3276,14 @@
   if (PREVIEW) {
     state.boot = previewBoot(PREVIEW);
     state.compatibility = previewCompatibility(PREVIEW);
-    state.page = PREVIEW === 'room' ? 'room' : 'settings';
+    if (PREVIEW === 'synth') {
+      state.bag = [
+        { id: 101, type: 'character_skin', name: '测试角色材料', rarity: 'rare', quantity: 11, thumb: '' },
+        { id: 102, type: 'accessory', name: '测试配件材料', rarity: 'uncommon', quantity: 7, thumb: '' },
+        { id: 103, type: 'emote', name: '测试表情材料', rarity: 'common', quantity: 3, thumb: '' },
+      ];
+    }
+    state.page = PREVIEW === 'room' ? 'room' : (PREVIEW === 'synth' ? 'synth' : 'settings');
     init();
     renderChrome();
     renderPage();
