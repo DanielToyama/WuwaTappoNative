@@ -343,6 +343,7 @@ public sealed class PanelWindow : Form
         uacPromptShown = _app.Cfg.UacPromptShown,
         update = _updateInfo,
         compatibility = _app.Compatibility,
+        announcements = _app.Announcements.Visible,
         settings = new
         {
             scale = _app.Cfg.Scale,
@@ -1074,6 +1075,17 @@ public sealed class PanelWindow : Form
             case "compatibility.check":
                 await _app.RefreshCompatibilityAsync(true);
                 return _app.Compatibility;
+
+            case "announcements.check":
+                await _app.RefreshAnnouncementsAsync(true);
+                return _app.Announcements.Visible;
+
+            case "announcement.read":
+            {
+                var remaining = _app.Announcements.MarkRead(ApiClient.ReadString(data["id"]));
+                Push("announcements", remaining);
+                return remaining;
+            }
 
             case "appearance.offset":
             {

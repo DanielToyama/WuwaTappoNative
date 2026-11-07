@@ -41,6 +41,7 @@
     update: null,
     updateDismissed: false,
     compatibility: null,
+    announcements: [],
     loginMode: 'uid',
     favors: new Set(),
     catalog: {},
@@ -175,6 +176,7 @@
       const b = await call('boot');
       state.boot = b;
       state.update = b.update || state.update;
+      state.announcements = Array.isArray(b.announcements) ? b.announcements : [];
       renderChrome();
       renderPage();
       if (isLogged()) ensureBag().catch(() => { });
@@ -354,8 +356,13 @@
   }
 
   function handleEvent(evt, data) {
-    if (evt === 'boot') { state.boot = data; state.update = data.update || state.update; state.compatibility = data.compatibility || state.compatibility; renderChrome(); renderPage(); maybeShowDisclaimer(); maybeShowUacPrompt(); maybeOpenEmoteEditor(); return; }
+    if (evt === 'boot') { state.boot = data; state.update = data.update || state.update; state.compatibility = data.compatibility || state.compatibility; state.announcements = Array.isArray(data.announcements) ? data.announcements : state.announcements; renderChrome(); renderPage(); maybeShowDisclaimer(); maybeShowUacPrompt(); maybeOpenEmoteEditor(); return; }
     if (evt === 'navigate') { if (data?.page) navigate(data.page); return; }
+    if (evt === 'announcements') {
+      state.announcements = Array.isArray(data) ? data : [];
+      renderNotices();
+      return;
+    }
     if (evt === 'compatibility') {
       state.compatibility = data;
       renderNotices();
@@ -2038,43 +2045,122 @@
     return 0;
   }
 
-  /// 官方版本提醒固定在内容区顶部，跨页面可见；同一个状态+版本关闭后不再重复。
+  /// 官方版本提醒固定在内容区顶部；公告只在设置页显示，避免打扰其他功能。
   function renderNotices() {
     const host = document.getElementById('noticeHost');
     if (!host) return;
+
     const oc = state.compatibility?.officialCheck;
-    if (!oc || (oc.state !== 'unverified' && oc.state !== 'forced')) {
-      host.innerHTML = '';
-      return;
-    }
-    const key = `wn_official_notice_${oc.state}_${oc.officialVersion || ''}`;
-    try {
-      if (localStorage.getItem(key) === '1') {
-        host.innerHTML = '';
-        return;
+    let officialHtml = '';
+    let officialKey = '';
+    if (oc && (oc.state === 'unverified' || oc.state === 'forced')) {
+      officialKey = `wn_official_notice_${oc.state}_${oc.officialVersion || ''}`;
+      let dismissed = false;
+      try { dismissed = localStorage.getItem(officialKey) === '1'; } catch { }
+      if (!dismissed) {
+        const danger = oc.state === 'forced';
+        officialHtml = `<section class="official-notice ${danger ? 'danger' : 'warning'}">
+          <div class="official-notice-main">
+            <div class="official-notice-icon">${danger ? '!' : '?'}</div>
+            <div class="official-notice-copy">
+              <div class="official-notice-title">官方客户端已${danger ? '强制' : ''}更新至 ${esc(oc.officialVersion || '新版本')}</div>
+              <div class="official-notice-text">${esc(oc.message || '')}</div>
+              <div class="official-notice-meta">当前 Native 验证基线：${esc(oc.testedVersion || '—')}${oc.stale ? ' · 显示上次检查结果' : ''}</div>
+            </div>
+            <button class="official-notice-close" data-official-dismiss title="关闭">×</button>
+          </div>
+          <div class="official-notice-actions">
+            <a class="btn ghost" href="https://github.com/DanielToyama/WuwaTappoNative/releases/latest" target="_blank" rel="noreferrer">查看项目状态</a>
+            <button class="btn ghost" data-official-dismiss>${danger ? '暂时继续（联机可能不可用）' : '继续使用'}</button>
+          </div>
+        </section>`;
       }
-    } catch { }
-    const danger = oc.state === 'forced';
-    host.innerHTML = `<section class="official-notice ${danger ? 'danger' : 'warning'}">
-      <div class="official-notice-main">
-        <div class="official-notice-icon">${danger ? '!' : '?'}</div>
-        <div class="official-notice-copy">
-          <div class="official-notice-title">官方客户端已${danger ? '强制' : ''}更新至 ${esc(oc.officialVersion || '新版本')}</div>
-          <div class="official-notice-text">${esc(oc.message || '')}</div>
-          <div class="official-notice-meta">当前 Native 验证基线：${esc(oc.testedVersion || '—')}${oc.stale ? ' · 显示上次检查结果' : ''}</div>
-        </div>
-        <button class="official-notice-close" data-official-dismiss title="关闭">×</button>
+    }
+
+    const announcementHtml = state.page === 'settings' ? announcementCardHtml() : '';
+    host.innerHTML = officialHtml + announcementHtml;
+    if (officialHtml) {
+      host.querySelectorAll('[data-official-dismiss]').forEach(el => {
+        el.onclick = () => {
+          try { localStorage.setItem(officialKey, '1'); } catch { }
+          renderNotices();
+        };
+      });
+    }
+    bindAnnouncement(host);
+  }
+
+  function announcementCardHtml() {
+    const list = Array.isArray(state.announcements) ? state.announcements : [];
+    if (!list.length) return '';
+    const a = list[0];
+    const severity = ['info', 'warning', 'critical'].includes(String(a.severity || '').toLowerCase())
+      ? String(a.severity).toLowerCase() : 'info';
+    const meta = ({
+      info: { label: '公告', icon: 'i' },
+      warning: { label: '注意', icon: '!' },
+      critical: { label: '重要', icon: '!' }
+    })[severity];
+    const count = list.length > 1 ? `<span class="announcement-count">1 / ${list.length}</span>` : '';
+    const dateValue = a.publishedAt ? new Date(a.publishedAt) : null;
+    const dateText = dateValue && !Number.isNaN(dateValue.getTime()) ? dateValue.toLocaleDateString('zh-CN') : '';
+    const action = a.action && a.action.url
+      ? `<a class="btn ghost announcement-action" href="${esc(a.action.url)}" target="_blank" rel="noreferrer" data-ann-action>${esc(a.action.label || '查看详情')}</a>`
+      : '';
+    const canClose = a.dismissible !== false;
+    const close = canClose
+      ? '<button class="announcement-close" data-ann-close title="关闭">×</button>'
+      : '';
+    const confirm = canClose ? '' : '<button class="btn ghost" data-ann-close>我知道了</button>';
+    return `<section class="announcement-card ${severity}" data-ann-id="${esc(a.id)}">
+      <div class="announcement-head">
+        <span class="announcement-badge"><span>${meta.icon}</span>${meta.label}</span>
+        <span class="announcement-title">${esc(a.title || '公告')}</span>
+        ${count}
+        ${close}
       </div>
-      <div class="official-notice-actions">
-        <a class="btn ghost" href="https://github.com/DanielToyama/WuwaTappoNative/releases/latest" target="_blank" rel="noreferrer">查看项目状态</a>
-        <button class="btn ghost" data-official-dismiss>${danger ? '暂时继续（联机可能不可用）' : '继续使用'}</button>
+      <div class="announcement-body">${esc(a.body || '')}</div>
+      <button class="announcement-expand hidden" data-ann-expand>展开全文</button>
+      <div class="announcement-foot">
+        <span class="announcement-meta">${dateText ? esc(dateText) + ' · ' : ''}Tappo 公告</span>
+        <span class="announcement-actions">${action}${confirm}</span>
       </div>
     </section>`;
-    const dismiss = () => {
-      try { localStorage.setItem(key, '1'); } catch { }
-      host.innerHTML = '';
-    };
-    host.querySelectorAll('[data-official-dismiss]').forEach(el => { el.onclick = dismiss; });
+  }
+
+  function bindAnnouncement(host) {
+    const card = host.querySelector('.announcement-card');
+    if (!card) return;
+    const body = card.querySelector('.announcement-body');
+    const expand = card.querySelector('[data-ann-expand]');
+    if (body && expand) {
+      if (body.scrollHeight > body.clientHeight + 2) expand.classList.remove('hidden');
+      expand.onclick = () => {
+        const expanded = body.classList.toggle('expanded');
+        expand.textContent = expanded ? '收起' : '展开全文';
+      };
+    }
+    const id = card.dataset.annId || '';
+    card.querySelectorAll('[data-ann-close]').forEach(el => {
+      el.onclick = () => { void dismissAnnouncement(id); };
+    });
+    card.querySelectorAll('[data-ann-action]').forEach(el => {
+      el.addEventListener('click', () => { void dismissAnnouncement(id); });
+    });
+  }
+
+  let announcementBusy = false;
+  async function dismissAnnouncement(id) {
+    if (!id || announcementBusy) return;
+    announcementBusy = true;
+    try {
+      const remaining = await call('announcement.read', { id });
+      state.announcements = Array.isArray(remaining)
+        ? remaining
+        : (state.announcements || []).filter(a => a.id !== id);
+      renderNotices();
+    } catch { }
+    finally { announcementBusy = false; }
   }
 
   function compatibilityBannerHtml() {
@@ -3273,9 +3359,52 @@
     return base;
   }
 
+  function previewAnnouncements(mode) {
+    const base = {
+      publishedAt: '2026-11-07T00:00:00.000Z',
+      dismissible: true,
+      action: { label: '查看详情', url: 'https://github.com/DanielToyama/WuwaTappoNative' },
+    };
+    if (mode === 'announcement-warning') {
+      return [{
+        ...base,
+        id: 'preview-warning',
+        title: '今晚 23:00 服务维护',
+        body: '维护期间联机功能可能短暂中断，单机与桌宠功能不受影响。\n预计持续 1 小时。',
+        severity: 'warning',
+      }];
+    }
+    if (mode === 'announcement-critical') {
+      return [{
+        ...base,
+        id: 'preview-critical',
+        title: '请更新后继续使用联机',
+        body: '当前版本与官方服务存在兼容风险；单机桌宠仍可正常使用。',
+        severity: 'critical',
+        dismissible: false,
+        action: { label: '前往下载', url: 'https://github.com/DanielToyama/WuwaTappoNative/releases/latest' },
+      }];
+    }
+    return [{
+      ...base,
+      id: 'preview-info',
+      title: '0.1.7 版本说明',
+      body: '本次更新修复了手机号登录和动态 SDK 配置问题。\n公告只在设置页顶部显示，不打扰其他功能。',
+      severity: 'info',
+    }, {
+      ...base,
+      id: 'preview-info-2',
+      title: '第二条公告',
+      body: '关闭上一条后才会显示这一条。',
+      severity: 'info',
+      action: null,
+    }];
+  }
+
   if (PREVIEW) {
     state.boot = previewBoot(PREVIEW);
     state.compatibility = previewCompatibility(PREVIEW);
+    state.announcements = previewAnnouncements(PREVIEW);
     if (PREVIEW === 'synth') {
       state.bag = [
         { id: 101, type: 'character_skin', name: '测试角色材料', rarity: 'rare', quantity: 11, thumb: '' },

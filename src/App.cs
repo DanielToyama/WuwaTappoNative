@@ -26,11 +26,14 @@ public sealed class App : ApplicationContext
     public PanelWindow Panel { get; private set; }
     /// <summary>GitHub Pages 上发布的版本兼容状态；读取失败时为 null。</summary>
     public CompatibilityInfo Compatibility { get; private set; }
+    /// <summary>只读公告服务；只在设置页渲染，不打扰其他页面。</summary>
+    public AnnouncementService Announcements { get; }
     System.Threading.Timer _autoChestTimer;
     System.Threading.Timer _clickRefreshTimer;
     System.Threading.Timer _autoClickTimer;
     System.Threading.Timer _gameModeRuleTimer;
     System.Threading.Timer _compatibilityTimer;
+    System.Threading.Timer _announcementTimer;
     readonly object _gameModeRuleGate = new();
     bool _gameModeRuleMatched;
     bool _gameModeRuleAuto;
@@ -47,6 +50,7 @@ public sealed class App : ApplicationContext
         // 先迁移/加载独立状态文件，再保存 config.json 以移除旧的状态字段。
         StateStore.Load(Cfg);
         ConfigStore.Save(Cfg);
+        Announcements = new AnnouncementService(Cfg);
         // 配置与注册表对齐：用户手动删了 Run 项、或换过安装目录，都在启动时修正。
         Cfg.LaunchAtLogin = AutoStart.Sync(Cfg.LaunchAtLogin, Cfg.RunAsAdmin);
         Auth = new AuthService(Cfg);
@@ -149,6 +153,8 @@ public sealed class App : ApplicationContext
         _gameModeRuleTimer = new System.Threading.Timer(_ => CheckGameModeRules(), null, 1500, 2000);
         // 启动后异步读取 GitHub Pages 上的兼容状态，之后每 30 分钟刷新；失败不阻塞启动。
         _compatibilityTimer = new System.Threading.Timer(_ => _ = RefreshCompatibilityAsync(), null, 2500, 30 * 60 * 1000);
+        // 公告独立拉取；只在设置页显示，失败静默忽略。
+        _announcementTimer = new System.Threading.Timer(_ => _ = RefreshAnnouncementsAsync(), null, 3500, 30 * 60 * 1000);
         ApplyAutoClickTimer();
         StartStressHarness();
     }
@@ -214,6 +220,13 @@ public sealed class App : ApplicationContext
         Compatibility = info;
         Log.Write($"版本状态：{info.Status} {info.Message}；官方客户端：{officialCheck.State} {officialCheck.OfficialVersion}");
         try { Panel?.Push("compatibility", info); } catch { }
+    }
+
+    /// <summary>拉取公告并把未读队列推给面板；请求失败时保留上次结果。</summary>
+    public async Task RefreshAnnouncementsAsync(bool force = false)
+    {
+        if (!await Announcements.RefreshAsync(force)) return;
+        try { Panel?.Push("announcements", Announcements.Visible); } catch { }
     }
 
     /// <summary>

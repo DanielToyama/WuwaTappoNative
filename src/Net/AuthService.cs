@@ -167,6 +167,9 @@ public sealed class AuthService
         {
             cuid,
             is_domestic = domestic ? 1 : 0,
+            // 官方 1.0.4 的 player/query 也要求携带通行证 accessToken；
+            // 只传 cuid 会直接返回 10024 Game login failed。
+            accessToken,
         });
         if (queryResp is not JsonObject queryObj)
             throw new ApiException(-1, "查询游戏角色失败");
@@ -229,7 +232,12 @@ public sealed class AuthService
 
         // 1. 查询该 cuid 下的角色列表。官方国际服客户端允许“通行证已登录但账号下没有游戏角色”，
         // 这种情况下仍然可以用 playerId=0 / serverId=0 换取账号级 token，不能直接判定登录失败。
-        var queryResp = await Api.PostAsync("api/auth/player/query", new { cuid = cuid, is_domestic = 0 });
+        var queryResp = await Api.PostAsync("api/auth/player/query", new
+        {
+            cuid = cuid,
+            is_domestic = 0,
+            accessToken = accessToken,
+        });
         if (queryResp is not JsonObject queryObj)
             throw new ApiException(-1, "查询国际服角色失败");
 

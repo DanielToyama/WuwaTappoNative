@@ -2,7 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Net.Http;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using WuwatappoNative.Core;
 
 namespace WuwatappoNative.Net;
 
@@ -21,13 +23,18 @@ public sealed class KuroSdkUser
 /// </summary>
 public static class KuroSdkClient
 {
-    const string BaseUrl = "https://sdkapi.kurogame.com/sdkcom";
+    const string SdkJsUrl = "https://pro-cdn-sdk.kurogame.com/pro/web-sdk/1.x/kr-sdk.js";
     const string ProjectId = "G152";
     const string ProductId = "A1476";
+    // clientId / clientSecret 是官方 App 传给 SDK 的宿主配置，不在 kr-sdk.js 里；
+    // 这里保留官方 1.0.4 的值作为兜底，SDK 版本和 API 地址会从公开 JS 动态刷新。
     const string ClientId = "vvkewnskrxxwfo0yi61cy24l";
     const string ClientSecret = "g9ej0i1jf3y68wchb0ncm266";
-    const string SdkVersion = "1.2.3w";
-    const string KrVersion = "1.9.0";
+
+    static volatile string BaseUrl = "https://sdkapi.kurogame.com/sdkcom";
+    static volatile string SdkVersion = "1.2.3w";
+    static volatile string KrVersion = "1.9.0";
+    static long _configValidUntilTicks;
 
     static readonly HttpClient Http = CreateClient();
 
@@ -39,8 +46,42 @@ public static class KuroSdkClient
         return client;
     }
 
+    /// <summary>从公开 SDK JS 刷新 SDK 版本、API 地址和 Kr-Ver；失败时继续使用内置值。</summary>
+    static async Task EnsureConfigAsync()
+    {
+        if (DateTimeOffset.UtcNow.UtcTicks < System.Threading.Interlocked.Read(ref _configValidUntilTicks)) return;
+        string text = null;
+        try
+        {
+            using var req = new HttpRequestMessage(HttpMethod.Get, SdkJsUrl);
+            using var resp = await Http.SendAsync(req).ConfigureAwait(false);
+            resp.EnsureSuccessStatusCode();
+            text = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            Log.Write("读取 Kuro SDK 配置失败，使用内置配置：" + ex.Message);
+        }
+
+        if (!string.IsNullOrEmpty(text))
+        {
+            var version = Regex.Match(text, "const\\s+version\\s*=\\s*\"([^\"]+)\"");
+            var api = Regex.Match(text, "VITE_APP_API_URL\\s*:\\s*\"([^\"]+)\"");
+            var kr = Regex.Match(text, "\"Kr-Ver\"\\s*:\\s*\"([^\"]+)\"");
+            if (version.Success) SdkVersion = version.Groups[1].Value;
+            if (api.Success) BaseUrl = api.Groups[1].Value.TrimEnd('/');
+            if (kr.Success) KrVersion = kr.Groups[1].Value;
+            Log.Write($"Kuro SDK 配置：version={SdkVersion} kr={KrVersion} base={BaseUrl}");
+        }
+
+        long next = DateTimeOffset.UtcNow.AddHours(6).UtcTicks;
+        if (string.IsNullOrEmpty(text)) next = DateTimeOffset.UtcNow.AddMinutes(10).UtcTicks;
+        System.Threading.Interlocked.Exchange(ref _configValidUntilTicks, next);
+    }
+
     public static async Task SendPhoneCodeAsync(string phone, string deviceNum)
     {
+        await EnsureConfigAsync().ConfigureAwait(false);
         await PostFormAsync("/v2/login/getPhoneCode.lg", new Dictionary<string, string>
         {
             ["phone"] = phone,
@@ -49,6 +90,7 @@ public static class KuroSdkClient
 
     public static async Task<KuroSdkUser> PhoneLoginAsync(string phone, string code, string deviceNum)
     {
+        await EnsureConfigAsync().ConfigureAwait(false);
         var phoneData = await PostFormAsync("/v2/login/phoneCode.lg", new Dictionary<string, string>
         {
             ["phone"] = phone,
@@ -65,7 +107,10 @@ public static class KuroSdkClient
             throw new ApiException(-1, "手机号验证成功，但未返回登录凭据");
 
         string cuid = ApiClient.ReadString(phoneData["cuid"]);
-        string sdkOpenId = ApiClient.ReadString(phoneData["id"]);
+        // 1.0.4 的 sdkuserid 才是游戏侧认可的通行证用户 id；
+        // id 只是 SDK 内部用户 id，拿它去 api/auth/login 会返回 10001。
+        string sdkOpenId = ApiClient.ReadString(phoneData["sdkuserid"]);
+        if (string.IsNullOrEmpty(sdkOpenId)) sdkOpenId = ApiClient.ReadString(phoneData["id"]);
         string userName = ApiClient.ReadString(phoneData["username"]);
         string phoneValue = ApiClient.ReadString(phoneData["phone"]);
 

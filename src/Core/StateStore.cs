@@ -7,7 +7,7 @@ using System.Text.Json.Nodes;
 namespace WuwatappoNative.Core;
 
 /// <summary>
-/// 运行状态存储：窗口位置、房间状态、成员位置和成员可见性。
+/// 运行状态存储：窗口位置、房间状态、成员位置、成员可见性和已读公告。
 /// 与 config.json 分开，避免每次设置保存都重写越来越大的成员状态。
 /// 成员数据按成员 id 保存，不按房间隔离；旧房间数据在迁移时丢弃。
 /// </summary>
@@ -57,6 +57,7 @@ public static class StateStore
                     ["roomHistory"] = ToArray(cfg.RoomHistory),
                     ["memberPositions"] = ToPositions(cfg.MemberPositions),
                     ["memberVisibility"] = ToVisibility(cfg.MemberVisibility),
+                    ["readAnnouncementIds"] = ToArray(cfg.ReadAnnouncementIds),
                 };
                 string tmp = Paths.StateFile + ".tmp";
                 var options = new System.Text.Json.JsonSerializerOptions
@@ -84,6 +85,7 @@ public static class StateStore
         cfg.RoomHistory = ReadStringArray(root["roomHistory"]);
         cfg.MemberPositions = ReadPositions(root["memberPositions"]);
         cfg.MemberVisibility = ReadVisibility(root["memberVisibility"]);
+        cfg.ReadAnnouncementIds = ReadStringArray(root["readAnnouncementIds"]).ToList();
     }
 
     /// <summary>
@@ -158,10 +160,10 @@ public static class StateStore
         Save(cfg);
     }
 
-    static JsonArray ToArray(string[] values)
+    static JsonArray ToArray(IEnumerable<string> values)
     {
         var arr = new JsonArray();
-        foreach (string value in values ?? Array.Empty<string>()) arr.Add(value ?? "");
+        foreach (string value in values ?? Enumerable.Empty<string>()) arr.Add(value ?? "");
         return arr;
     }
 

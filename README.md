@@ -174,14 +174,14 @@ dotnet build -c Release
 需要 PowerShell 7 和 Inno Setup 6.7 或更高版本。
 
 ```powershell
-pwsh -File .\installer\build.ps1 -Version 0.1.6
+pwsh -File .\installer\build.ps1 -Version 0.1.7
 ```
 
 输出：
 
 ```text
-dist/WuwatappoNative-0.1.6-Setup.exe
-dist/WuwatappoNative-0.1.6-portable.zip
+dist/WuwatappoNative-0.1.7-Setup.exe
+dist/WuwatappoNative-0.1.7-portable.zip
 dist/WuwatappoTokenExtractor-1.0.0-x64.zip
 ```
 

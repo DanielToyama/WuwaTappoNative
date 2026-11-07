@@ -134,8 +134,12 @@ public sealed class Settings
     [JsonIgnore] public Dictionary<string, int[]> MemberPositions { get; set; } = new();
     /// <summary>联机成员单独显示/隐藏；key = 成员 id，false 表示隐藏，缺省为显示。</summary>
     [JsonIgnore] public Dictionary<string, bool> MemberVisibility { get; set; } = new();
+    /// <summary>本地已读公告 id；由 StateStore 持久化，不写入 config.json，也不回传服务器。</summary>
+    [JsonIgnore] public List<string> ReadAnnouncementIds { get; set; } = new();
     /// <summary>服务器区服：cn（国服） | global（国际服），默认 cn。</summary>
     public string ServerRegion { get; set; } = "cn";
+    /// <summary>公告接口完整地址；只读 GET，不携带用户身份。</summary>
+    public string AnnouncementApiUrl { get; set; } = AnnouncementService.DefaultApiUrl;
     public string Locale { get; set; } = "zh";
     /// <summary>全局快捷键：动作 id → 组合键描述；空串表示禁用。缺省项使用原版默认键位。</summary>
     public Dictionary<string, string> Hotkeys { get; set; } = new();
@@ -198,6 +202,8 @@ public static class ConfigStore
                     cfg.GameModeRules = GameModeRules.Normalize(cfg.GameModeRules);
                     if (cfg.AutoEmoteMode != "specific" && cfg.AutoEmoteMode != "library") cfg.AutoEmoteMode = "quickbar";
                     cfg.ServerRegion = NormalizeRegion(cfg.ServerRegion);
+                    if (string.IsNullOrWhiteSpace(cfg.AnnouncementApiUrl))
+                        cfg.AnnouncementApiUrl = AnnouncementService.DefaultApiUrl;
                     cfg.CatLayout = string.Equals(cfg.CatLayout, "vertical", StringComparison.OrdinalIgnoreCase) ? "vertical" : "horizontal";
                     cfg.SynthCheckMode = cfg.SynthCheckMode switch
                     {
