@@ -169,6 +169,16 @@ dotnet build -c Release
 
 仓库已包含构建和运行所需的默认素材与离线外观目录，不需要额外下载素材包。
 
+主程序和独立登录提取工具统一固定 `SQLitePCLRaw.bundle_e_sqlite3` 2.1.14，实际加载原生 SQLite 3.54.0，已修补 [CVE-2025-6965](https://github.com/advisories/GHSA-2m69-gcr7-jv3q)。可按需复查依赖图与读取兼容性：
+
+```powershell
+dotnet list WuwatappoNative.csproj package --vulnerable --include-transitive
+dotnet list token-extractor/WuwatappoTokenExtractor.csproj package --vulnerable --include-transitive
+dotnet run --project tests/SqliteChecks/SqliteChecks.csproj -c Release
+```
+
+检查脚本只用内存数据库，不读取本机任何真实 cookies 或账号数据。
+
 ### 生成安装包
 
 需要 PowerShell 7 和 Inno Setup 6.7 或更高版本。

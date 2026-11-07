@@ -33,11 +33,14 @@
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3351.48" />
     <!-- 主程序内置“继承官方程序登录状态”，与独立提取器共用 SQLite 读取逻辑。 -->
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+    <!-- 显式固定原生 SQLite 依赖，避免沿用 2.1.6 自带的受影响版本（CVE-2025-6965）。 -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.14" />
   </ItemGroup>
 
   <ItemGroup>
     <!-- token-extractor 是独立项目，不能把它的源码/obj 生成文件编进主程序。 -->
     <Compile Remove="token-extractor\**\*.cs" />
+    <Compile Remove="tests\**\*.cs" />
     <EmbeddedResource Remove="token-extractor\**\*" />
     <None Remove="token-extractor\**\*" />
     <!-- 外层启动器由 installer/build.ps1 用 .NET Framework csc 单独编译。 -->
