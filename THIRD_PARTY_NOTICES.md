@@ -10,7 +10,7 @@
 | [Microsoft.Web.WebView2](https://www.nuget.org/packages/Microsoft.Web.WebView2/) | 1.0.3351.48 | Microsoft 软件许可条款 | 主面板的浏览器控件。NuGet 包内 `LICENSE.txt` 为准 |
 | [WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/) | 系统提供 | Microsoft 许可 | 不随本项目分发，由目标机器安装 |
 | [Microsoft.Data.Sqlite](https://www.nuget.org/packages/Microsoft.Data.Sqlite/) | 8.0.10 | MIT | 读取官方客户端 Cookies 的 SQLite 数据库；主程序与 Token 提取器共用 |
-| [SQLitePCLRaw](https://www.nuget.org/packages/SQLitePCLRaw.bundle_e_sqlite3/) / e_sqlite3 | 2.1.6 | Apache-2.0 / SQLite 公共领域 | Microsoft.Data.Sqlite 的原生 SQLite 绑定与运行库 |
+| [SQLitePCLRaw](https://www.nuget.org/packages/SQLitePCLRaw.bundle_e_sqlite3/) / e_sqlite3 | 2.1.14 / SQLite 3.54.0 | Apache-2.0 / SQLite 公共领域 | Microsoft.Data.Sqlite 的原生 SQLite 绑定与运行库；主程序与 Token 提取器显式固定版本，修补 CVE-2025-6965 |
 
 自包含发布（`-r win-x64 --self-contained`）会把 .NET 运行时与 WinForms 原生库一起复制到发布目录，
 这些文件仍受各自许可约束，不代表本项目对其主张版权。
