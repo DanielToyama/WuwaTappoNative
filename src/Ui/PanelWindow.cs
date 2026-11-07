@@ -354,6 +354,7 @@ public sealed class PanelWindow : Form
             remoteFollowMainOpacity = _app.Cfg.RemoteFollowMainOpacity,
             remoteNameScale = _app.Cfg.RemoteNameScale,
             keyBubbles = _app.Cfg.KeyBubbles,
+            animationFps = _app.Cfg.AnimationFps,
             topmost = _app.Cfg.Topmost,
             clickThrough = _app.Cfg.ClickThrough,
             hoverFade = _app.Cfg.HoverFade,
@@ -915,6 +916,10 @@ public sealed class PanelWindow : Form
                             break;
                         case "remoteNameScale": cfg.RemoteNameScale = Math.Clamp(ReadDouble(kv.Value), 0.5, 2.0); break;
                         case "keyBubbles": cfg.KeyBubbles = ApiClient.ReadBool(kv.Value); break;
+                        case "animationFps":
+                            cfg.AnimationFps = Settings.NormalizeAnimationFps((int)Math.Clamp(ApiClient.ReadLong(kv.Value), 0, 1000));
+                            AnimationTimer.FrameRate = cfg.AnimationFps;
+                            break;
                         case "catLayout":
                             cfg.CatLayout = string.Equals(ApiClient.ReadString(kv.Value), "vertical", StringComparison.OrdinalIgnoreCase)
                                 ? "vertical" : "horizontal";

@@ -53,6 +53,7 @@ public sealed class App : ApplicationContext
         Announcements = new AnnouncementService(Cfg);
         // 配置与注册表对齐：用户手动删了 Run 项、或换过安装目录，都在启动时修正。
         Cfg.LaunchAtLogin = AutoStart.Sync(Cfg.LaunchAtLogin, Cfg.RunAsAdmin);
+        AnimationTimer.FrameRate = Cfg.AnimationFps;
         Auth = new AuthService(Cfg);
         _clickUserId = Auth.UserId;
         Room = new RoomManager(Auth, Cfg);

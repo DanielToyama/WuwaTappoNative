@@ -42,6 +42,9 @@ public sealed class Settings
     public double RemoteNameScale { get; set; } = 1.0;
     /// <summary>按键时是否在桌宠上方冒出键帽气泡。</summary>
     public bool KeyBubbles { get; set; } = true;
+    /// <summary>表情、按键气泡等活动动画的帧率：30 / 60 / 120。</summary>
+    public int AnimationFps { get; set; } = 60;
+    public static int NormalizeAnimationFps(int fps) => fps is 30 or 120 ? fps : 60;
     /// <summary>联机角色不透明度是否跟随主角，默认开启。</summary>
     public bool RemoteFollowMainOpacity { get; set; } = true;
     public bool Topmost { get; set; } = true;
@@ -199,6 +202,7 @@ public static class ConfigStore
                     cfg.RemoteScale = Math.Clamp(cfg.RemoteScale, 0.25, 2.0);
                     cfg.RemoteOpacity = Math.Clamp(cfg.RemoteOpacity, 0.2, 1.0);
                     cfg.RemoteNameScale = Math.Clamp(cfg.RemoteNameScale, 0.5, 2.0);
+                    cfg.AnimationFps = Settings.NormalizeAnimationFps(cfg.AnimationFps);
                     cfg.GameModeRules = GameModeRules.Normalize(cfg.GameModeRules);
                     if (cfg.AutoEmoteMode != "specific" && cfg.AutoEmoteMode != "library") cfg.AutoEmoteMode = "quickbar";
                     cfg.ServerRegion = NormalizeRegion(cfg.ServerRegion);

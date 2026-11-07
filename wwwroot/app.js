@@ -2405,6 +2405,14 @@
             <div class="switch ${s.keyBubbles !== false ? 'on' : ''}" data-switch="keyBubbles"></div>
           </div>
           <div class="setting-item">
+            <div><div class="setting-title">动画帧率</div><div class="setting-sub">表情和按键气泡的刷新帧率，默认 60；帧率越低占用越少</div></div>
+            <div class="setting-content">
+              <div class="layout-switch" id="setAnimationFps">
+                ${[30, 60, 120].map(fps => `<button type="button" class="layout-choice ${(s.animationFps || 60) === fps ? 'active' : ''}" data-fps="${fps}">${fps} 帧</button>`).join('')}
+              </div>
+            </div>
+          </div>
+          <div class="setting-item">
             <div><div class="setting-title">窗口置顶</div><div class="setting-sub">桌宠始终显示在其他窗口上方</div></div>
             <div class="switch ${s.topmost ? 'on' : ''}" data-switch="topmost"></div>
           </div>
@@ -3197,6 +3205,17 @@
         if (boot?.settings) state.boot = boot;
         renderSettings();
       }
+    });
+    document.querySelectorAll('#setAnimationFps [data-fps]').forEach(btn => {
+      btn.onclick = async () => {
+        const fps = Number(btn.dataset.fps);
+        try {
+          await tryCall('settings.set', { animationFps: fps });
+          if (state.boot?.settings) state.boot.settings.animationFps = fps;
+          renderSettings();
+          toast(`动画帧率已设为 ${fps} 帧`);
+        } catch { }
+      };
     });
     document.querySelectorAll('#setCatLayout [data-layout]').forEach(btn => {
       btn.onclick = async () => {

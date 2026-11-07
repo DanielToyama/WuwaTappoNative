@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
 using Microsoft.Win32.SafeHandles;
+using WuwatappoNative.Core;
 
 namespace WuwatappoNative.Pet;
 
@@ -15,12 +16,13 @@ namespace WuwatappoNative.Pet;
 internal sealed class AnimationTimer : IDisposable
 {
     const uint HighResolution = 0x2, TimerAllAccess = 0x1F0003;
-    const int IntervalMs = 16;
+    static int s_frameRate = 60, s_intervalMs = 16;
     readonly object _gate = new();
     readonly SynchronizationContext _context;
     readonly TimerWaitHandle _handle;
     RegisteredWaitHandle _registration;
     bool _enabled, _pending, _disposed;
+    int _armedMs;
     long _generation;
 
     static readonly double TimestampToMs = 1000.0 / Stopwatch.Frequency;
@@ -30,6 +32,25 @@ internal sealed class AnimationTimer : IDisposable
     /// 与 16ms 绘制节拍错位时会出现重复帧和跳帧。
     /// </summary>
     public static long NowMs() => (long)(Stopwatch.GetTimestamp() * TimestampToMs);
+
+    /// <summary>
+    /// 所有动画时钟共用的目标帧率（30/60/120，其他值按 60）。修改后正在运行的时钟在下一拍改用新间隔。
+    /// 周期取整为 33 / 16 / 8ms；高精度计时器下实测约 30 / 61 / 120 次每秒，
+    /// 回退到普通计时器的早期 Windows 10 上受系统时钟粒度限制，高档位达不到目标。
+    /// </summary>
+    public static int FrameRate
+    {
+        get => Volatile.Read(ref s_frameRate);
+        set
+        {
+            int fps = Settings.NormalizeAnimationFps(value);
+            Volatile.Write(ref s_intervalMs, IntervalFor(fps));
+            Volatile.Write(ref s_frameRate, fps);
+        }
+    }
+
+    internal static int IntervalFor(int fps) => fps switch { 30 => 33, 120 => 8, _ => 16 };
+    internal int ArmedIntervalMs { get { lock (_gate) return _armedMs; } }
 
     public event EventHandler Tick;
     public bool Enabled { get { lock (_gate) return _enabled; } }
@@ -59,8 +80,7 @@ internal sealed class AnimationTimer : IDisposable
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             if (_enabled) return;
-            long due = -IntervalMs * 10_000L;
-            if (!SetWaitableTimer(_handle.SafeWaitHandle, ref due, IntervalMs, IntPtr.Zero, IntPtr.Zero, false))
+            if (!TryArm(Volatile.Read(ref s_intervalMs)))
                 throw new Win32Exception(Marshal.GetLastWin32Error());
             _enabled = true;
             long generation = ++_generation;
@@ -73,7 +93,11 @@ internal sealed class AnimationTimer : IDisposable
     {
         lock (_gate)
         {
-            if (!_enabled || generation != _generation || _pending) return;
+            if (!_enabled || generation != _generation) return;
+            int interval = Volatile.Read(ref s_intervalMs);
+            // 线程池回调里不抛异常；改间隔失败就继续沿用原间隔。
+            if (interval != _armedMs) TryArm(interval);
+            if (_pending) return;
             _pending = true;
             // 与 Stop/Dispose 串行，避免退出时在 UI 上下文释放后继续投递。
             _context.Post(_ =>
@@ -86,6 +110,14 @@ internal sealed class AnimationTimer : IDisposable
                 Tick?.Invoke(this, EventArgs.Empty);
             }, null);
         }
+    }
+
+    bool TryArm(int interval)
+    {
+        long due = -interval * 10_000L;
+        if (!SetWaitableTimer(_handle.SafeWaitHandle, ref due, interval, IntPtr.Zero, IntPtr.Zero, false)) return false;
+        _armedMs = interval;
+        return true;
     }
 
     public void Stop()
