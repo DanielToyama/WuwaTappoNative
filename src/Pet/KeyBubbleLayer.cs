@@ -15,8 +15,9 @@ public sealed class KeyBubbleLayer : IDisposable
     sealed class Bubble
     {
         public Image Image;
+        public readonly BubbleSprite Sprite = new();
         public int LogicalW, LogicalH;
-        public DateTime Start;
+        public long Start;
         public float OffsetX, OffsetY;
     }
 
@@ -61,11 +62,11 @@ public sealed class KeyBubbleLayer : IDisposable
             Image = image,
             LogicalW = image.Width / RenderScale,
             LogicalH = image.Height / RenderScale,
-            Start = DateTime.UtcNow,
+            Start = Environment.TickCount64,
             OffsetX = offset.X + (float)(_random.NextDouble() * 8 - 4),
             OffsetY = offset.Y + (float)(_random.NextDouble() * 6 - 3) - 36f,
         });
-        if (_items.Count > _maxBubbles) _items.RemoveAt(0);
+        Trim();
         return true;
     }
 
@@ -84,32 +85,48 @@ public sealed class KeyBubbleLayer : IDisposable
             Image = image,
             LogicalW = image.Width / RenderScale,
             LogicalH = image.Height / RenderScale,
-            Start = DateTime.UtcNow,
+            Start = Environment.TickCount64,
             OffsetX = offset.X + (float)(_random.NextDouble() * 8 - 4),
             OffsetY = offset.Y + (float)(_random.NextDouble() * 6 - 3) - 36f,
         });
-        if (_items.Count > _maxBubbles) _items.RemoveAt(0);
+        Trim();
         return true;
+    }
+
+    void Trim()
+    {
+        if (_items.Count <= _maxBubbles) return;
+        _items[0].Sprite.Dispose();
+        _items.RemoveAt(0);
     }
 
     public bool Tick()
     {
-        var now = DateTime.UtcNow;
-        _items.RemoveAll(b => (now - b.Start).TotalMilliseconds >= LifeMs);
+        long now = Environment.TickCount64;
+        for (int i = _items.Count - 1; i >= 0; --i)
+        {
+            if (now - _items[i].Start < LifeMs) continue;
+            _items[i].Sprite.Dispose();
+            _items.RemoveAt(i);
+        }
         return _items.Count > 0;
     }
 
-    public void Clear() => _items.Clear();
+    public void Clear()
+    {
+        foreach (var bubble in _items) bubble.Sprite.Dispose();
+        _items.Clear();
+    }
 
     /// <summary>在猫中心 (cx, cy) 处绘制，scale 为窗口缩放。</summary>
     public void Draw(Graphics g, float scale, float cx, float cy)
     {
         if (_items.Count == 0) return;
-        var now = DateTime.UtcNow;
+        long now = Environment.TickCount64;
         using var attrs = new ImageAttributes();
         foreach (var b in _items)
         {
-            double p = Math.Clamp((now - b.Start).TotalMilliseconds / LifeMs, 0, 1);
+            double p = Math.Clamp((now - b.Start) / (double)LifeMs, 0, 1);
             double ease = 1 - Math.Pow(1 - p, 2);
             double alpha = p < 0.72 ? 1.0 : 1.0 - (p - 0.72) / 0.28;
             if (alpha <= 0.01) continue;
@@ -120,9 +137,9 @@ public sealed class KeyBubbleLayer : IDisposable
             float x = cx + b.OffsetX * scale - w / 2f;
             float y = cy + b.OffsetY * scale - h * 0.72f - (float)(Rise * ease * scale);
             attrs.SetColorMatrix(new ColorMatrix { Matrix33 = (float)alpha });
-            g.DrawImage(b.Image,
+            b.Sprite.Draw(g, b.Image,
                 new Rectangle((int)Math.Round(x), (int)Math.Round(y), Math.Max(1, (int)Math.Round(w)), Math.Max(1, (int)Math.Round(h))),
-                0, 0, b.Image.Width, b.Image.Height, GraphicsUnit.Pixel, attrs);
+                alpha, attrs);
         }
     }
 
@@ -252,7 +269,7 @@ public sealed class KeyBubbleLayer : IDisposable
 
     public void Dispose()
     {
-        _items.Clear();
+        Clear();
         foreach (var image in _cache.Values) image.Dispose();
         _cache.Clear();
     }

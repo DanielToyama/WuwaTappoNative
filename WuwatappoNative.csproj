@@ -38,12 +38,17 @@
   <ItemGroup>
     <!-- token-extractor 是独立项目，不能把它的源码/obj 生成文件编进主程序。 -->
     <Compile Remove="token-extractor\**\*.cs" />
+    <Compile Remove="tests\**\*.cs" />
     <EmbeddedResource Remove="token-extractor\**\*" />
     <None Remove="token-extractor\**\*" />
     <!-- 外层启动器由 installer/build.ps1 用 .NET Framework csc 单独编译。 -->
     <Compile Remove="launcher\**\*.cs" />
     <EmbeddedResource Remove="launcher\**\*" />
     <None Remove="launcher\**\*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="WuwatappoNative.AnimationChecks" />
   </ItemGroup>
 
   <ItemGroup>

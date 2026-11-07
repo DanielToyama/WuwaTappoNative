@@ -28,6 +28,8 @@ public sealed class PetWindow : Form
 
     PetFrames _frames;
     readonly LayeredSurface _surface = new();
+    readonly PetComposer.FrameCache _frameCache = new();
+    AnimationTimer _composeTimer;
     int _bodyFrame = 1, _headFrame = 1;
     bool _dragging, _moved;
     bool _handIsLeft;
@@ -36,7 +38,7 @@ public sealed class PetWindow : Form
     readonly EmoteBubbleLayer _bubbles = new(10);
     readonly KeyBubbleLayer _keyBubbles = new(10);
     readonly EmoteWheelLayer _wheel = new();
-    System.Windows.Forms.Timer _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _wheelShowTimer, _hoverFadeTimer, _loadingTimer, _hoverFadeAnimTimer, _hoverPollTimer;
+    System.Windows.Forms.Timer _blink, _blinkOff, _moveReset, _handReset, _countdownTimer, _wheelCloseTimer, _wheelShowTimer, _hoverFadeTimer, _loadingTimer, _hoverFadeAnimTimer, _hoverPollTimer;
     long _lastSkin = -1, _lastAcc = -1;
     Image _chestBtnArt, _chestBgArt;
     ContextMenuStrip _menu;
@@ -196,7 +198,7 @@ public sealed class PetWindow : Form
         {
             // 窗口内容始终按全不透明绘制；实际透明度交给 UpdateLayeredWindow 常量 alpha。
             // 这样悬停淡出不用每帧重画整张位图，鼠标频繁移动时 CPU 占用会低很多。
-            PetComposer.ComposeInto(surface, _frames, _bodyFrame, _headFrame, info, 1.0);
+            PetComposer.ComposeInto(surface, _frames, _bodyFrame, _headFrame, info, _frameCache);
         }
         else
         {
@@ -351,20 +353,14 @@ public sealed class PetWindow : Form
         _moveReset.Tick += (s, e) => { _moveReset.Stop(); SetBody(1); };
         _handReset = new System.Windows.Forms.Timer { Interval = 220 };
         _handReset.Tick += (s, e) => { _handReset.Stop(); SetBody(1); };
-        _emoteTimer = new System.Windows.Forms.Timer { Interval = 50 };
-        _emoteTimer.Tick += (s, e) =>
+        // 按键、计数、气泡和轮盘统一绘制；没有活动动画或新请求时立即停钟。
+        _composeTimer = new AnimationTimer();
+        _composeTimer.Tick += (s, e) =>
         {
             bool active = _bubbles.Tick();
             bool keyActive = _keyBubbles.Tick();
             Compose();
-            if (!active && !keyActive) _emoteTimer.Stop();
-        };
-        // 表情轮盘展开是低频动画，30fps 足够；每次淡入都按 60fps 全量重绘会把 CPU 拉高。
-        _wheelTimer = new System.Windows.Forms.Timer { Interval = 33 };
-        _wheelTimer.Tick += (s, e) =>
-        {
-            Compose();
-            if (!_wheel.Animating) _wheelTimer.Stop();
+            if (!active && !keyActive && !_wheel.Animating) _composeTimer.Stop();
         };
         _countdownTimer = new System.Windows.Forms.Timer { Interval = 1000 };
         _countdownTimer.Tick += (s, e) =>
@@ -376,7 +372,7 @@ public sealed class PetWindow : Form
             // 宝箱倒计时没显示时不需要每秒重画整只桌宠。
             bool showLeft = left > 0 && (_cfg.AlwaysShowChest || _hovering || left <= now);
             bool showRight = right > 0 && (_cfg.AlwaysShowChest || _hovering || right <= now);
-            if (showLeft || showRight) Compose();
+            if (showLeft || showRight) RequestCompose();
         };
         _countdownTimer.Start();
         _wheelShowTimer = new System.Windows.Forms.Timer { Interval = 250 };
@@ -438,29 +434,10 @@ public sealed class PetWindow : Form
     void SetHead(int f) { if (_headFrame == f) return; _headFrame = f; CaptureChanged?.Invoke(); RequestCompose(); }
     void SetBody(int f) { if (_bodyFrame == f) return; _bodyFrame = f; CaptureChanged?.Invoke(); RequestCompose(); }
 
-    bool _composePending;
-    System.Windows.Forms.Timer _composeTimer;
-
-    /// <summary>
-    /// 高频重绘合并：连打时每次按键都会调 SetBody / 计数变化，直接 Compose 会把 UI 线程
-    /// 塞成一条长队，键盘高亮和计数反而看着“卡住”。这里统一压到约 60fps。
-    /// </summary>
+    /// <summary>同一帧内的按键、计数和动画请求只触发一次绘制，不积压 UI 消息。</summary>
     void RequestCompose()
     {
         if (IsDisposed || !IsHandleCreated) return;
-        _composePending = true;
-        if (_composeTimer == null)
-        {
-            _composeTimer = new System.Windows.Forms.Timer { Interval = 16 };
-            _composeTimer.Tick += (s, e) =>
-            {
-                _composeTimer.Stop();
-                if (!_composePending) return;
-                _composePending = false;
-                Compose();
-            };
-        }
-        if (_composeTimer.Enabled) return;
         _composeTimer.Start();
     }
 
@@ -848,8 +825,7 @@ public sealed class PetWindow : Form
             string url = _catalog.CdnUrl(entry.Url);
             return _store.Get(url, () => Safe(Compose));
         });
-        Compose();
-        _wheelTimer.Start();
+        RequestCompose();
     }
 
     /// <summary>宝箱奖励在头顶弹一个奖励图气泡（自动领取时也给用户可见反馈）。</summary>
@@ -879,25 +855,16 @@ public sealed class PetWindow : Form
     void PushBubble(Image image)
     {
         _bubbles.Add(image);
-        // 高频发表情时只让动画计时器统一重绘，避免每来一个气泡就整窗合成一次。
-        if (!_emoteTimer.Enabled)
-        {
-            Compose();
-            _emoteTimer.Start();
-        }
+        RequestCompose();
     }
 
-    /// <summary>按键边沿生成一个键帽气泡；高频输入由 _emoteTimer 统一按 50ms 合并重绘。</summary>
+    /// <summary>按键边沿生成一个键帽气泡；与表情和动作共享活动动画时钟。</summary>
     void PushKeyBubble(int vk)
     {
         if (!_cfg.KeyBubbles || _hiddenByHotkey || !Visible) return;
         if (vk == 0x01 || vk == 0x02) return; // 鼠标按键只计入点击，不生成键帽气泡
         if (!_keyBubbles.Add(vk)) return;
-        if (!_emoteTimer.Enabled)
-        {
-            Compose();
-            _emoteTimer.Start();
-        }
+        RequestCompose();
     }
 
     /// <summary>手柄按键边沿生成一个键帽气泡；肩键/扳机用浅金色强调。</summary>
@@ -906,11 +873,7 @@ public sealed class PetWindow : Form
         if (!_cfg.KeyBubbles || _hiddenByHotkey || !Visible) return;
         bool accent = label is "LB" or "RB" or "LT" or "RT";
         if (!_keyBubbles.AddLabel(label, accent)) return;
-        if (!_emoteTimer.Enabled)
-        {
-            Compose();
-            _emoteTimer.Start();
-        }
+        RequestCompose();
     }
 
     // ---------- 全局快捷键 ----------
@@ -1753,10 +1716,13 @@ public sealed class PetWindow : Form
         _captureFrame?.Dispose();
         _captureFrame = null;
         _capture = null;
-        foreach (var t in new[] { _blink, _blinkOff, _moveReset, _handReset, _emoteTimer, _wheelTimer, _countdownTimer, _wheelCloseTimer, _wheelShowTimer, _hoverFadeTimer, _hoverFadeAnimTimer, _hoverPollTimer, _loadingTimer, _composeTimer }) { try { t?.Stop(); t?.Dispose(); } catch { } }
+        foreach (var t in new[] { _blink, _blinkOff, _moveReset, _handReset, _countdownTimer, _wheelCloseTimer, _wheelShowTimer, _hoverFadeTimer, _hoverFadeAnimTimer, _hoverPollTimer, _loadingTimer }) { try { t?.Stop(); t?.Dispose(); } catch { } }
         foreach (var c in _cats.Values.ToList()) { try { c.Close(); c.Dispose(); } catch { } }
         _cats.Clear();
+        _composeTimer.Dispose();
+        _bubbles.Clear();
         _keyBubbles.Dispose();
+        _frameCache.Dispose();
         _surface.Dispose();
         _hook.Dispose();
         _tray.Visible = false;

@@ -35,6 +35,8 @@ public sealed class RemoteCatWindow : Form
     long _lastSkin = -1, _lastPart = -1;
     string _lastNickname;
     readonly LayeredSurface _surface = new();
+    Bitmap _baseFrame;
+    (Size Size, Image Head, Image Body, Image Accessory, double X, double Y, float Scale, double NameScale, string Nickname) _baseFrameKey;
     float _scale = 1f;
     bool _dragging;
     Point _dragCursor, _dragOrigin;
@@ -364,12 +366,32 @@ public sealed class RemoteCatWindow : Form
         int w = Math.Max(1, Width), h = Math.Max(1, Height);
         // 复用同一张后缓冲：人多时每个成员每秒都会重画，反复分配 150KB 位图会造成明显的 GC 压力。
         var surface = _surface.Begin(w, h);
+        ComposeInto(surface);
+        // 这里是全不透明内容；悬停/窗口透明度交给 UpdateLayeredWindow 的常量 alpha。
+        _surface.Apply(this, _opacity);
+    }
+
+    internal void ComposeInto(Bitmap surface)
+    {
         bool ready = _frames != null && _frames.Ready;
-        using (var g = Graphics.FromImage(surface))
+        Image selectedBody = _frames == null ? null : _bodyFrame switch
         {
-            g.Clear(Color.Transparent);
-            if (ready)
+            2 => _frames.Body2 ?? _frames.Body1,
+            3 => _frames.Body3 ?? _frames.Body1,
+            _ => _frames.Body1
+        };
+        var key = (surface.Size, _frames?.Head1, selectedBody, _frames?.Accessory,
+            _frames?.AccOffsetX ?? 0, _frames?.AccOffsetY ?? 0, _scale, _remoteNameScale, _member.Nickname);
+        if (ready && (_baseFrame == null || _baseFrameKey != key))
+        {
+            if (_baseFrame == null || _baseFrame.Size != surface.Size)
             {
+                _baseFrame?.Dispose();
+                _baseFrame = new Bitmap(surface.Width, surface.Height, PixelFormat.Format32bppPArgb);
+            }
+            using (var g = Graphics.FromImage(_baseFrame))
+            {
+                g.Clear(Color.Transparent);
                 g.SmoothingMode = SmoothingMode.AntiAlias;
                 g.InterpolationMode = InterpolationMode.HighQualityBicubic;
                 g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
@@ -411,11 +433,19 @@ public sealed class RemoteCatWindow : Form
                     finally { g.Restore(state); }
                 }
 
-                _bubbles.Draw(g, s, 100 * s, (Headroom + 100) * s);
+                _baseFrameKey = key;
             }
         }
-        // 这里是全不透明内容；悬停/窗口透明度交给 UpdateLayeredWindow 的常量 alpha。
-        _surface.Apply(this, _opacity);
+        using var target = Graphics.FromImage(surface);
+        target.Clear(Color.Transparent);
+        if (ready)
+        {
+            target.SmoothingMode = SmoothingMode.AntiAlias;
+            target.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            target.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+            target.DrawImageUnscaled(_baseFrame, 0, 0);
+            _bubbles.Draw(target, _scale, 100 * _scale, (Headroom + 100) * _scale);
+        }
     }
 
     protected override CreateParams CreateParams
@@ -511,10 +541,13 @@ public sealed class RemoteCatWindow : Form
     {
         if (_frames != null) _frames.Changed -= OnFramesChanged;
         RemoteEmoteAnimator.Remove(this);
+        CatPainter.Remove(this);
+        _bubbles.Clear();
         _menu?.Dispose();
         _handReset.Dispose();
         _hoverFadeTimer.Dispose();
         _hoverFadeAnimTimer.Dispose();
+        _baseFrame?.Dispose();
         _surface.Dispose();
         base.OnClosed(e);
     }
@@ -603,12 +636,12 @@ public sealed class LayeredSurface : IDisposable
 }
 
 /// <summary>
-/// 多个远程桌宠共用的表情动画时钟。避免每个成员各自持有一个 20fps WinForms Timer，
+/// 多个远程桌宠共用的活动动画时钟。避免每个成员各自持有一个高频计时器，
 /// 人多时大量 WM_TIMER 消息和重复整窗重绘会抢占 UI 线程。
 /// </summary>
 static class RemoteEmoteAnimator
 {
-    static readonly System.Windows.Forms.Timer Timer = new() { Interval = 50 };
+    static readonly AnimationTimer Timer = new();
     static readonly HashSet<RemoteCatWindow> Active = new();
 
     static RemoteEmoteAnimator()
@@ -665,7 +698,7 @@ static class CatPainter
     const long ImmediateGapMs = 8;
     static readonly List<RemoteCatWindow> Queue = new();
     static readonly HashSet<RemoteCatWindow> Pending = new();
-    static readonly System.Windows.Forms.Timer Timer = new() { Interval = 16 };
+    static readonly AnimationTimer Timer = new();
     static long _lastPaintMs;
 
     static CatPainter()
@@ -694,6 +727,13 @@ static class CatPainter
         if (!Pending.Add(window)) return;
         Queue.Add(window);
         if (!Timer.Enabled) Timer.Start();
+    }
+
+    internal static void Remove(RemoteCatWindow window)
+    {
+        Pending.Remove(window);
+        Queue.Remove(window);
+        if (Queue.Count == 0) Timer.Stop();
     }
 
     static void Pump()

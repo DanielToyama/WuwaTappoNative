@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 
 namespace WuwatappoNative.Pet;
@@ -15,7 +16,8 @@ public sealed class EmoteBubbleLayer
     {
         public long Id;
         public Image Image;
-        public DateTime Start;
+        public readonly BubbleSprite Sprite = new();
+        public long Start;
         public float OffsetX, OffsetY;
     }
 
@@ -51,32 +53,45 @@ public sealed class EmoteBubbleLayer
         {
             Id = ++_nextId,
             Image = image,
-            Start = DateTime.UtcNow,
+            Start = Environment.TickCount64,
             OffsetX = o.X + (float)(_random.NextDouble() * 10 - 5),
             OffsetY = o.Y + (float)(_random.NextDouble() * 8 - 4) - 50f,
         });
-        if (_items.Count > _maxBubbles) _items.RemoveAt(0);
+        if (_items.Count > _maxBubbles)
+        {
+            _items[0].Sprite.Dispose();
+            _items.RemoveAt(0);
+        }
     }
 
     /// <summary>清理过期气泡；返回是否仍有活动气泡。</summary>
     public bool Tick()
     {
-        var now = DateTime.UtcNow;
-        _items.RemoveAll(b => (now - b.Start).TotalMilliseconds >= LifeMs);
+        long now = Environment.TickCount64;
+        for (int i = _items.Count - 1; i >= 0; --i)
+        {
+            if (now - _items[i].Start < LifeMs) continue;
+            _items[i].Sprite.Dispose();
+            _items.RemoveAt(i);
+        }
         return _items.Count > 0;
     }
 
-    public void Clear() => _items.Clear();
+    public void Clear()
+    {
+        foreach (var bubble in _items) bubble.Sprite.Dispose();
+        _items.Clear();
+    }
 
     /// <summary>在猫中心 (cx, cy) 处绘制，scale 为窗口缩放。</summary>
     public void Draw(Graphics g, float scale, float cx, float cy)
     {
         if (_items.Count == 0) return;
-        var now = DateTime.UtcNow;
+        long now = Environment.TickCount64;
         using var attrs = new ImageAttributes();
         foreach (var b in _items)
         {
-            double p = Math.Clamp((now - b.Start).TotalMilliseconds / LifeMs, 0, 1);
+            double p = Math.Clamp((now - b.Start) / (double)LifeMs, 0, 1);
             double ease = 1 - Math.Pow(1 - p, 2); // 近似 ease-out
             double alpha = p < 0.7 ? 1.0 : 1.0 - (p - 0.7) / 0.3;
             if (alpha <= 0.01) continue;
@@ -89,7 +104,39 @@ public sealed class EmoteBubbleLayer
             var dest = new Rectangle(
                 (int)Math.Round(x), (int)Math.Round(y),
                 Math.Max(1, (int)Math.Round(size)), Math.Max(1, (int)Math.Round(size)));
-            g.DrawImage(b.Image, dest, 0, 0, b.Image.Width, b.Image.Height, GraphicsUnit.Pixel, attrs);
+            b.Sprite.Draw(g, b.Image, dest, alpha, attrs);
         }
+    }
+}
+
+/// <summary>每个活动气泡只保留当前像素尺寸的缩略图，避免每帧重复高质量缩放。</summary>
+internal sealed class BubbleSprite : IDisposable
+{
+    Bitmap _scaled;
+    PixelOffsetMode _pixelOffset;
+    InterpolationMode _interpolation;
+
+    internal void Draw(Graphics target, Image source, Rectangle destination, double alpha, ImageAttributes attributes)
+    {
+        if (_scaled == null || _scaled.Size != destination.Size ||
+            _pixelOffset != target.PixelOffsetMode || _interpolation != target.InterpolationMode)
+        {
+            _scaled?.Dispose();
+            _scaled = new Bitmap(destination.Width, destination.Height, PixelFormat.Format32bppPArgb);
+            _pixelOffset = target.PixelOffsetMode;
+            _interpolation = target.InterpolationMode;
+            using var g = Graphics.FromImage(_scaled);
+            g.InterpolationMode = _interpolation;
+            g.PixelOffsetMode = _pixelOffset;
+            g.DrawImage(source, new Rectangle(Point.Empty, destination.Size), 0, 0, source.Width, source.Height, GraphicsUnit.Pixel);
+        }
+        if (alpha >= 0.999) target.DrawImageUnscaled(_scaled, destination.Location);
+        else target.DrawImage(_scaled, destination, 0, 0, _scaled.Width, _scaled.Height, GraphicsUnit.Pixel, attributes);
+    }
+
+    public void Dispose()
+    {
+        _scaled?.Dispose();
+        _scaled = null;
     }
 }

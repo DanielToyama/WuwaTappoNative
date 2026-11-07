@@ -219,6 +219,12 @@ public static class PetComposer
 
     /// <summary>把同一帧画到已有位图上（窗口重绘很频繁，避免每次分配新位图）。</summary>
     public static void ComposeInto(Bitmap bmp, PetFrames f, int bodyFrame, int headFrame, Info info, double opacity = 1.0)
+        => ComposeInto(bmp, f, bodyFrame, headFrame, info, opacity, null);
+
+    internal static void ComposeInto(Bitmap bmp, PetFrames f, int bodyFrame, int headFrame, Info info, FrameCache cache)
+        => ComposeInto(bmp, f, bodyFrame, headFrame, info, 1.0, cache);
+
+    static void ComposeInto(Bitmap bmp, PetFrames f, int bodyFrame, int headFrame, Info info, double opacity, FrameCache cache)
     {
         using var g = Graphics.FromImage(bmp);
         g.Clear(Color.Transparent);
@@ -231,14 +237,9 @@ public static class PetComposer
         Image head = headFrame == 2 ? f.Head2 ?? f.Head1 : f.Head1;
         Image body = bodyFrame switch { 2 => f.Body2 ?? f.Body1, 3 => f.Body3 ?? f.Body1, _ => f.Body1 };
         var cat = new Rectangle((int)Math.Round(CatX * s), (int)Math.Round(CatY * s), (int)Math.Round(CatSize * s), (int)Math.Round(CatSize * s));
-        if (head != null) g.DrawImage(head, cat);
-        if (body != null) g.DrawImage(body, cat);
-        if (f.Accessory != null)
-        {
-            int ax = (int)Math.Round((CatX + f.AccOffsetX + info.AccOffsetX) * s);
-            int ay = (int)Math.Round((CatY + f.AccOffsetY + info.AccOffsetY) * s);
-            g.DrawImage(f.Accessory, ax, ay, cat.Width, cat.Height);
-        }
+        if (cache == null) DrawCharacter(g, s, head, body, f.Accessory, f.AccOffsetX + info.AccOffsetX, f.AccOffsetY + info.AccOffsetY, cat);
+        else cache.DrawCharacter(g, bmp.Size, s, head, body, f.Accessory,
+            f.AccOffsetX + info.AccOffsetX, f.AccOffsetY + info.AccOffsetY, cat);
 
         if (info.Bubbles != null)
             info.Bubbles.Draw(g, s, (CatX + CatSize / 2f) * s, (CatY + CatSize / 2f) * s);
@@ -247,9 +248,13 @@ public static class PetComposer
         DrawChests(g, s, info);
         info.Wheel?.Draw(g, s, CatX, CatY);
 
-        DrawStrip(g, s, info, bmp.Height);
-        // 手/手臂单独盖在计数条和工具栏上：角色本体在 UI 后面，但拍桌的手要压住 UI。
-        DrawHandsOverStrip(g, s, body, cat, bmp.Height);
+        // 气泡、宝箱、轮盘仍在底栏后面，不能把整个桌宠合成一张背景缓存。
+        if (cache == null)
+        {
+            DrawStrip(g, s, info, bmp.Height);
+            DrawHandsOverStrip(g, s, body, cat, bmp.Height);
+        }
+        else cache.DrawStrip(g, bmp.Size, s, info, body, cat);
         if (info.Loading) DrawLoading(g, s, info.LoadingPhase, CatX + CatSize - 30, CatY + 30);
         if (opacity < 0.999)
         {
@@ -260,6 +265,83 @@ public static class PetComposer
             using (var cg = Graphics.FromImage(copy)) cg.DrawImage(bmp, 0, 0);
             g.Clear(Color.Transparent);
             g.DrawImage(copy, new Rectangle(0, 0, copy.Width, copy.Height), 0, 0, copy.Width, copy.Height, GraphicsUnit.Pixel, attrs);
+        }
+    }
+
+    static void DrawCharacter(Graphics g, float s, Image head, Image body, Image accessory, double offsetX, double offsetY, Rectangle cat)
+    {
+        if (head != null) g.DrawImage(head, cat);
+        if (body != null) g.DrawImage(body, cat);
+        if (accessory != null)
+        {
+            int ax = (int)Math.Round((CatX + offsetX) * s);
+            int ay = (int)Math.Round((CatY + offsetY) * s);
+            g.DrawImage(accessory, ax, ay, cat.Width, cat.Height);
+        }
+    }
+
+    /// <summary>每个窗口只保留当前角色层和底栏层；图片到货、动作、偏移、尺寸变化均按实际值失效。</summary>
+    internal sealed class FrameCache : IDisposable
+    {
+        Bitmap _character, _strip;
+        (Size Size, Image Head, Image Body, Image Accessory, double X, double Y) _characterKey;
+        (Size Size, Image Body, long Clicks, bool KeyboardOn) _stripKey;
+
+        internal void DrawCharacter(Graphics target, Size size, float scale, Image head, Image body, Image accessory,
+            double offsetX, double offsetY, Rectangle cat)
+        {
+            var key = (size, head, body, accessory, offsetX, offsetY);
+            if (_character == null || _characterKey != key)
+            {
+                Prepare(ref _character, size);
+                using var g = Graphics.FromImage(_character);
+                Configure(g);
+                PetComposer.DrawCharacter(g, scale, head, body, accessory, offsetX, offsetY, cat);
+                _characterKey = key;
+            }
+            target.DrawImageUnscaled(_character, 0, 0);
+        }
+
+        internal void DrawStrip(Graphics target, Size size, float scale, Info info, Image body, Rectangle cat)
+        {
+            var key = (size, body, info.Clicks, info.KeyboardOn);
+            if (_strip == null || _stripKey != key)
+            {
+                Prepare(ref _strip, size);
+                using var g = Graphics.FromImage(_strip);
+                Configure(g);
+                PetComposer.DrawStrip(g, scale, info, size.Height);
+                DrawHandsOverStrip(g, scale, body, cat, size.Height);
+                _stripKey = key;
+            }
+            target.DrawImageUnscaled(_strip, 0, 0);
+        }
+
+        static void Prepare(ref Bitmap bitmap, Size size)
+        {
+            if (bitmap == null || bitmap.Size != size)
+            {
+                bitmap?.Dispose();
+                bitmap = new Bitmap(size.Width, size.Height, PixelFormat.Format32bppPArgb);
+            }
+        }
+
+        static void Configure(Graphics g)
+        {
+            g.Clear(Color.Transparent);
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+        }
+
+        public void Dispose()
+        {
+            _character?.Dispose();
+            _strip?.Dispose();
+            _character = _strip = null;
+            _characterKey = default;
+            _stripKey = default;
         }
     }
 
