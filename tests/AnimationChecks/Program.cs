@@ -117,10 +117,16 @@ internal static partial class Program
             info.NowMs = 100_000; Verify("claimable chest");
             info.Loading = true; info.LoadingPhase = 0.25; Verify("loading layer");
             info.Loading = false;
+            var wheel = new EmoteWheelLayer();
+            wheel.Show(new long[] { 1, 2, 3, 4, 5 }, _ => other);
+            Field(wheel, "_openedAt").SetValue(wheel, DateTime.UtcNow.AddSeconds(-2));
+            info.Wheel = wheel; Verify("wheel below strip");
+            info.Wheel = null;
             var bubbles = new EmoteBubbleLayer();
             bubbles.Add(other); FreezeBubbles(bubbles, 0, 140);
             info.Bubbles = bubbles; Verify("bubble below strip");
             info.Bubbles = null;
+            bubbles.Clear();
             using var keys = new KeyBubbleLayer();
             keys.Add(65); FreezeBubbles(keys, 0, 150);
             info.KeyBubbles = keys; Verify("key bubble below strip");
@@ -166,11 +172,10 @@ internal static partial class Program
             void Verify(string label)
             {
                 window.ComposeInto(actual);
-                // Force regeneration for a reference frame without changing any inputs.
-                var key = Field(window, "_baseFrameKey");
-                key.SetValue(window, Activator.CreateInstance(key.FieldType));
-                window.ComposeInto(expected);
-                SamePixels(expected, actual, $"remote {scale}: {label}");
+                var bubbles = (EmoteBubbleLayer)Field(window, "_bubbles").GetValue(window)!;
+                DrawOriginalRemote(expected, frames, (int)Field(window, "_bodyFrame").GetValue(window)!,
+                    scale, (double)Field(window, "_remoteNameScale").GetValue(window)!, member, bubbles);
+                SamePixels(expected, actual, $"remote {scale}: {label}", 2);
             }
             Verify("first frame");
             var cached = Field(window, "_baseFrame").GetValue(window);
@@ -188,12 +193,27 @@ internal static partial class Program
             bubbles.Add(acc); FreezeBubbles(bubbles); Verify("bubble above nickname");
             bubbles.Clear();
         }
-        CatPainter.Request(window);
-        CatPainter.Request(window);
-        CatPainter.Request(window);
-        window.Close();
+        // Create a hidden handle and force the queued path, rather than letting Request return early.
+        _ = window.Handle;
+        var lastPaint = typeof(CatPainter).GetField("_lastPaintMs", BindingFlags.Static | BindingFlags.NonPublic)!;
+        var previousPaint = lastPaint.GetValue(null);
+        try
+        {
+            lastPaint.SetValue(null, Environment.TickCount64 + 60_000);
+            CatPainter.Request(window);
+            CatPainter.Request(window);
+            CatPainter.Request(window);
+        }
+        finally { lastPaint.SetValue(null, previousPaint); }
         var painterTimer = (AnimationTimer)typeof(CatPainter).GetField("Timer", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!;
-        Assert(!painterTimer.Enabled, "Closing the last queued remote window must stop its painter clock.");
+        var queue = (IList)typeof(CatPainter).GetField("Queue", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!;
+        Assert(painterTimer.Enabled && queue.Count == 1, "Repeated requests must queue one window and start the painter clock.");
+        RemoteEmoteAnimator.Add(window);
+        var emoteTimer = (AnimationTimer)typeof(RemoteEmoteAnimator).GetField("Timer", BindingFlags.Static | BindingFlags.NonPublic)!.GetValue(null)!;
+        Assert(emoteTimer.Enabled, "Adding a remote emote must start its animation clock.");
+        window.Close();
+        Assert(!painterTimer.Enabled && queue.Count == 0, "Closing the last queued remote window must clear its queue and stop its painter clock.");
+        Assert(!emoteTimer.Enabled, "Closing the last animating remote window must stop its emote clock.");
         Console.WriteLine("PASS: remote cache invalidates correctly and retains bubble layering.");
     }
 
@@ -333,6 +353,7 @@ internal static partial class Program
             }
             double original = Run(false), updated = Run(true);
             Console.WriteLine($"Compose {image.Width}x{image.Height}, emotes={count}: original-reference={original:F3}ms, cached={updated:F3}ms, reduction={(1 - updated / original) * 100:F1}% (excludes ULW/DWM/game)");
+            bubbles.Clear();
         }
     }
 }

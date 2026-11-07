@@ -3,7 +3,7 @@
 要求 Windows 10/11、.NET 8 SDK；没有额外测试框架依赖。
 
 ```powershell
-cd M:\WuwaTappoNative
+cd WuwaTappoNative
 dotnet run --project tests/AnimationChecks/AnimationChecks.csproj -c Release
 ```
 
@@ -16,8 +16,8 @@ dotnet run --project tests/AnimationChecks/AnimationChecks.csproj -c Release
 ## 检查内容
 
 - 主桌宠缓存与未缓存绘制在 25%、100%、125%、200% 尺寸下的像素对照；头像/身体/头饰到货、手部/眨眼、计数、键盘开关、头饰偏移、宝箱、加载指示器和图层顺序。
-- 联机桌宠缓存命中/失效、昵称/字号、尺寸、动作、图片替换、气泡图层顺序，以及关闭最后一个待绘制窗口时停钟。
-- 气泡缩略图与原始高质量缩放算法在不同大小、透明度、像素偏移模式下的像素对照。分层预乘 alpha 合成允许最大 2/255 的通道舍入差；缓存失效的新旧结果必须逐字节相同。
+- 联机桌宠与上游 0.1.7 独立绘制快照的像素对照；缓存命中/失效、昵称/字号、尺寸、动作、图片替换、气泡图层顺序，以及真实隐藏句柄入队后关闭最后一个窗口时清空队列并停钟。
+- 气泡缩略图与原始高质量缩放算法在不同大小、透明度、像素偏移模式下的像素对照。分层预乘 alpha 合成允许最大 2/255 的通道舍入差。
 - 气泡数量上限、生命周期、到期/淘汰时释放缩略图。
 - 动画 Tick 在 UI 线程执行、阻塞 UI 时最多一个待处理通知、停止后不再 Tick、可重新启动与释放。
 
@@ -31,7 +31,7 @@ dotnet run --project tests/AnimationChecks/AnimationChecks.csproj -c Release
 
 ## 手动试用构建产物
 
-修复测试版位于 `M:\WuwaTappoNative\publish\animation-test\WuwatappoNative.exe`（生成后）。它与已安装版共用 `%LOCALAPPDATA%\WuwatappoNative`，不是独立账号沙盒：
+可用 `dotnet publish WuwatappoNative.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:IncludeAllContentForSelfExtract=true -o publish/animation-test` 生成本地单文件测试版，运行 `publish/animation-test/WuwatappoNative.exe`。它与已安装版共用 `%LOCALAPPDATA%\WuwatappoNative`，不是独立账号沙盒：
 
 1. 先从托盘正常退出原版，并备份用户数据目录中的 `config.json` 和 `state.json`。不要把含凭证的备份上传。
 2. 启动测试版，连续发表情/敲键、切换大小和外观；有联机条件时再观察远端表情。
