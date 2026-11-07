@@ -65,13 +65,13 @@ internal static partial class Program
     static void SetProgress(EmoteBubbleLayer layer, double progress)
     {
         var items = (IList)Field(layer, "_items").GetValue(layer)!;
-        foreach (var item in items) item.GetType().GetField("Start")!.SetValue(item, Environment.TickCount64 - (long)(progress * 1000));
+        foreach (var item in items) item.GetType().GetField("Start")!.SetValue(item, AnimationTimer.NowMs() - (long)(progress * 1000));
     }
 
     // Snapshot of the original per-frame scaling algorithm, used only for performance comparison.
     static void DrawOriginalEmotes(Graphics g, EmoteBubbleLayer layer, float scale, float cx, float cy)
     {
-        long now = Environment.TickCount64;
+        long now = AnimationTimer.NowMs();
         var items = (IList)Field(layer, "_items").GetValue(layer)!;
         using var attributes = new ImageAttributes();
         foreach (var item in items)

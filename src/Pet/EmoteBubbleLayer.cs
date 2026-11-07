@@ -53,7 +53,7 @@ public sealed class EmoteBubbleLayer
         {
             Id = ++_nextId,
             Image = image,
-            Start = Environment.TickCount64,
+            Start = AnimationTimer.NowMs(),
             OffsetX = o.X + (float)(_random.NextDouble() * 10 - 5),
             OffsetY = o.Y + (float)(_random.NextDouble() * 8 - 4) - 50f,
         });
@@ -67,7 +67,7 @@ public sealed class EmoteBubbleLayer
     /// <summary>清理过期气泡；返回是否仍有活动气泡。</summary>
     public bool Tick()
     {
-        long now = Environment.TickCount64;
+        long now = AnimationTimer.NowMs();
         for (int i = _items.Count - 1; i >= 0; --i)
         {
             if (now - _items[i].Start < LifeMs) continue;
@@ -87,7 +87,7 @@ public sealed class EmoteBubbleLayer
     public void Draw(Graphics g, float scale, float cx, float cy)
     {
         if (_items.Count == 0) return;
-        long now = Environment.TickCount64;
+        long now = AnimationTimer.NowMs();
         using var attrs = new ImageAttributes();
         foreach (var b in _items)
         {

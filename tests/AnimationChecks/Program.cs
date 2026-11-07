@@ -146,7 +146,7 @@ internal static partial class Program
         foreach (var item in items)
         {
             var type = item.GetType();
-            type.GetField("Start")!.SetValue(item, Environment.TickCount64 + 60_000);
+            type.GetField("Start")!.SetValue(item, AnimationTimer.NowMs() + 60_000);
             if (offsetX.HasValue) type.GetField("OffsetX")!.SetValue(item, offsetX.Value);
             if (offsetY.HasValue) type.GetField("OffsetY")!.SetValue(item, offsetY.Value);
         }
@@ -220,7 +220,7 @@ internal static partial class Program
     static void Expire(object layer)
     {
         var items = (IList)Field(layer, "_items").GetValue(layer)!;
-        foreach (var item in items) item.GetType().GetField("Start")!.SetValue(item, Environment.TickCount64 - 1001);
+        foreach (var item in items) item.GetType().GetField("Start")!.SetValue(item, AnimationTimer.NowMs() - 1001);
     }
 
     static void CheckBubbles()
@@ -286,7 +286,21 @@ internal static partial class Program
         Assert(ticks == 2, "Timer must restart without stale ticks.");
         timer.Dispose();
         Assert(!timer.Enabled, "Disposed timer must be stopped.");
-        Console.WriteLine("PASS: high-resolution UI timer stop/restart/dispose and bounded pending queue.");
+        // 动画进度时钟需要毫秒级分辨率；TickCount64 约 15.6ms 才跳一次，200ms 内只有十几个值。
+        var distinct = new HashSet<long>();
+        long last = AnimationTimer.NowMs();
+        bool monotonic = true;
+        var probe = Stopwatch.StartNew();
+        while (probe.ElapsedMilliseconds < 200)
+        {
+            long now = AnimationTimer.NowMs();
+            monotonic &= now >= last;
+            last = now;
+            distinct.Add(now);
+        }
+        Assert(monotonic, "Animation progress clock must be monotonic.");
+        Assert(distinct.Count >= 150, $"Animation progress clock is too coarse: {distinct.Count} values in 200ms.");
+        Console.WriteLine("PASS: high-resolution UI timer stop/restart/dispose, bounded pending queue, and millisecond progress clock.");
     }
 
     static double MeasureClock(string label, bool precise, int interval)

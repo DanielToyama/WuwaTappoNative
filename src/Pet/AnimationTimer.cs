@@ -1,5 +1,6 @@
 using System;
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Windows.Forms;
@@ -21,6 +22,14 @@ internal sealed class AnimationTimer : IDisposable
     RegisteredWaitHandle _registration;
     bool _enabled, _pending, _disposed;
     long _generation;
+
+    static readonly double TimestampToMs = 1000.0 / Stopwatch.Frequency;
+
+    /// <summary>
+    /// 动画进度用的单调毫秒时钟。Environment.TickCount64 约 15.6ms 才跳一次，
+    /// 与 16ms 绘制节拍错位时会出现重复帧和跳帧。
+    /// </summary>
+    public static long NowMs() => (long)(Stopwatch.GetTimestamp() * TimestampToMs);
 
     public event EventHandler Tick;
     public bool Enabled { get { lock (_gate) return _enabled; } }

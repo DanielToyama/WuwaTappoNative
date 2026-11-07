@@ -62,7 +62,7 @@ public sealed class KeyBubbleLayer : IDisposable
             Image = image,
             LogicalW = image.Width / RenderScale,
             LogicalH = image.Height / RenderScale,
-            Start = Environment.TickCount64,
+            Start = AnimationTimer.NowMs(),
             OffsetX = offset.X + (float)(_random.NextDouble() * 8 - 4),
             OffsetY = offset.Y + (float)(_random.NextDouble() * 6 - 3) - 36f,
         });
@@ -85,7 +85,7 @@ public sealed class KeyBubbleLayer : IDisposable
             Image = image,
             LogicalW = image.Width / RenderScale,
             LogicalH = image.Height / RenderScale,
-            Start = Environment.TickCount64,
+            Start = AnimationTimer.NowMs(),
             OffsetX = offset.X + (float)(_random.NextDouble() * 8 - 4),
             OffsetY = offset.Y + (float)(_random.NextDouble() * 6 - 3) - 36f,
         });
@@ -102,7 +102,7 @@ public sealed class KeyBubbleLayer : IDisposable
 
     public bool Tick()
     {
-        long now = Environment.TickCount64;
+        long now = AnimationTimer.NowMs();
         for (int i = _items.Count - 1; i >= 0; --i)
         {
             if (now - _items[i].Start < LifeMs) continue;
@@ -122,7 +122,7 @@ public sealed class KeyBubbleLayer : IDisposable
     public void Draw(Graphics g, float scale, float cx, float cy)
     {
         if (_items.Count == 0) return;
-        long now = Environment.TickCount64;
+        long now = AnimationTimer.NowMs();
         using var attrs = new ImageAttributes();
         foreach (var b in _items)
         {
