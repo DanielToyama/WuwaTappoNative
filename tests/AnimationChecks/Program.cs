@@ -4,6 +4,8 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Text.Json;
+using WuwatappoNative.Core;
 using WuwatappoNative.Assets;
 using WuwatappoNative.Net;
 using WuwatappoNative.Pet;
@@ -25,6 +27,7 @@ internal static partial class Program
             CheckSprites();
             CheckBubbles();
             CheckClockLifecycle();
+            CheckFrameRateSetting();
             MeasureClocks();
             Benchmark();
             Console.WriteLine($"PASS: {_checks} assertions.");
@@ -303,6 +306,40 @@ internal static partial class Program
         Console.WriteLine("PASS: high-resolution UI timer stop/restart/dispose, bounded pending queue, and millisecond progress clock.");
     }
 
+    static void CheckFrameRateSetting()
+    {
+        foreach (var (input, expected) in new[] { (30, 30), (60, 60), (120, 120), (0, 60), (45, 60), (144, 60), (-1, 60) })
+        {
+            Assert(Settings.NormalizeAnimationFps(input) == expected, $"Config must normalize {input} FPS to {expected}.");
+            AnimationTimer.FrameRate = input;
+            Assert(AnimationTimer.FrameRate == expected, $"Animation clock must normalize {input} FPS to {expected}.");
+        }
+        Assert(AnimationTimer.IntervalFor(30) == 33 && AnimationTimer.IntervalFor(60) == 16 && AnimationTimer.IntervalFor(120) == 8,
+            "Frame rates must map to 33/16/8 ms periods.");
+        Assert(JsonSerializer.Deserialize<Settings>("{}")!.AnimationFps == 60, "Existing configs without the field must default to 60 FPS.");
+        Assert(JsonSerializer.Deserialize<Settings>(JsonSerializer.Serialize(new Settings { AnimationFps = 120 }))!.AnimationFps == 120,
+            "Animation FPS must round-trip through config JSON.");
+
+        // 正在运行的时钟切换帧率后应在下一拍改用新间隔，不必等动画停止后重启。
+        AnimationTimer.FrameRate = 60;
+        using var app = new ApplicationContext();
+        using var timer = new AnimationTimer();
+        using var timeout = new System.Windows.Forms.Timer { Interval = 2000 };
+        int ticks = 0, startArmed = 0, switchedArmed = 0;
+        timer.Tick += (_, _) =>
+        {
+            if (++ticks == 1) { startArmed = timer.ArmedIntervalMs; AnimationTimer.FrameRate = 120; }
+            else if (ticks == 3) { switchedArmed = timer.ArmedIntervalMs; timer.Stop(); timeout.Stop(); app.ExitThread(); }
+        };
+        timeout.Tick += (_, _) => { timeout.Stop(); timer.Stop(); app.ExitThread(); };
+        timer.Start(); timeout.Start();
+        Application.Run(app);
+        AnimationTimer.FrameRate = 60;
+        Assert(ticks >= 3, "Animation clock stopped ticking after a frame-rate change.");
+        Assert(startArmed == 16 && switchedArmed == 8, $"Running clock must re-arm from 16ms to 8ms (got {startArmed} -> {switchedArmed}).");
+        Console.WriteLine("PASS: 30/60/120 FPS setting normalization, config default/round-trip, and live re-arm.");
+    }
+
     static double MeasureClock(string label, bool precise, int interval)
     {
         using var app = new ApplicationContext();
@@ -327,7 +364,12 @@ internal static partial class Program
     {
         MeasureClock("Original WinForms 50ms", false, 50);
         MeasureClock("WinForms 16ms", false, 16);
-        MeasureClock("New AnimationTimer 16ms", true, 16);
+        foreach (int fps in new[] { 30, 60, 120 })
+        {
+            AnimationTimer.FrameRate = fps;
+            MeasureClock($"AnimationTimer {fps} FPS setting", true, 0);
+        }
+        AnimationTimer.FrameRate = 60;
     }
 
     static void Benchmark()
