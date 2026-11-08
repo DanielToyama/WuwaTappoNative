@@ -402,10 +402,12 @@ public sealed class PanelWindow : Form
         appearance = new
         {
             characterAssetId = _app.Cfg.CharacterAssetId,
+            characterRoleId = _app.Catalog.Find("character_skin", _app.Cfg.CharacterAssetId)?.GameRoleId ?? 0,
             accessoryAssetId = _app.Cfg.AccessoryAssetId,
             accessoryOffsetX = _app.Pet.AccessoryOffsetFor(_app.Cfg.AccessoryAssetId).x,
             accessoryOffsetY = _app.Pet.AccessoryOffsetFor(_app.Cfg.AccessoryAssetId).y,
             emoteAssetIds = _app.Cfg.EmoteAssetIds,
+            cloudEmoteAssetIds = _app.Cfg.CloudEmoteAssetIds,
         },
         catalog = new
         {
@@ -730,8 +732,10 @@ public sealed class PanelWindow : Form
             {
                 int slot = (int)ApiClient.ReadLong(data["slot"]);
                 long id = ApiClient.ReadLong(data["id"]);
+                if (slot < 0 || slot >= 5) throw new ApiException(-1, "槽位无效");
+                if (ApiClient.ReadBool(data["upload"]))
+                    return await UploadEmoteSlotAsync(slot, id);
                 var slots = cfg.EmoteAssetIds ?? new long[5];
-                if (slot < 0 || slot >= slots.Length) throw new ApiException(-1, "槽位无效");
                 slots[slot] = id;
                 cfg.EmoteAssetIds = slots;
                 cfg.LocalEmoteSlots = true;
@@ -739,6 +743,32 @@ public sealed class PanelWindow : Form
                 Log.Write($"表情槽位 {slot} = {id}（仅本地）");
                 _app.Pet.BeginInvoke(new Action(() => _app.Pet.OnEmoteSlotsChanged()));
                 return BootPayload();
+            }
+
+            case "appearance.emoteStatus":
+            {
+                long id = ApiClient.ReadLong(data["id"]);
+                await EnsureOwnedAssetsAsync();
+                var emote = _app.Catalog.Find("emote", id);
+                long currentRole = CurrentCharacterRoleId();
+                long emoteRole = emote?.GameRoleId ?? 0;
+                bool owned = IsOwned("emote", id);
+                bool characterOwned = IsOwned("character_skin", cfg.CharacterAssetId);
+                bool roleMatch = emoteRole <= 0 || emoteRole == 2000 || (currentRole > 0 && emoteRole == currentRole);
+                string reason = !owned ? "未拥有该表情"
+                    : !characterOwned ? "当前角色未拥有"
+                    : !roleMatch ? "表情属于其他角色"
+                    : "";
+                return new
+                {
+                    owned,
+                    characterOwned,
+                    currentRole,
+                    emoteRole,
+                    roleMatch,
+                    canUpload = owned && characterOwned && roleMatch,
+                    reason,
+                };
             }
 
             case "appearance.sync":
@@ -825,7 +855,8 @@ public sealed class PanelWindow : Form
             case "emote.send":
             {
                 long emoteId = ApiClient.ReadLong(data["id"]);
-                await _app.Room.SendEmoteAsync(emoteId);
+                // 走桌宠本地表情入口：同时显示本地表情气泡并发送到房间。
+                _app.Pet.BeginInvoke(new Action(() => _app.Pet.SendEmoteById(emoteId)));
                 return new { sent = true };
             }
 
@@ -1067,14 +1098,49 @@ public sealed class PanelWindow : Form
 
             case "presets.create":
             {
-                // 预设同样只使用云端已验证的角色/配件/表情，避免把本地未拥有内容写进云端预设。
-                var cloud = await ResolveCloudAppearanceAsync();
+                bool includeEmotes = data.ContainsKey("includeEmotes") && ApiClient.ReadBool(data["includeEmotes"]);
+                var cloud = await BuildCloudPresetAsync(data, includeEmotes);
                 return await auth.Api.PostAsync("api/frontend/presets", new
                 {
                     character_asset_id = cloud.character,
                     accessory_asset_id = cloud.accessory,
-                    emote_asset_ids = (cfg.CloudEmoteAssetIds ?? Array.Empty<long>()).Where(id => id > 0).ToArray(),
+                    emote_asset_ids = cloud.emotes,
                 });
+            }
+
+            case "presets.local.list":
+                return MapLocalPresets(cfg.LocalPresets);
+
+            case "presets.local.save":
+            {
+                string id = ApiClient.ReadString(data["id"]).Trim();
+                string name = ApiClient.ReadString(data["name"]).Trim();
+                if (string.IsNullOrEmpty(name)) name = "本地预设";
+                long character = ApiClient.ReadLong(data["characterAssetId"]);
+                long accessory = ApiClient.ReadLong(data["accessoryAssetId"]);
+                var emotes = ReadEmoteSlots(data["emoteAssetIds"]);
+                var preset = string.IsNullOrEmpty(id)
+                    ? null
+                    : cfg.LocalPresets.FirstOrDefault(p => string.Equals(p.Id, id, StringComparison.Ordinal));
+                if (preset == null)
+                {
+                    preset = new LocalPreset { Id = Guid.NewGuid().ToString("N") };
+                    cfg.LocalPresets.Add(preset);
+                }
+                preset.Name = name;
+                preset.CharacterAssetId = character;
+                preset.AccessoryAssetId = accessory;
+                preset.EmoteAssetIds = emotes;
+                ConfigStore.Save(cfg);
+                return MapLocalPresets(cfg.LocalPresets);
+            }
+
+            case "presets.local.delete":
+            {
+                string id = ApiClient.ReadString(data["id"]);
+                cfg.LocalPresets.RemoveAll(p => string.Equals(p.Id, id, StringComparison.Ordinal));
+                ConfigStore.Save(cfg);
+                return MapLocalPresets(cfg.LocalPresets);
             }
 
             case "presets.delete":
@@ -1194,6 +1260,111 @@ public sealed class PanelWindow : Form
         return _ownedAssets.TryGetValue(type, out var owned) && owned.Contains(id);
     }
 
+    long CurrentCharacterRoleId()
+        => _app.Catalog.Find("character_skin", _app.Cfg.CharacterAssetId)?.GameRoleId ?? 0;
+
+    bool EmoteMatchesCharacter(long characterId, long emoteId)
+    {
+        var character = _app.Catalog.Find("character_skin", characterId);
+        var emote = _app.Catalog.Find("emote", emoteId);
+        long characterRole = character?.GameRoleId ?? 0;
+        long emoteRole = emote?.GameRoleId ?? 0;
+        return emoteRole <= 0 || emoteRole == 2000 || (characterRole > 0 && characterRole == emoteRole);
+    }
+
+    async Task<object> UploadEmoteSlotAsync(int slot, long id)
+    {
+        await EnsureOwnedAssetsAsync();
+        var cfg = _app.Cfg;
+        if (!IsOwned("emote", id))
+            throw new ApiException(-1, "未拥有该表情，不能上传云端");
+        if (!IsOwned("character_skin", cfg.CharacterAssetId))
+            throw new ApiException(-1, "当前角色未拥有，不能上传云端表情");
+        if (!EmoteMatchesCharacter(cfg.CharacterAssetId, id))
+            throw new ApiException(-1, "该表情属于其他角色，不能上传云端");
+
+        var cloudSlots = NormalizeEmoteSlots(cfg.CloudEmoteAssetIds);
+        cloudSlots[slot] = id;
+        var (uploadChar, uploadAcc, _, _) = await ResolveCloudAppearanceAsync();
+        await _app.Auth.Api.PutAsync("api/frontend/user/me/appearance", new
+        {
+            character_asset_id = uploadChar,
+            accessory_asset_id = uploadAcc,
+            emote_asset_ids = cloudSlots.Where(x => x > 0).ToArray(),
+        });
+
+        var localSlots = NormalizeEmoteSlots(cfg.EmoteAssetIds);
+        localSlots[slot] = id;
+        cfg.CloudCharacterAssetId = uploadChar;
+        cfg.CloudAccessoryAssetId = uploadAcc;
+        cfg.CloudEmoteAssetIds = cloudSlots;
+        cfg.EmoteAssetIds = localSlots;
+        cfg.LocalEmoteSlots = true;
+        ConfigStore.Save(cfg);
+        try { await _app.Auth.WhoAmIAsync(); } catch (Exception ex) { Log.Write("上传表情后刷新账号失败 " + ex.Message); }
+        await _app.Room.AnnounceAppearanceAsync();
+        _app.Pet.BeginInvoke(new Action(() => _app.Pet.OnEmoteSlotsChanged()));
+        Log.Write($"表情槽位 {slot} = {id}（已上传云端）");
+        return BootPayload();
+    }
+
+    async Task<(long character, long accessory, long[] emotes)> BuildCloudPresetAsync(JsonObject data, bool includeEmotes)
+    {
+        await EnsureOwnedAssetsAsync();
+        var cfg = _app.Cfg;
+        long character = data.ContainsKey("characterAssetId")
+            ? ApiClient.ReadLong(data["characterAssetId"])
+            : cfg.CharacterAssetId;
+        long accessory = data.ContainsKey("accessoryAssetId")
+            ? ApiClient.ReadLong(data["accessoryAssetId"])
+            : cfg.AccessoryAssetId;
+
+        if (character <= 0 || !IsOwned("character_skin", character))
+            throw new ApiException(-1, "预设中的角色未拥有，不能上传云端");
+        if (accessory > 0 && !IsOwned("accessory", accessory))
+            throw new ApiException(-1, "预设中的配件未拥有，不能上传云端");
+
+        var slots = data.ContainsKey("emoteAssetIds")
+            ? ReadEmoteSlots(data["emoteAssetIds"])
+            : NormalizeEmoteSlots(cfg.EmoteAssetIds);
+        var emotes = includeEmotes ? slots.Where(x => x > 0).ToArray() : Array.Empty<long>();
+        foreach (long emoteId in emotes)
+        {
+            if (!IsOwned("emote", emoteId))
+                throw new ApiException(-1, "预设中的表情未拥有，不能上传云端");
+            if (!EmoteMatchesCharacter(character, emoteId))
+                throw new ApiException(-1, "预设中的表情与角色不匹配，不能上传云端");
+        }
+        return (character, accessory, emotes);
+    }
+
+    static long[] NormalizeEmoteSlots(long[] values)
+    {
+        var slots = new long[5];
+        if (values != null) Array.Copy(values, slots, Math.Min(5, values.Length));
+        return slots;
+    }
+
+    static long[] ReadEmoteSlots(JsonNode node)
+    {
+        var slots = new long[5];
+        if (node is JsonArray arr)
+            for (int i = 0; i < 5 && i < arr.Count; i++) slots[i] = ApiClient.ReadLong(arr[i]);
+        return slots;
+    }
+
+    static object[] MapLocalPresets(List<LocalPreset> presets)
+    {
+        return (presets ?? new List<LocalPreset>()).Select(p => new
+        {
+            id = p.Id,
+            name = p.Name,
+            characterAssetId = p.CharacterAssetId,
+            accessoryAssetId = p.AccessoryAssetId,
+            emoteAssetIds = NormalizeEmoteSlots(p.EmoteAssetIds),
+        }).ToArray();
+    }
+
     async Task<(long character, long accessory, bool characterBlocked, bool accessoryBlocked)> ResolveCloudAppearanceAsync()
     {
         var cfg = _app.Cfg;
@@ -1232,15 +1403,27 @@ public sealed class PanelWindow : Form
             if (a.HeightLightId > 0 && !atlasByMain.ContainsKey(a.HeightLightId))
                 atlasByMain[a.HeightLightId] = catalog.CdnUrl(a.Url);
 
-        var items = catalog.All(type).Select(e => new
+        var items = catalog.All(type).Select(e =>
         {
-            id = e.Id,
-            type = e.Type,
-            name = catalog.Names.TryGetValue(e.Id, out var n) && !string.IsNullOrEmpty(n) ? n : e.Id.ToString(),
-            series = catalog.Series.TryGetValue(e.Id, out var s) ? s : "",
-            rarity = catalog.Rarities.TryGetValue(e.Id, out var r) ? r : "common",
-            thumb = atlasByMain.TryGetValue(e.Id, out var t) ? t : catalog.CdnUrl(e.Url),
-            gameRoleId = e.GameRoleId,
+            string assetName = catalog.AssetNameById.TryGetValue(e.Id, out var an) ? an : "";
+            string name = catalog.Names.TryGetValue(e.Id, out var n) && !string.IsNullOrEmpty(n)
+                ? n
+                : catalog.DisplayName(type, assetName);
+            if (string.IsNullOrEmpty(name)) name = e.Id.ToString();
+            string series = catalog.Series.TryGetValue(e.Id, out var s) && !string.IsNullOrEmpty(s)
+                ? s
+                : catalog.SeriesName(type, assetName);
+            return new
+            {
+                id = e.Id,
+                type = e.Type,
+                assetName,
+                name,
+                series,
+                rarity = catalog.Rarities.TryGetValue(e.Id, out var r) ? r : "common",
+                thumb = atlasByMain.TryGetValue(e.Id, out var t) ? t : catalog.CdnUrl(e.Url),
+                gameRoleId = e.GameRoleId,
+            };
         }).ToList();
         return new { items, count = items.Count, assetsHost = catalog.AssetsHost };
     }

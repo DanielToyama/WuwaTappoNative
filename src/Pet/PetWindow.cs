@@ -1043,12 +1043,45 @@ public sealed class PetWindow : Form
     {
         if (_hiddenByHotkey || _wheel.Open) return;
         Log.Write("DBG wheel open");
+        var wheelImages = new Dictionary<long, Image>();
+        var wheelLoading = new HashSet<long>();
+        var wheelFailed = new HashSet<long>();
         _wheel.Show(_cfg.EmoteAssetIds, id =>
         {
+            if (wheelImages.TryGetValue(id, out var cached)) return cached;
+            if (wheelFailed.Contains(id) || !wheelLoading.Add(id)) return null;
             var entry = _catalog.Find("emote", id);
-            if (entry == null) return null;
+            if (entry == null)
+            {
+                wheelLoading.Remove(id);
+                wheelFailed.Add(id);
+                return null;
+            }
             string url = _catalog.CdnUrl(entry.Url);
-            return _store.Get(url, () => Safe(Compose));
+            Image image = null;
+            try
+            {
+                // 轮盘只需要几十像素的缩略图；避免每帧把原图重新高质量缩放。
+                image = _store.GetBubbleImage(url, 96, () => Safe(() =>
+                {
+                    wheelLoading.Remove(id);
+                    var loaded = _store.GetBubbleImage(url, 96, allowDownload: false);
+                    if (loaded != null) wheelImages[id] = loaded;
+                    else wheelFailed.Add(id);
+                    Compose();
+                }));
+                if (image != null)
+                {
+                    wheelImages[id] = image;
+                    wheelLoading.Remove(id);
+                }
+            }
+            catch
+            {
+                wheelLoading.Remove(id);
+                wheelFailed.Add(id);
+            }
+            return image;
         });
         RequestCompose();
     }

@@ -49,7 +49,61 @@
           const reply = data => listeners.forEach(fn => {
             try { fn({ data: { id: msg.id, ok: true, data } }); } catch { }
           });
-          if (msg.cmd === 'atlas.list') reply({ items: [{ mainId: 1971, name: '预览表情', thumb: '' }] });
+          if (msg.cmd === 'atlas.list') {
+            const type = msg.data?.type || 'emote';
+            const items = type === 'emote'
+              ? [
+                  { mainId: 1971, type: 'emote', assetName: 'emote_1407_angry.png', name: '夏空・生气', series: '', rarity: 'rare', thumb: '', roleId: '1407' },
+                  { mainId: 1965, type: 'emote', assetName: 'emote_1407_happy.png', name: '夏空・开心', series: '', rarity: 'uncommon', thumb: '', roleId: '1407' },
+                  { mainId: 1966, type: 'emote', assetName: 'emote_1409_angry.png', name: '卡提希娅・生气', series: '', rarity: 'rare', thumb: '', roleId: '1409' },
+                ]
+              : [];
+            reply({ items });
+          }
+          else if (msg.cmd === 'bag.list') {
+            reply({ items: [
+              { id: 3060, type: 'character_skin', assetName: 'role_1407_1004.png', name: '夏空・CHUBBY', series: 'CHUBBY', rarity: 'epic', quantity: 1, thumb: '', roleId: '1407' },
+              { id: 3061, type: 'character_skin', assetName: 'role_1409_1006.png', name: '卡提希娅・Miratsu', series: 'Miratsu', rarity: 'epic', quantity: 1, thumb: '', roleId: '1409' },
+              { id: 1604, type: 'accessory', assetName: 'accessory_1104.png', name: '阿布', series: '', rarity: 'rare', quantity: 1, thumb: '', roleId: '' },
+              { id: 1605, type: 'accessory', assetName: 'accessory_1105.png', name: '冰盈舞者', series: '', rarity: 'rare', quantity: 1, thumb: '', roleId: '' },
+              { id: 1971, type: 'emote', assetName: 'emote_1407_angry.png', name: '夏空・生气', series: '', rarity: 'rare', quantity: 1, thumb: '', roleId: '1407' },
+              { id: 1965, type: 'emote', assetName: 'emote_1407_happy.png', name: '夏空・开心', series: '', rarity: 'uncommon', quantity: 1, thumb: '', roleId: '1407' },
+              { id: 1966, type: 'emote', assetName: 'emote_1409_angry.png', name: '卡提希娅・生气', series: '', rarity: 'rare', quantity: 1, thumb: '', roleId: '1409' },
+            ] });
+          }
+          else if (msg.cmd === 'catalog.list') {
+            const type = msg.data?.type || 'character_skin';
+            const rows = type === 'character_skin'
+              ? [
+                  { id: 3060, assetName: 'role_1407_1004.png', gameRoleId: 1407, name: '夏空・CHUBBY', series: 'CHUBBY', rarity: 'epic' },
+                  { id: 3061, assetName: 'role_1409_1006.png', gameRoleId: 1409, name: '卡提希娅・Miratsu', series: 'Miratsu', rarity: 'epic' },
+                  { id: 3062, assetName: 'role_1501_1001.png', gameRoleId: 1501, name: '漂泊者・经典', series: '经典', rarity: 'common' },
+                ]
+              : type === 'accessory'
+                ? [
+                    { id: 1604, assetName: 'accessory_1104.png', gameRoleId: 0, name: '阿布', series: '', rarity: 'rare' },
+                    { id: 1605, assetName: 'accessory_1105.png', gameRoleId: 0, name: '冰盈舞者', series: '', rarity: 'rare' },
+                    { id: 1606, assetName: 'accessory_1106.png', gameRoleId: 0, name: '矿岩熊蜂', series: '', rarity: 'common' },
+                  ]
+                : [
+                    { id: 1971, assetName: 'emote_1407_angry.png', gameRoleId: 1407, name: '夏空・生气', series: '', rarity: 'rare' },
+                    { id: 1965, assetName: 'emote_1407_happy.png', gameRoleId: 1407, name: '夏空・开心', series: '', rarity: 'uncommon' },
+                    { id: 1966, assetName: 'emote_1409_angry.png', gameRoleId: 1409, name: '卡提希娅・生气', series: '', rarity: 'rare' },
+                    { id: 1967, assetName: 'emote_1409_happy.png', gameRoleId: 1409, name: '卡提希娅・开心', series: '', rarity: 'uncommon' },
+                  ];
+            reply({ items: rows.map(x => ({ ...x, type, thumb: '' })) });
+          }
+          else if (msg.cmd === 'presets.list') {
+            reply([
+              { preset_id: 9001, character_asset_id: 3060, accessory_asset_id: 1604, emotes: [{ asset_id: 1971 }, { asset_id: 1965 }] },
+              { preset_id: 9002, character_asset_id: 3060, accessory_asset_id: 0, emotes: [{ asset_id: 1971 }] },
+            ]);
+          }
+          else if (msg.cmd === 'presets.local.list') {
+            reply([
+              { id: 'local-preview-1', name: '我的本地搭配', characterAssetId: 3060, accessoryAssetId: 1604, emoteAssetIds: [1971, 1965, 0, 0, 0] },
+            ]);
+          }
           else reply(null);
         },
       };

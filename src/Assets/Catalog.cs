@@ -46,6 +46,8 @@ public sealed class Catalog
     public readonly Dictionary<long, string> Rarities = new();
     public readonly Dictionary<string, long> AtlasIdByName = new(StringComparer.OrdinalIgnoreCase);
     public readonly Dictionary<string, long> IdByAssetName = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>正片 id → 素材文件名（来自图鉴 height_light_id 反查），用于显示名称。</summary>
+    public readonly Dictionary<long, string> AssetNameById = new();
     public readonly Dictionary<string, string> DictCharacter = new(StringComparer.OrdinalIgnoreCase);
     public readonly Dictionary<string, string> DictSeries = new(StringComparer.OrdinalIgnoreCase);
     public readonly Dictionary<string, string> DictAccessory = new(StringComparer.OrdinalIgnoreCase);
@@ -355,6 +357,7 @@ public sealed class Catalog
         Rarities.Clear();
         AtlasIdByName.Clear();
         IdByAssetName.Clear();
+        AssetNameById.Clear();
         foreach (var item in arr)
         {
             if (item is not JsonObject o) continue;
@@ -362,16 +365,25 @@ public sealed class Catalog
             if (id <= 0) continue;
             string type = ApiClient.ReadString(o["asset_type"]);
             string assetName = ApiClient.ReadString(o["asset_name"]);
-            string rarity = ApiClient.ReadString(o["rarity"]);
+            string rarity = ApiClient.ReadString(o["rarity"]).ToLowerInvariant();
             string display = DisplayName(type, assetName);
             if (!string.IsNullOrEmpty(display)) Names[id] = display;
-            if (!string.IsNullOrEmpty(rarity)) Rarities[id] = rarity.ToLowerInvariant();
+            if (!string.IsNullOrEmpty(rarity)) Rarities[id] = rarity;
             if (!string.IsNullOrEmpty(assetName))
             {
                 AtlasIdByName[assetName] = id;
                 // 图鉴 atlas 条目的 height_light_id 指向正片 id，用于把 asset_name 反查成可渲染的皮肤/配件 id
                 if (ByType.TryGetValue(type, out var atlasMap) && atlasMap.TryGetValue(id, out var atlasEntry) && atlasEntry.HeightLightId > 0)
-                    IdByAssetName[assetName] = atlasEntry.HeightLightId;
+                {
+                    long baseId = atlasEntry.HeightLightId;
+                    IdByAssetName[assetName] = baseId;
+                    AssetNameById[baseId] = assetName;
+                    // 名称/稀有度同时挂到正片 id 上，catalog.list 才能显示中文名而不是数字 id。
+                    if (!string.IsNullOrEmpty(display)) Names[baseId] = display;
+                    if (!string.IsNullOrEmpty(rarity)) Rarities[baseId] = rarity;
+                    string series = SeriesName(type, assetName);
+                    if (!string.IsNullOrEmpty(series)) Series[baseId] = series;
+                }
             }
         }
         Log.Write("图鉴名称 " + Names.Count);

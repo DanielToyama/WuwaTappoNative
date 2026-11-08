@@ -47,7 +47,12 @@ public sealed class KeyboardWindow : Form
     byte _lt, _rt;
     short _lx, _ly, _rx, _ry;
     bool _padConnected, _padUnavailable;
+    bool _padKeystrokesReady, _padKeystrokeUnavailable;
     uint _padPacket;
+    int _padUserIndex = -1;
+    System.Windows.Forms.Timer _padReleaseTimer;
+    readonly Dictionary<string, long> _padBubbleAt = new();
+    long _lastPadDownAt;
 
     public Mode CurrentMode => _mode;
     public event Action<Mode> ModeRequested;
@@ -315,13 +320,32 @@ public sealed class KeyboardWindow : Form
         try
         {
             var state = new XINPUT_STATE();
-            uint res = XInputGetState(0, ref state);
-            bool connected = res == 0;
+            bool connected = _padUserIndex >= 0 && XInputGetState((uint)_padUserIndex, ref state) == 0;
+            if (!connected)
+            {
+                // 手柄不一定在 0 号槽位；依次找第一个已连接的手柄。
+                // 这样 2P/3P 槽位、或先连了其他设备时也能正常识别。
+                _padUserIndex = -1;
+                _padKeystrokesReady = false;
+                for (uint i = 0; i < 4; i++)
+                {
+                    var candidate = new XINPUT_STATE();
+                    if (XInputGetState(i, ref candidate) != 0) continue;
+                    _padUserIndex = (int)i;
+                    state = candidate;
+                    connected = true;
+                    // 换了槽位/重新连接：旧状态作废，第一帧只同步，不伪造按键边沿。
+                    _padConnected = false;
+                    _padButtons = 0; _lt = _rt = 0; _lx = _ly = _rx = _ry = 0;
+                    break;
+                }
+            }
             if (!connected)
             {
                 if (_padConnected)
                 {
                     _padConnected = false;
+                    _padKeystrokesReady = false;
                     _padButtons = 0; _lt = _rt = 0; _lx = _ly = _rx = _ry = 0;
                     if (render) Render();
                 }
@@ -355,18 +379,27 @@ public sealed class KeyboardWindow : Form
                 if (wasConnected)
                 {
                     ushort newlyPressed = (ushort)(_padButtons & ~prev);
-                    if (newlyPressed != 0) PadButtonDown?.Invoke();
+                    if (newlyPressed != 0)
+                    {
+                        _lastPadDownAt = Environment.TickCount64;
+                        PadButtonDown?.Invoke();
+                    }
                     else if (prev != 0 && _padButtons == 0) PadButtonUp?.Invoke();
 
                     foreach (var (flag, label) in PadButtonLabels)
                     {
-                        if ((newlyPressed & flag) != 0) PadButtonPressed?.Invoke(label);
+                        if ((newlyPressed & flag) != 0) RaisePadButtonPressed(label);
                     }
-                    if (_lt > 4 && prevLt <= 4) PadButtonPressed?.Invoke("LT");
-                    if (_rt > 4 && prevRt <= 4) PadButtonPressed?.Invoke("RT");
+                    if (_lt > 4 && prevLt <= 4) RaisePadButtonPressed("LT");
+                    if (_rt > 4 && prevRt <= 4) RaisePadButtonPressed("RT");
                 }
                 if (render) Render();
             }
+
+            // XInput 的 keystroke 队列保留两次轮询之间发生的按键事件。
+            // 16ms 状态采样会漏掉极短的点按；队列可以把这些按键补回来。
+            if (_padKeystrokesReady) PollPadKeystrokes();
+            else _padKeystrokesReady = true;
         }
         catch (Exception ex)
         {
@@ -374,10 +407,88 @@ public sealed class KeyboardWindow : Form
             if (ex is DllNotFoundException || ex is EntryPointNotFoundException) _padUnavailable = true;
             if (!_padConnected) return;
             _padConnected = false;
+            _padKeystrokesReady = false;
             _padButtons = 0; _lt = _rt = 0; _lx = _ly = _rx = _ry = 0;
             if (render) Render();
         }
     }
+
+    void PollPadKeystrokes()
+    {
+        if (_padKeystrokeUnavailable) return;
+        try
+        {
+            for (int i = 0; i < 32; i++)
+            {
+                var keystroke = new XINPUT_KEYSTROKE();
+                // XUSER_INDEX_ANY：任意槽位的手柄按键都收，不再只认 0 号手柄。
+                if (XInputGetKeystroke(XUSER_INDEX_ANY, 0, out keystroke) != 0) break;
+                if ((keystroke.Flags & XINPUT_KEYSTROKE_KEYDOWN) == 0) continue;
+                string label = PadLabelForVk(keystroke.VirtualKey);
+                if (label != null) RaisePadButtonPressed(label);
+                long now = Environment.TickCount64;
+                if (label != null && now - _lastPadDownAt >= 25)
+                {
+                    _lastPadDownAt = now;
+                    PadButtonDown?.Invoke();
+                    SchedulePadRelease();
+                }
+            }
+        }
+        catch (Exception ex) when (ex is DllNotFoundException || ex is EntryPointNotFoundException)
+        {
+            _padKeystrokeUnavailable = true;
+        }
+    }
+
+    /// <summary>
+    /// 队列补发的极快点按可能只有 KEYDOWN，状态轮询永远看不到按下，
+    /// 因此补一个短释放定时器，避免主角一直保持“手按下”的姿势。
+    /// </summary>
+    void SchedulePadRelease()
+    {
+        if (_padReleaseTimer == null)
+        {
+            _padReleaseTimer = new System.Windows.Forms.Timer { Interval = 90 };
+            _padReleaseTimer.Tick += (s, e) =>
+            {
+                _padReleaseTimer.Stop();
+                if (_padButtons == 0 && _lt <= 4 && _rt <= 4) PadButtonUp?.Invoke();
+            };
+        }
+        _padReleaseTimer.Stop();
+        _padReleaseTimer.Start();
+    }
+
+    void RaisePadButtonPressed(string label)
+    {
+        if (string.IsNullOrEmpty(label)) return;
+        long now = Environment.TickCount64;
+        if (_padBubbleAt.TryGetValue(label, out long last) && now - last < 25) return;
+        _padBubbleAt[label] = now;
+        PadButtonPressed?.Invoke(label);
+    }
+
+    static string PadLabelForVk(ushort vk) => vk switch
+    {
+        0x5800 => "A",
+        0x5801 => "B",
+        0x5802 => "X",
+        0x5803 => "Y",
+        0x5804 => "RB",
+        0x5805 => "LB",
+        0x5806 => "LT",
+        0x5807 => "RT",
+        0x5810 => "↑",
+        0x5811 => "↓",
+        0x5812 => "←",
+        0x5813 => "→",
+        0x5814 => "Start",
+        0x5815 => "Back",
+        0x5816 => "LS",
+        0x5817 => "RS",
+        _ => null,
+    };
 
     void Render()
     {
@@ -706,11 +817,26 @@ public sealed class KeyboardWindow : Form
     {
         _poll?.Dispose();
         _pulseTimer?.Dispose();
+        _padReleaseTimer?.Dispose();
         _surface.Dispose();
         base.OnClosed(e);
     }
 
     [DllImport("xinput1_4.dll")] static extern uint XInputGetState(uint dwUserIndex, ref XINPUT_STATE pState);
+    [DllImport("xinput1_4.dll")] static extern uint XInputGetKeystroke(uint dwUserIndex, uint dwReserved, out XINPUT_KEYSTROKE pKeystroke);
+
+    const ushort XINPUT_KEYSTROKE_KEYDOWN = 0x0001;
+    const uint XUSER_INDEX_ANY = 0xFF;
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct XINPUT_KEYSTROKE
+    {
+        public ushort VirtualKey;
+        public ushort Unicode;
+        public ushort Flags;
+        public byte UserIndex;
+        public byte HidCode;
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     struct XINPUT_GAMEPAD

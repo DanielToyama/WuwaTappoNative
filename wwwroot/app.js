@@ -53,6 +53,7 @@
     atlasHidden: new Set(),
     atlasAllCount: 0,
     atlasOwnedOnly: false,
+    atlasEmoteSendMode: false,
     atlasSelected: null,
     synthMode: 'up',
     synthType: 'character_skin',
@@ -60,6 +61,7 @@
     synthSlots: [],
     synthCanCraft: false,
     presets: null,
+    localPresets: null,
     presetBusy: false,
     emoteNames: {},
     emoteCatalog: null
@@ -648,6 +650,7 @@
 
   function assetMeta(item) {
     if (!item) return { role: '0', series: '' };
+    if (Number(item.gameRoleId) > 0) return { role: String(item.gameRoleId), series: item.series || '' };
     const name = String(item.assetName || '').replace(/\.png$/i, '');
     let m;
     if ((item.type === 'character_skin' || !item.type) && (m = name.match(/^role_(\d+)(?:_(\d+))?/i))) {
@@ -666,7 +669,7 @@
   }
   function roleLabelOf(item) {
     const raw = String(item?.name || '').trim();
-    if (!raw || /^role_\d+/i.test(raw) || /^emote_\d+/i.test(raw)) {
+    if (!raw || /^#?\d+$/.test(raw) || /^role_\d+/i.test(raw) || /^emote_\d+/i.test(raw)) {
       const r = assetMeta(item).role;
       return (!r || r === '0') ? '通用' : '角色 ' + (item?.roleId || r);
     }
@@ -948,9 +951,116 @@
     return Number(state.boot?.appearance?.accessoryAssetId || 0) === Number(id);
   }
 
+  function emoteUploadStatus(item) {
+    if (!item || item.type !== 'emote') return { canUpload: false, reason: '请选择表情' };
+    const appearance = state.boot?.appearance || {};
+    const charId = Number(appearance.characterAssetId || 0);
+    const charOwned = (state.bag || []).some(x => x.type === 'character_skin' && Number(x.id) === charId);
+    const currentRole = Number(appearance.characterRoleId || 0);
+    const emoteRole = Number(assetMeta(item).role || 0);
+    const roleMatch = emoteRole <= 0 || emoteRole === 2000 || (currentRole > 0 && emoteRole === currentRole);
+    const owned = (state.bag || []).some(x => x.type === 'emote' && Number(x.id) === Number(item.id));
+    const reason = !owned ? '未拥有该表情' : !charOwned ? '当前角色未拥有' : !roleMatch ? '表情属于其他角色' : '';
+    return { canUpload: owned && charOwned && roleMatch, reason, currentRole, emoteRole, roleMatch, charOwned, owned };
+  }
+
+  function renderBagEmotePanel() {
+    const box = document.getElementById('bagDetail');
+    if (!box) return;
+    if (!state.emoteCatalog?.length) {
+      ensureEmotes().then(() => {
+        if (state.page === 'bag' && state.bagTab === 'emote') renderBagEmotePanel();
+      }).catch(() => { });
+    }
+    const appearance = state.boot?.appearance || {};
+    const slots = [...(appearance.emoteAssetIds || [])];
+    while (slots.length < 5) slots.push(0);
+    const cloudSlots = [...(appearance.cloudEmoteAssetIds || [])];
+    while (cloudSlots.length < 5) cloudSlots.push(0);
+    const selected = state.bagSelected?.type === 'emote' ? state.bagSelected : null;
+    const status = emoteUploadStatus(selected);
+    const selectedHtml = selected ? `
+      <div class="detail-preview">${img(selected.thumb, '', selected.name)}</div>
+      <div class="detail-name">${esc(selected.name)}</div>
+      <div class="detail-row"><span>类别</span><span>表情</span></div>
+      <div class="detail-row"><span>稀有度</span><span>${RARITY_TEXT[effRarity(selected.rarity)] || selected.rarity}</span></div>
+      <div class="detail-row"><span>系列</span><span>${esc(selected.series || '—')}</span></div>
+      <div class="detail-row"><span>云端条件</span><span>${status.canUpload ? '可上传' : esc(status.reason)}</span></div>`
+      : `<div class="detail-empty" style="margin:20px auto">先在左侧选择一个表情<br><span style="font-size:12px">再点击下方槽位选择「仅本地」或「上传云端」</span></div>`;
+    box.innerHTML = `
+      ${selectedHtml}
+      <div class="section-title" style="margin:16px 0 8px;">表情槽位</div>
+      <div class="emote-row bag-emote-slots">
+        ${slots.map((id, i) => {
+          const item = emoteInfo(id);
+          const mode = id ? (Number(cloudSlots[i]) === Number(id) ? '云' : '本') : '';
+          return `<div class="emote-slot" data-eslot="${i}" title="槽位 ${i + 1}">
+            ${item ? img(item.thumb) : '<span class="muted">空</span>'}
+            <span class="slot-no">${i + 1}${mode ? ' · ' + mode : ''}</span>
+          </div>`;
+        }).join('')}
+      </div>
+      <div class="hint muted" style="font-size:12px;margin-top:10px">点击槽位后选择仅本地或上传云端；只有表情已拥有、当前角色已拥有且角色匹配时才允许上传。</div>`;
+    box.querySelectorAll('[data-eslot]').forEach(el => {
+      el.onclick = () => openEmoteSlotAction(Number(el.dataset.eslot), slots);
+    });
+  }
+
+  function openEmoteSlotAction(slot, slots) {
+    const selected = state.bagSelected?.type === 'emote' ? state.bagSelected : null;
+    const candidate = selected || (state.bag || []).find(x => x.type === 'emote' && Number(x.id) === Number(slots[slot]));
+    if (!candidate) return toast('请先从左侧选择一个表情', 'err');
+    const status = emoteUploadStatus(candidate);
+    const current = slots[slot] || 0;
+    modal(`
+      <div class="reward">
+        ${img(candidate.thumb, '', candidate.name)}
+        <div class="r-name">${esc(candidate.name)}</div>
+        <div class="r-sub">槽位 ${slot + 1}${current ? ' · 当前已有表情' : ' · 空槽位'}</div>
+        <div class="r-sub" style="color:${status.canUpload ? 'var(--ink-dim)' : 'var(--danger)'}">${status.canUpload ? '满足云端条件' : esc(status.reason)}</div>
+        <div style="display:flex;gap:10px;margin-top:10px;flex-wrap:wrap;justify-content:center">
+          <button class="btn ghost" id="slotLocal">仅本地</button>
+          <button class="btn" id="slotCloud" ${status.canUpload ? '' : 'disabled title="' + esc(status.reason) + '"'}>上传云端</button>
+          <button class="btn ghost" id="slotClear" ${current ? '' : 'disabled'}>清空</button>
+          <button class="btn ghost" id="slotCancel">取消</button>
+        </div>
+      </div>`, h => {
+      h.querySelector('#slotCancel').onclick = closeModal;
+      h.querySelector('#slotLocal').onclick = async () => {
+        try {
+          state.boot = await tryCall('appearance.setSlot', { slot, id: candidate.id });
+          closeModal();
+          renderBagDetail();
+          toast(`槽位 ${slot + 1} 已应用（仅本地）`);
+        } catch { }
+      };
+      h.querySelector('#slotCloud').onclick = async () => {
+        if (!status.canUpload) return;
+        try {
+          state.boot = await tryCall('appearance.setSlot', { slot, id: candidate.id, upload: true });
+          closeModal();
+          renderBagDetail();
+          toast(`槽位 ${slot + 1} 已上传云端`);
+        } catch { }
+      };
+      h.querySelector('#slotClear').onclick = async () => {
+        try {
+          state.boot = await tryCall('appearance.setSlot', { slot, id: 0 });
+          closeModal();
+          renderBagDetail();
+          toast(`槽位 ${slot + 1} 已清空（仅本地）`);
+        } catch { }
+      };
+    });
+  }
+
   function renderBagDetail() {
     const box = document.getElementById('bagDetail');
     if (!box) return;
+    if (state.bagTab === 'emote') {
+      renderBagEmotePanel();
+      return;
+    }
     const x = state.bagSelected;
     if (!x) {
       box.innerHTML = `<div class="detail-empty">选择一件收集物<br><span style="font-size:13px">双击可直接装备；再次点击已佩戴的头饰可取消</span></div>`;
@@ -1074,6 +1184,7 @@
         <button class="pill ${state.atlasOwnedOnly ? 'active' : ''}" id="atlasOwnedOnly" title="只显示已经拥有的图鉴">仅拥有</button>
         <span class="spacer"></span>
         <span class="muted" id="atlasCount" style="font-size:13px">共 ${items.length} 件 · 已拥有会显示标记</span>
+        ${type === 'emote' ? `<button class="pill ${state.atlasEmoteSendMode ? 'active' : ''}" id="atlasEmoteSendMode" title="开启后点击表情直接发送，不再弹出详情确认">发送模式</button>` : ''}
       </div>
       <div class="bag-groups" id="atlasGroups"></div>`);
 
@@ -1089,6 +1200,11 @@
       state.atlasOwnedOnly = !state.atlasOwnedOnly;
       e.currentTarget.classList.toggle('active', state.atlasOwnedOnly);
       renderAtlasList(items, ownedNames);
+    });
+    document.getElementById('atlasEmoteSendMode')?.addEventListener('click', e => {
+      state.atlasEmoteSendMode = !state.atlasEmoteSendMode;
+      e.currentTarget.classList.toggle('active', state.atlasEmoteSendMode);
+      toast(state.atlasEmoteSendMode ? '发送模式已开启：点击表情直接发送' : '发送模式已关闭');
     });
     renderAtlasList(items, ownedNames);
   }
@@ -1150,17 +1266,22 @@
       });
     }
     host.querySelectorAll('.card').forEach(el => {
-      el.onclick = () => {
+      el.onclick = async () => {
         const x = byKey.get(el.dataset.key);
         if (!x) return;
+        if (x.type === 'emote' && state.atlasEmoteSendMode) {
+          try { await tryCall('emote.send', { id: x.mainId }); toast('已发送表情'); } catch { }
+          return;
+        }
         const bagItem = (state.bag || []).find(v => v.assetName === x.assetName);
         const accessoryEquipped = x.type === 'accessory' && isAccessoryEquipped(x.mainId);
+        const emoteStatus = x.type === 'emote' && bagItem ? emoteUploadStatus(bagItem) : null;
         const currentSlots = [...(state.boot?.appearance?.emoteAssetIds || [])];
         while (currentSlots.length < 5) currentSlots.push(0);
         let pickSlot = currentSlots.findIndex(v => !v);
         if (pickSlot < 0) pickSlot = 0;
         const slotPicker = x.type === 'emote'
-          ? `<div class="muted" style="font-size:12px;margin-top:4px">选择要替换的表情槽位（仅本机）</div>
+          ? `<div class="muted" style="font-size:12px;margin-top:4px">选择要替换的表情槽位</div>
              <div class="emote-row" style="justify-content:center;margin-top:4px">
                ${currentSlots.map((id, i) => {
                  const it = emoteInfo(id);
@@ -1173,11 +1294,13 @@
             <div class="r-name">${esc(x.name)}</div>
             <div class="r-sub">${TYPE_TEXT[x.type] || x.type} · ${RARITY_TEXT[effRarity(x.rarity)] || x.rarity} ${x.series ? '· ' + esc(x.series) : ''}</div>
             <div class="r-sub">${bagItem ? '已拥有 · 可应用到本地，或装备并同步云端' : '尚未拥有 · 可应用到本地（仅自己可见）'}</div>
+            ${emoteStatus && !emoteStatus.canUpload ? `<div class="r-sub" style="color:var(--danger)">不能上传云端：${esc(emoteStatus.reason)}</div>` : ''}
             ${slotPicker}
             <div style="display:flex;gap:10px;margin-top:8px;flex-wrap:wrap">
               <button class="btn ghost" id="mClose">关闭</button>
               <button class="btn" id="mLocal">${accessoryEquipped ? '取消头饰（本地）' : '应用到本地'}</button>
               ${bagItem && x.type !== 'emote' ? `<button class="btn ghost" id="mEquip">${accessoryEquipped ? '取消头饰并同步云端' : '装备并同步云端'}</button>` : ''}
+              ${emoteStatus?.canUpload ? '<button class="btn ghost" id="mEquipEmote">装备到线上</button>' : ''}
             </div>
           </div>`, h => {
           h.querySelector('#mClose').onclick = closeModal;
@@ -1203,6 +1326,15 @@
           };
           const eq = h.querySelector('#mEquip');
           if (eq) eq.onclick = async () => { await equip(bagItem, true); closeModal(); };
+          const eqEmote = h.querySelector('#mEquipEmote');
+          if (eqEmote) eqEmote.onclick = async () => {
+            try {
+              state.boot = await tryCall('appearance.setSlot', { slot: pickSlot, id: x.mainId, upload: true });
+              closeModal();
+              renderChrome();
+              toast(`表情已装备到线上（槽位 ${pickSlot + 1}）`);
+            } catch { }
+          };
         });
       };
     });
@@ -1629,64 +1761,419 @@
     return state.presets;
   }
 
+  async function ensureLocalPresets(force = false) {
+    if (state.localPresets && !force) return state.localPresets;
+    const data = await tryCall('presets.local.list');
+    state.localPresets = Array.isArray(data) ? data : [];
+    return state.localPresets;
+  }
+
   function catalogName(type, id) {
     const bagItem = (state.bag || []).find(v => v.id === id);
     if (bagItem) return bagItem.name;
-    const list = state.catalog[type] || [];
-    return (list.find(v => v.id === id) || {}).name || (id ? '#' + id : '无');
+    const item = (state.catalog[type] || []).find(v => Number(v.id) === Number(id));
+    if (item?.name && !/^#?\d+$/.test(String(item.name))) return item.name;
+    const atlasItem = (state.atlas[type] || []).find(v => Number(v.mainId) === Number(id));
+    return atlasItem?.name || item?.name || (id ? '#' + id : '无');
+  }
+
+  function catalogThumb(type, id) {
+    const item = (state.catalog[type] || []).find(v => Number(v.id) === Number(id));
+    if (item?.thumb) return item.thumb;
+    const atlasItem = (state.atlas[type] || []).find(v => Number(v.mainId) === Number(id));
+    return atlasItem?.thumb || '';
+  }
+
+  function emoteKindLabel(x) {
+    const name = String(x?.name || '');
+    const parts = name.split(/[・·]/).map(s => s.trim()).filter(Boolean);
+    if (parts.length > 1) return parts[parts.length - 1];
+    const asset = String(x?.assetName || '').replace(/\.png$/i, '');
+    const m = asset.match(/_([a-z0-9]+)$/i);
+    return m ? m[1] : '';
+  }
+
+  function presetEmoteIds(p) {
+    return (p.emotes || p.emoteAssetIds || []).map(e => Number(e.asset_id ?? e)).filter(Boolean).slice(0, 5);
+  }
+
+  function presetPreviewHtml(p) {
+    const charId = Number(p.character_asset_id ?? p.characterAssetId ?? 0);
+    const accId = Number(p.accessory_asset_id ?? p.accessoryAssetId ?? 0);
+    const emotes = presetEmoteIds(p);
+    const charThumb = catalogThumb('character_skin', charId);
+    const accThumb = catalogThumb('accessory', accId);
+    const emoteHtml = [0, 1, 2, 3, 4].map(i => {
+      const thumb = catalogThumb('emote', emotes[i]);
+      return `<div class="preset-emote">${thumb ? `<img src="${esc(thumb)}" alt="">` : '<span class="muted">空</span>'}<span>${i + 1}</span></div>`;
+    }).join('');
+    return `<div class="preset-preview">
+      ${charThumb ? `<img class="preset-preview-char" src="${esc(charThumb)}" alt="">` : '<span class="muted">无角色</span>'}
+      ${accThumb ? `<img class="preset-preview-acc" src="${esc(accThumb)}" alt="">` : ''}
+    </div>
+    <div class="preset-emote-preview">${emoteHtml}</div>`;
+  }
+
+  async function saveLocalPresetDialog(existing = null) {
+    const appearance = state.boot?.appearance || {};
+    const source = existing || {
+      id: '',
+      name: '',
+      characterAssetId: appearance.characterAssetId || 0,
+      accessoryAssetId: appearance.accessoryAssetId || 0,
+      emoteAssetIds: appearance.emoteAssetIds || [],
+    };
+    const emoteIds = [...(source.emoteAssetIds || [])];
+    while (emoteIds.length < 5) emoteIds.push(0);
+    modal(`<div class="preset-edit">
+      <div class="preset-title" style="margin-bottom:10px">${existing ? '编辑本地外观' : '保存为本地外观'}</div>
+      <label class="setting-title">名称</label>
+      <input class="input" id="localPresetName" value="${esc(source.name || '')}" placeholder="例如：日常搭配" style="margin:6px 0 12px">
+      <div class="muted" style="font-size:12px;line-height:1.6">保存当前角色：${esc(catalogName('character_skin', source.characterAssetId))}<br>配件：${esc(catalogName('accessory', source.accessoryAssetId))}<br>表情：${emoteIds.filter(Boolean).length} 个</div>
+      <div style="display:flex;gap:10px;margin-top:14px;justify-content:flex-end">
+        <button class="btn ghost" id="localPresetCancel">取消</button>
+        <button class="btn" id="localPresetSave">保存</button>
+      </div>
+    </div>`, h => {
+      h.querySelector('#localPresetCancel').onclick = closeModal;
+      h.querySelector('#localPresetSave').onclick = async () => {
+        const name = h.querySelector('#localPresetName').value.trim() || '本地预设';
+        try {
+          await tryCall('presets.local.save', {
+            id: source.id || '',
+            name,
+            characterAssetId: source.characterAssetId || 0,
+            accessoryAssetId: source.accessoryAssetId || 0,
+            emoteAssetIds: emoteIds,
+          });
+          state.localPresets = null;
+          closeModal();
+          await ensureLocalPresets(true);
+          renderPreset();
+          toast('已保存本地外观');
+        } catch { }
+      };
+    });
+  }
+
+  async function applyPreset(p, isLocal, ignoreEmotes) {
+    const charId = Number(p.character_asset_id ?? p.characterAssetId ?? 0);
+    const accId = Number(p.accessory_asset_id ?? p.accessoryAssetId ?? 0);
+    const emotes = presetEmoteIds(p);
+    try {
+      await ensureBag();
+      if (charId > 0) await tryCall('appearance.set', { type: 'character_skin', id: charId });
+      await tryCall('appearance.set', { type: 'accessory', id: accId });
+      if (!ignoreEmotes) {
+        for (let i = 0; i < 5; i++) await tryCall('appearance.setSlot', { slot: i, id: emotes[i] || 0 });
+      }
+      const owned = new Set((state.bag || []).map(x => Number(x.id)));
+      const charOwned = charId > 0 && owned.has(charId);
+      const accOwned = accId === 0 || owned.has(accId);
+      let uploaded = false;
+      if (!isLocal && charOwned && accOwned) {
+        try { await tryCall('appearance.sync'); uploaded = true; } catch { }
+      }
+      state.boot = await call('boot');
+      renderChrome();
+      renderPreset();
+      const localOnly = [];
+      if (!charOwned) localOnly.push('角色 ' + catalogName('character_skin', charId));
+      if (!accOwned) localOnly.push('配件 ' + catalogName('accessory', accId));
+      if (localOnly.length) toast(`已应用；${localOnly.join('、')}仅本地生效`);
+      else if (isLocal) toast('已应用本地外观');
+      else toast(uploaded ? '已应用并同步云端' : '已应用本地外观');
+    } catch (e) { toast(e.message || '应用预设失败', 'err'); }
+  }
+
+  async function openPresetEditor(p, isLocal) {
+    await Promise.all([
+      ...['character_skin', 'accessory', 'emote'].map(t => ensureCatalog(t).catch(() => [])),
+      ensureBag().catch(() => []),
+    ]);
+    const temp = {
+      characterAssetId: Number(p.character_asset_id ?? p.characterAssetId ?? 0),
+      accessoryAssetId: Number(p.accessory_asset_id ?? p.accessoryAssetId ?? 0),
+      emoteAssetIds: presetEmoteIds(p),
+    };
+    while (temp.emoteAssetIds.length < 5) temp.emoteAssetIds.push(0);
+    let tab = 'character_skin';
+    let selectedSlot = 0;
+    let search = '';
+    let filter = '';
+    let filter2 = '';
+    let ownedOnly = false;
+    const itemsOf = type => state.catalog[type] || [];
+    const selectedItemId = () => tab === 'character_skin' ? temp.characterAssetId : tab === 'accessory' ? temp.accessoryAssetId : 0;
+
+    modal(`<div class="preset-edit">
+      <div class="preset-title" style="margin-bottom:10px">${isLocal ? '编辑本地外观' : '修改云外观配置'}</div>
+      ${isLocal ? `<label class="setting-title">名称</label><input class="input" id="peName" value="${esc(p.name || '')}" style="margin:6px 0 10px">` : ''}
+      <div id="pePreview"></div>
+      <div class="pe-tabs">
+        <button type="button" class="pill active" data-pe-tab="character_skin">角色</button>
+        <button type="button" class="pill" data-pe-tab="accessory">配件</button>
+        <button type="button" class="pill" data-pe-tab="emote">表情</button>
+        <span class="spacer"></span>
+        <span class="muted" id="peSlotHint" style="font-size:11px"></span>
+      </div>
+      <div class="pe-filters">
+        <input class="input" id="peSearch" placeholder="搜索名称 / 系列" style="flex:1;min-width:120px">
+        <span id="peFilterHost" style="display:flex;gap:8px"></span>
+        <button type="button" class="pill" id="peOwnedOnly" title="只显示当前账号已拥有的条目">仅拥有</button>
+      </div>
+      <div class="pe-grid" id="peGrid"></div>
+      <div class="muted" style="font-size:11px;margin-top:8px">${isLocal ? '本地预设可以任意搭配；云端修改会创建新预设并删除旧预设。' : '云端预设需要角色、配件和表情都满足拥有/角色匹配条件才能保存。'}</div>
+      <div style="display:flex;gap:10px;margin-top:14px;justify-content:flex-end">
+        <button class="btn ghost" id="peCancel">取消</button>
+        <button class="btn" id="peSave">保存</button>
+      </div>
+    </div>`, h => {
+      const escAttr = esc;
+      const emoteSlotsHtml = () => [0, 1, 2, 3, 4].map(i => {
+        const thumb = catalogThumb('emote', temp.emoteAssetIds[i]);
+        return `<div class="preset-emote ${i === selectedSlot ? 'selected' : ''}" data-pe-slot="${i}" title="槽位 ${i + 1}">${thumb ? `<img src="${escAttr(thumb)}" alt="">` : '<span class="muted">空</span>'}<span>${i + 1}</span></div>`;
+      }).join('');
+      const renderPreview = () => {
+        const charThumb = catalogThumb('character_skin', temp.characterAssetId);
+        const accThumb = catalogThumb('accessory', temp.accessoryAssetId);
+        h.querySelector('#pePreview').innerHTML = `<div class="preset-preview">
+          ${charThumb ? `<img class="preset-preview-char" src="${escAttr(charThumb)}" alt="">` : '<span class="muted">无角色</span>'}
+          ${accThumb ? `<img class="preset-preview-acc" src="${escAttr(accThumb)}" alt="">` : ''}
+        </div><div class="preset-emote-preview">${emoteSlotsHtml()}</div>`;
+        h.querySelector('#peSlotHint').textContent = tab === 'emote' ? `正在编辑槽位 ${selectedSlot + 1}` : '点击下方表情可放入当前槽位';
+        h.querySelectorAll('[data-pe-slot]').forEach(el => {
+          el.onclick = () => { selectedSlot = Number(el.dataset.peSlot); renderPreview(); renderGrid(); };
+        });
+      };
+
+      const renderGrid = () => {
+        const all = itemsOf(tab);
+        const roleMap = new Map();
+        for (const x of all) {
+          const r = String(assetMeta(x).role || 0);
+          if (!r || r === '0') continue;
+          const lbl = roleLabelOf(x);
+          if (!roleMap.has(r) || (roleMap.get(r).startsWith('角色 ') && !lbl.startsWith('角色 '))) roleMap.set(r, lbl || r);
+        }
+        const roleOptions = [...roleMap.entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1]), 'zh'));
+        const seriesOptions = [...new Set(all.map(x => x.series).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), 'zh'));
+        const rarityOptions = [...new Set(all.map(x => effRarity(x.rarity)).filter(Boolean))].sort((a, b) => (RARITY_ORDER[b] || 0) - (RARITY_ORDER[a] || 0));
+        const kindMap = new Map();
+        if (tab === 'emote') {
+          for (const x of all) {
+            const label = emoteKindLabel(x);
+            if (label && !kindMap.has(label)) kindMap.set(label, label);
+          }
+        }
+        const defs = tab === 'character_skin'
+          ? [{ key: 'role', label: '角色', options: roleOptions }, { key: 'series', label: '系列', options: seriesOptions.map(s => [s, s]) }]
+          : tab === 'emote'
+            ? [{ key: 'role', label: '角色', options: roleOptions }, { key: 'kind', label: '表情', options: [...kindMap.entries()].sort((a, b) => String(a[1]).localeCompare(String(b[1]), 'zh')) }]
+            : [{ key: 'rarity', label: '稀有度', options: rarityOptions.map(r => [r, RARITY_TEXT[r] || r]) }, { key: 'series', label: '系列', options: seriesOptions.map(s => [s, s]) }];
+        const host = h.querySelector('#peFilterHost');
+        host.innerHTML = defs.filter(d => d.options.length).map((d, i) =>
+          `<select class="select" id="peFilter${i}" style="width:130px"><option value="">${d.label}：全部</option>${d.options.map(([value, label]) => `<option value="${escAttr(value)}">${escAttr(d.label + '：' + label)}</option>`).join('')}</select>`
+        ).join('');
+        const applyFilter = (def, value) => {
+          if (!value) return;
+          if (def.key === 'role') list = list.filter(x => String(assetMeta(x).role || 0) === value);
+          else if (def.key === 'series') list = list.filter(x => String(x.series || '') === value);
+          else if (def.key === 'kind') list = list.filter(x => emoteKindLabel(x) === value);
+          else if (def.key === 'rarity') list = list.filter(x => effRarity(x.rarity) === value);
+        };
+        let list = all;
+        const shownDefs = defs.filter(d => d.options.length);
+        const values = [filter, filter2];
+        shownDefs.forEach((d, i) => {
+          const el = h.querySelector('#peFilter' + i);
+          if (!el) return;
+          el.value = values[i] || '';
+          el.onchange = () => {
+            if (i === 0) filter = el.value; else filter2 = el.value;
+            renderGrid();
+          };
+          applyFilter(d, el.value);
+        });
+        if (ownedOnly) {
+          const ownedIds = new Set((state.bag || []).map(x => Number(x.id)));
+          list = list.filter(x => ownedIds.has(Number(x.id)));
+        }
+        if (search) list = list.filter(x => (catalogName(tab, x.id) || '').toLowerCase().includes(search) || (x.series || '').toLowerCase().includes(search));
+        const selectedEmoteIds = new Set(temp.emoteAssetIds.filter(Boolean).map(Number));
+        const grid = h.querySelector('#peGrid');
+        grid.innerHTML = list.length ? list.map(x => {
+          const id = Number(x.id);
+          const selected = tab === 'emote' ? selectedEmoteIds.has(id) : id === selectedItemId();
+          return `<button type="button" class="pe-card ${selected ? 'selected' : ''}" data-pe-type="${tab}" data-pe-id="${id}" title="${escAttr(catalogName(tab, id))}">
+            ${x.thumb ? `<img src="${escAttr(x.thumb)}" alt="">` : '<span class="muted">□</span>'}
+            <span class="pe-name">${esc(catalogName(tab, id))}</span>
+            <span class="pe-sub">${esc(x.series || (tab === 'emote' ? emoteKindLabel(x) : ''))}</span>
+          </button>`;
+        }).join('') : `<div class="empty-state" style="grid-column:1/-1">没有符合条件的条目</div>`;
+        h.querySelectorAll('[data-pe-type]').forEach(el => {
+          el.onclick = () => {
+            const type = el.dataset.peType;
+            const id = Number(el.dataset.peId);
+            if (type === 'character_skin') temp.characterAssetId = id;
+            else if (type === 'accessory') temp.accessoryAssetId = temp.accessoryAssetId === id ? 0 : id;
+            else {
+              temp.emoteAssetIds[selectedSlot] = id;
+              const next = temp.emoteAssetIds.findIndex((v, i) => i > selectedSlot && !v);
+              if (next >= 0) selectedSlot = next;
+            }
+            renderPreview();
+            renderGrid();
+          };
+        });
+        h.querySelector('#peSlotHint').textContent = tab === 'emote' ? `正在编辑槽位 ${selectedSlot + 1}` : '点击下方表情可放入当前槽位';
+      };
+
+      h.querySelectorAll('[data-pe-tab]').forEach(btn => btn.onclick = () => {
+        tab = btn.dataset.peTab;
+        search = '';
+        filter = '';
+        filter2 = '';
+        h.querySelector('#peSearch').value = '';
+        h.querySelectorAll('[data-pe-tab]').forEach(b => b.classList.toggle('active', b === btn));
+        renderPreview();
+        renderGrid();
+      });
+      h.querySelector('#peSearch').oninput = e => { search = e.target.value.trim().toLowerCase(); renderGrid(); };
+      const ownedBtn = h.querySelector('#peOwnedOnly');
+      ownedBtn.onclick = () => {
+        ownedOnly = !ownedOnly;
+        ownedBtn.classList.toggle('active', ownedOnly);
+        renderGrid();
+      };
+      h.querySelector('#peCancel').onclick = closeModal;
+      h.querySelector('#peSave').onclick = async () => {
+        const emoteAssetIds = temp.emoteAssetIds.slice(0, 5);
+        try {
+          if (isLocal) {
+            await tryCall('presets.local.save', {
+              id: p.id || '',
+              name: h.querySelector('#peName')?.value.trim() || p.name || '本地预设',
+              characterAssetId: temp.characterAssetId,
+              accessoryAssetId: temp.accessoryAssetId,
+              emoteAssetIds,
+            });
+            state.localPresets = null;
+            closeModal();
+            await ensureLocalPresets(true);
+          } else {
+            await tryCall('presets.create', {
+              characterAssetId: temp.characterAssetId,
+              accessoryAssetId: temp.accessoryAssetId,
+              emoteAssetIds,
+              includeEmotes: true,
+            });
+            const oldId = p.preset_id ?? p.id;
+            if (oldId) await tryCall('presets.delete', { id: oldId });
+            closeModal();
+            await ensurePresets(true);
+          }
+          renderPreset();
+          toast('预设已更新');
+        } catch (e) { toast(e.message || '保存预设失败', 'err'); }
+      };
+      renderPreview();
+      renderGrid();
+    });
+  }
+
+  function presetCardHtml(p, index, isLocal) {
+    const charId = Number(p.character_asset_id ?? p.characterAssetId ?? 0);
+    const accId = Number(p.accessory_asset_id ?? p.accessoryAssetId ?? 0);
+    const emotes = presetEmoteIds(p);
+    const title = isLocal ? (p.name || `本地预设 ${index + 1}`) : `预设 ${index + 1}`;
+    return `<div class="preset-card">
+      <div class="preset-head"><span class="preset-emoji">${isLocal ? '🏠' : '⭐'}</span><span class="preset-title">${esc(title)}</span></div>
+      ${presetPreviewHtml(p)}
+      <div class="detail-row"><span>角色</span><span>${esc(catalogName('character_skin', charId))}</span></div>
+      <div class="detail-row"><span>配件</span><span>${esc(catalogName('accessory', accId))}</span></div>
+      <div class="detail-row"><span>表情</span><span>${emotes.length} 个</span></div>
+      <div class="preset-actions">
+        <button class="btn ghost" data-${isLocal ? 'l' : 'c'}apply="${index}">使用</button>
+        <button class="btn ghost" data-${isLocal ? 'l' : 'c'}ignore="${index}">使用（忽略表情）</button>
+        <button class="btn ghost" data-${isLocal ? 'l' : 'c'}edit="${index}">修改</button>
+        ${isLocal ? `<button class="btn ghost" data-lupload="${index}">上传云端</button>` : ''}
+        <button class="btn danger" data-${isLocal ? 'l' : 'c'}del="${index}">删除</button>
+      </div>
+    </div>`;
   }
 
   async function renderPreset() {
     setPage('<div class="loading">正在读取预设…</div>');
-    try { await ensurePresets(); } catch { setPage('<div class="empty-state">预设读取失败</div>'); return; }
-    const list = state.presets;
+    try {
+      await Promise.all([
+        ensurePresets(),
+        ensureLocalPresets(),
+        ...['character_skin', 'accessory', 'emote'].map(t => ensureCatalog(t).catch(() => [])),
+        ...['character_skin', 'accessory', 'emote'].map(t => ensureAtlasOne(t).catch(() => [])),
+      ]);
+    } catch { setPage('<div class="empty-state">预设读取失败</div>'); return; }
+    const list = state.presets || [];
+    const localList = state.localPresets || [];
     setPage(`
-      <div class="pill-row" style="margin-bottom:14px">
-        <span class="muted" style="font-size:13px">预设保存角色、配件与五个表情槽位，可跨房间快速切换。</span>
-        <span class="spacer"></span>
-        <button class="btn ghost" id="presetRefresh">刷新</button>
-        <button class="btn" id="presetCreate">保存当前外观</button>
-      </div>
-      <div class="preset-list" id="presetList"></div>`);
-    document.getElementById('presetRefresh').onclick = async () => { await ensurePresets(true); renderPreset(); };
-    document.getElementById('presetCreate').onclick = async () => {
-      try { await tryCall('presets.create'); toast('已保存当前外观'); await ensurePresets(true); renderPreset(); } catch { }
-    };
-    const host = document.getElementById('presetList');
-    if (!list.length) { host.innerHTML = '<div class="empty-state">还没有预设，点击「保存当前外观」创建</div>'; return; }
-    host.innerHTML = list.map((p, i) => {
-      const emotes = (p.emotes || []).map(e => e.asset_id ?? e).filter(Boolean);
-      return `<div class="preset-card">
-        <div class="preset-head"><span class="preset-emoji">⭐</span><span class="preset-title">预设 ${i + 1}</span></div>
-        <div class="detail-row"><span>角色</span><span>${esc(catalogName('character_skin', p.character_asset_id))}</span></div>
-        <div class="detail-row"><span>配件</span><span>${esc(catalogName('accessory', p.accessory_asset_id))}</span></div>
-        <div class="detail-row"><span>表情</span><span>${emotes.length} 个</span></div>
-        <div class="preset-actions">
-          <button class="btn ghost" data-apply="${i}">使用</button>
-          <button class="btn danger" data-del="${i}">删除</button>
+      <div class="preset-page-scroll">
+        <div class="pill-row" style="margin-bottom:14px;flex-wrap:wrap">
+          <span class="muted" style="font-size:13px">预设保存角色、配件与五个表情槽位；云端预设只在全部满足云端条件时上传。</span>
+          <span class="spacer"></span>
+          <label class="muted" style="display:flex;align-items:center;gap:6px;font-size:12px"><input type="checkbox" id="presetIncludeEmotes"> 保存云端时包含表情</label>
+          <button class="btn ghost" id="presetRefresh">刷新</button>
+          <button class="btn ghost" id="presetCreateLocal">保存为本地外观</button>
+          <button class="btn" id="presetCreate">保存当前为云外观配置</button>
         </div>
-      </div>`;
-    }).join('');
-    host.querySelectorAll('[data-apply]').forEach(b => b.onclick = async () => {
-      const p = list[Number(b.dataset.apply)];
+        <div class="section">
+          <div class="section-title">云外观配置</div>
+          <div class="preset-list" id="presetList">${list.length ? list.map((p, i) => presetCardHtml(p, i, false)).join('') : '<div class="empty-state">还没有云端预设</div>'}</div>
+        </div>
+        <div class="section">
+          <div class="section-title">本地外观配置</div>
+          <div class="preset-list" id="localPresetList">${localList.length ? localList.map((p, i) => presetCardHtml(p, i, true)).join('') : '<div class="empty-state">还没有本地预设，点击「保存为本地外观」创建</div>'}</div>
+        </div>
+      </div>`);
+    document.getElementById('presetRefresh').onclick = async () => { await Promise.all([ensurePresets(true), ensureLocalPresets(true)]); renderPreset(); };
+    document.getElementById('presetCreate').onclick = async () => {
       try {
-        if (p.character_asset_id) await tryCall('appearance.set', { type: 'character_skin', id: p.character_asset_id });
-        if (p.accessory_asset_id) await tryCall('appearance.set', { type: 'accessory', id: p.accessory_asset_id });
-        for (const e of (p.emotes || [])) {
-          const id = e.asset_id ?? e;
-          if (id) await tryCall('appearance.set', { type: 'emote', id });
-        }
-        await tryCall('appearance.sync');
-        toast('已应用预设并同步');
-        state.boot = await call('boot');
-        renderChrome();
-      } catch { }
-    });
-    host.querySelectorAll('[data-del]').forEach(b => b.onclick = async () => {
-      const p = list[Number(b.dataset.del)];
+        await tryCall('presets.create', { includeEmotes: document.getElementById('presetIncludeEmotes').checked });
+        await ensurePresets(true);
+        renderPreset();
+        toast('已保存当前为云外观配置');
+      } catch (e) { toast(e.message || '当前外观不满足云端条件', 'err'); }
+    };
+    document.getElementById('presetCreateLocal').onclick = () => saveLocalPresetDialog();
+    document.querySelectorAll('[data-capply]').forEach(b => b.onclick = () => applyPreset(list[Number(b.dataset.capply)], false, false));
+    document.querySelectorAll('[data-cignore]').forEach(b => b.onclick = () => applyPreset(list[Number(b.dataset.cignore)], false, true));
+    document.querySelectorAll('[data-cedit]').forEach(b => b.onclick = () => openPresetEditor(list[Number(b.dataset.cedit)], false));
+    document.querySelectorAll('[data-cdel]').forEach(b => b.onclick = async () => {
+      const p = list[Number(b.dataset.cdel)];
       const id = p.preset_id ?? p.id;
       if (!id) return toast('该预设缺少 id', 'err');
       try { await tryCall('presets.delete', { id }); await ensurePresets(true); renderPreset(); toast('已删除'); } catch { }
+    });
+    document.querySelectorAll('[data-lapply]').forEach(b => b.onclick = () => applyPreset(localList[Number(b.dataset.lapply)], true, false));
+    document.querySelectorAll('[data-lignore]').forEach(b => b.onclick = () => applyPreset(localList[Number(b.dataset.lignore)], true, true));
+    document.querySelectorAll('[data-ledit]').forEach(b => b.onclick = () => openPresetEditor(localList[Number(b.dataset.ledit)], true));
+    document.querySelectorAll('[data-lupload]').forEach(b => b.onclick = async () => {
+      const p = localList[Number(b.dataset.lupload)];
+      try {
+        await tryCall('presets.create', {
+          characterAssetId: p.characterAssetId,
+          accessoryAssetId: p.accessoryAssetId,
+          emoteAssetIds: p.emoteAssetIds,
+          includeEmotes: false,
+        });
+        await ensurePresets(true);
+        renderPreset();
+        toast('本地预设已上传为云外观配置');
+      } catch (e) { toast(e.message || '本地预设不满足云端条件', 'err'); }
+    });
+    document.querySelectorAll('[data-ldel]').forEach(b => b.onclick = async () => {
+      const p = localList[Number(b.dataset.ldel)];
+      if (!p.id) return;
+      try { await tryCall('presets.local.delete', { id: p.id }); state.localPresets = null; await ensureLocalPresets(true); renderPreset(); toast('已删除本地预设'); } catch { }
     });
   }
 
@@ -3344,8 +3831,10 @@
       },
       appearance: {
         characterAssetId: 3060,
+        characterRoleId: 1407,
         accessoryAssetId: 1604,
         emoteAssetIds: [1971, 1965, 1969, 1970, 1968],
+        cloudEmoteAssetIds: [1971, 1965, 1969, 1970, 1968],
       },
       catalog: {},
       update: null,
@@ -3457,7 +3946,12 @@
         { id: 103, type: 'emote', name: '测试表情材料', rarity: 'common', quantity: 3, thumb: '' },
       ];
     }
-    state.page = PREVIEW === 'room' ? 'room' : (PREVIEW === 'synth' ? 'synth' : 'settings');
+    if (PREVIEW === 'bag-emote') state.bagTab = 'emote';
+    state.page = PREVIEW === 'room' ? 'room'
+      : PREVIEW === 'synth' ? 'synth'
+      : PREVIEW === 'preset' ? 'preset'
+      : PREVIEW === 'bag-emote' ? 'bag'
+      : 'settings';
     init();
     renderChrome();
     renderPage();

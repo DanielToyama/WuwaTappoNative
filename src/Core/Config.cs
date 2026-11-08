@@ -29,6 +29,8 @@ public sealed class Settings
     public long CloudAccessoryAssetId { get; set; }
     public long[] CloudEmoteAssetIds { get; set; } = new long[5];
     public long[] PresetIds { get; set; } = Array.Empty<long>();
+    /// <summary>用户自建的本地外观预设，不依赖官方预设接口。</summary>
+    public List<LocalPreset> LocalPresets { get; set; } = new();
 
     public double Scale { get; set; } = 1.0;
     public double Opacity { get; set; } = 1.0;
@@ -156,6 +158,15 @@ public sealed class Settings
     public Dictionary<string, int[]> AccessoryOffsets { get; set; } = new();
 }
 
+public sealed class LocalPreset
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N");
+    public string Name { get; set; } = "";
+    public long CharacterAssetId { get; set; }
+    public long AccessoryAssetId { get; set; }
+    public long[] EmoteAssetIds { get; set; } = new long[5];
+}
+
 public static class ConfigStore
 {
     static readonly JsonSerializerOptions Options = new()
@@ -219,6 +230,17 @@ public static class ConfigStore
                     };
                     if (string.IsNullOrWhiteSpace(cfg.SdkDeviceNum) || cfg.SdkDeviceNum.Length < 16)
                         cfg.SdkDeviceNum = Guid.NewGuid().ToString("N");
+                    cfg.LocalPresets ??= new List<LocalPreset>();
+                    foreach (var preset in cfg.LocalPresets)
+                    {
+                        if (preset == null) continue;
+                        if (string.IsNullOrWhiteSpace(preset.Id)) preset.Id = Guid.NewGuid().ToString("N");
+                        if (string.IsNullOrWhiteSpace(preset.Name)) preset.Name = "本地预设";
+                        var slots = new long[5];
+                        if (preset.EmoteAssetIds != null)
+                            Array.Copy(preset.EmoteAssetIds, slots, Math.Min(5, preset.EmoteAssetIds.Length));
+                        preset.EmoteAssetIds = slots;
+                    }
                     return cfg;
                 }
             }
