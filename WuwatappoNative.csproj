@@ -50,6 +50,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="WuwatappoNative.AnimationChecks" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- 说明文档不参与复制，只复制运行时真正需要的资源。 -->
     <None Remove="assets\**\*.md" />
     <None Remove="data\**\*.md" />

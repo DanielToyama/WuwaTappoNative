@@ -140,6 +140,14 @@ Wuwatappo Native 是 WuwaTappo 1.0.2 的 Windows 原生实现，使用 C# / .NET
 WuwatappoNative.exe --stress 44 --stress-hz 10
 ```
 
+气泡动画使用仅在活动时启用的 UI 动画时钟，合并按键、计数与动画重绘，并缓存当前角色、底栏和气泡缩略图；不修改系统全局计时精度。可运行离线的动画回归检查与绘制基准：
+
+```powershell
+dotnet run --project tests/AnimationChecks/AnimationChecks.csproj -c Release
+```
+
+检查不会启动主应用、显示桌宠或读取账号配置。时钟频率和离屏绘制耗时不等于实际显示 FPS，也不代表游戏置顶、光追或帧生成的兼容性结论。
+
 ## 限制
 
 - 手机号登录仅支持国服；国际服请使用继承官方客户端登录或导入 token。
