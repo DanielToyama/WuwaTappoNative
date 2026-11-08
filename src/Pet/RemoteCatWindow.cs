@@ -36,7 +36,7 @@ public sealed class RemoteCatWindow : Form
     string _lastNickname;
     readonly LayeredSurface _surface = new();
     Bitmap _baseFrame;
-    (Size Size, Image Head, Image Body, Image Accessory, double X, double Y, float Scale, double NameScale, string Nickname) _baseFrameKey;
+    (Size Size, Image Head, Image Body, Image Accessory, double X, double Y, float Scale, double NameScale, string Nickname, bool Selected) _baseFrameKey;
     float _scale = 1f;
     bool _dragging;
     Point _dragCursor, _dragOrigin;
@@ -410,7 +410,7 @@ public sealed class RemoteCatWindow : Form
             _ => _frames.Body1
         };
         var key = (surface.Size, _frames?.Head1, selectedBody, _frames?.Accessory,
-            _frames?.AccOffsetX ?? 0, _frames?.AccOffsetY ?? 0, _scale, _remoteNameScale, _member.Nickname);
+            _frames?.AccOffsetX ?? 0, _frames?.AccOffsetY ?? 0, _scale, _remoteNameScale, _member.Nickname, _selected);
         if (ready && (_baseFrame == null || _baseFrameKey != key))
         {
             if (_baseFrame == null || _baseFrame.Size != surface.Size)
