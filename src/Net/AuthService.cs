@@ -25,6 +25,10 @@ public sealed class AuthService
     public long TotalClickCount { get; private set; }
     /// <summary>服务器记录的累计消耗（开宝箱等），用于算可用余额。</summary>
     public long TotalClickConsume { get; private set; }
+    /// <summary>服务器时间减去本机时间（毫秒）；由最近一次 API 响应的 Date 头校准。</summary>
+    public long ServerTimeOffsetMs => Api?.ServerTimeOffsetMs ?? 0;
+    /// <summary>当前服务器时间（毫秒），用于宝箱倒计时。</summary>
+    public long ServerNowMs => Api?.ServerNowMs ?? DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
     public JsonObject UserInfo { get; private set; }
 
     public AuthService(Settings cfg)

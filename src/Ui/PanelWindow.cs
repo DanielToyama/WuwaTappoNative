@@ -337,6 +337,7 @@ public sealed class PanelWindow : Form
             clickConsume = _app.Room.ServerConsume,
             chestLeft = ApiClient.ReadLong(_app.Auth.UserInfo?["left_treasure_chest"]),
             chestRight = ApiClient.ReadLong(_app.Auth.UserInfo?["right_treasure_chest"]),
+            serverOffsetMs = _app.Auth.ServerTimeOffsetMs,
         },
         room = _app.RoomState(),
         disclaimerShown = _app.Cfg.DisclaimerShown,
@@ -344,6 +345,12 @@ public sealed class PanelWindow : Form
         update = _updateInfo,
         compatibility = _app.Compatibility,
         announcements = _app.Announcements.Visible,
+        screens = Screen.AllScreens.Select((screen, index) => new
+        {
+            deviceName = screen.DeviceName,
+            label = PetWindow.ScreenLabel(screen, index),
+            primary = screen.Primary,
+        }).ToArray(),
         settings = new
         {
             scale = _app.Cfg.Scale,
@@ -366,6 +373,7 @@ public sealed class PanelWindow : Form
             rhythmKeys = _app.Cfg.RhythmKeys,
             allowOverlap = _app.Cfg.AllowOverlap,
             catLayout = _app.Cfg.CatLayout,
+            petScreen = _app.Cfg.PetScreen,
             synthCheckMode = _app.Cfg.SynthCheckMode,
             captureMode = _app.Cfg.CaptureMode,
             captureWidth = _app.Cfg.CaptureWidth,
@@ -919,6 +927,9 @@ public sealed class PanelWindow : Form
                             cfg.CatLayout = string.Equals(ApiClient.ReadString(kv.Value), "vertical", StringComparison.OrdinalIgnoreCase)
                                 ? "vertical" : "horizontal";
                             break;
+                        case "petScreen":
+                            cfg.PetScreen = ApiClient.ReadString(kv.Value);
+                            break;
                         case "synthCheckMode":
                         {
                             string mode = ApiClient.ReadString(kv.Value);
@@ -1005,6 +1016,7 @@ public sealed class PanelWindow : Form
                 {
                     _app.Pet.ApplySettings();
                     _app.Pet.ApplyCaptureMode();
+                    if (data.ContainsKey("petScreen")) _app.Pet.MoveToScreen(cfg.PetScreen);
                     if (!cfg.AllowOverlap) _app.Pet.ResolveOverlaps();
                     // “隐藏其他成员”开关必须立刻重建/移除联机桌宠，不能等下一次房间事件。
                     if (hideOthersChanged) _app.Pet.RefreshMembers();

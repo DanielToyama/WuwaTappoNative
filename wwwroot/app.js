@@ -1985,9 +1985,13 @@
     });
   }
 
+  function serverNowMs() {
+    return Date.now() + (Number(state.boot?.auth?.serverOffsetMs) || 0);
+  }
+
   function chestTimeText(ts) {
     if (!ts) return '未生成';
-    const left = ts - Date.now();
+    const left = ts - serverNowMs();
     if (left <= 0) return '可开启';
     const s = Math.ceil(left / 1000), m = Math.floor(s / 60), ss = s % 60;
     return `${m}分${String(ss).padStart(2, '0')}秒后可开启`;
@@ -2293,6 +2297,8 @@
     const remoteNameScalePct = Math.max(50, Math.min(200, Math.round((Number(s.remoteNameScale) || 1) * 100)));
     const accX = Number(acc.accessoryOffsetX || 0);
     const accY = Number(acc.accessoryOffsetY || 0);
+    const screens = Array.isArray(state.boot?.screens) ? state.boot.screens : [];
+    const selectedScreen = s.petScreen || screens.find(x => x.primary)?.deviceName || '';
     // 快捷键/菜单改设置会触发 boot 重推；保留滚动位置，别把用户顶回顶部。
     const prevScroll = document.querySelector('.settings-scroll')?.scrollTop || 0;
     setPage(`
@@ -2358,6 +2364,14 @@
               </select>
               <input type="range" min="25" max="200" step="1" value="${scalePct}" id="setScaleRange" style="width:180px" />
               <span id="scaleVal">${scalePct}%</span>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">显示屏幕</div><div class="setting-sub">快捷键切换屏幕时以这个屏幕为基准；修改后桌宠会移动到所选屏幕</div></div>
+            <div class="setting-content">
+              <select class="select" id="setPetScreen" style="min-width:220px">
+                ${screens.map(x => `<option value="${esc(x.deviceName)}" ${x.deviceName === selectedScreen ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}
+              </select>
             </div>
           </div>
           <div class="setting-item">
@@ -2785,6 +2799,14 @@
       if (e.target.value === 'custom') return;
       lastScaleSent = performance.now();
       applyScale(Number(e.target.value) * 100, true);
+    });
+    document.getElementById('setPetScreen')?.addEventListener('change', async e => {
+      try {
+        await tryCall('settings.set', { petScreen: e.target.value });
+        await syncBoot();
+        renderSettings();
+        toast('已切换显示屏幕');
+      } catch { }
     });
     scaleRange?.addEventListener('input', () => {
       const pct = Number(scaleRange.value);
@@ -3246,6 +3268,10 @@
       version: '0.1.4',
       disclaimerShown: true,
       uacPromptShown: true,
+      screens: [
+        { deviceName: 'preview-display-1', label: '屏幕 1 · 1920×1080（主屏幕）', primary: true },
+        { deviceName: 'preview-display-2', label: '屏幕 2 · 2560×1440', primary: false },
+      ],
       auth: {
         loggedIn: true,
         nickname: 'Daniel兔兔',

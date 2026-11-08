@@ -92,6 +92,8 @@ public sealed class Settings
     public bool AllowOverlap { get; set; } = true;
     /// <summary>联机桌宠排列方向：horizontal = 底部横向，vertical = 右侧纵向。</summary>
     public string CatLayout { get; set; } = "horizontal";
+    /// <summary>快捷键切换屏幕时使用的显示基准；空字符串表示主屏幕。</summary>
+    public string PetScreen { get; set; } = "";
     /// <summary>获得新道具后的合成提醒检查偏好：up / same / off。</summary>
     public string SynthCheckMode { get; set; } = "up";
     /// <summary>OBS 绿幕采集窗口：只显示主角，背景纯绿。</summary>

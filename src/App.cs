@@ -475,7 +475,7 @@ public sealed class App : ApplicationContext
         {
             var session = Auth.CaptureSession();
             if (session == null || !Cfg.AutoChest || Auth.UserInfo is not System.Text.Json.Nodes.JsonObject me) return;
-            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            long now = session.ServerNowMs;
             long left = ApiClient.ReadLong(me["left_treasure_chest"]);
             long right = ApiClient.ReadLong(me["right_treasure_chest"]);
 
@@ -487,7 +487,7 @@ public sealed class App : ApplicationContext
                 Pet.BeginInvoke(new Action(() => Pet.RefreshHud()));
                 if (Auth.UserInfo is not System.Text.Json.Nodes.JsonObject fresh) return;
                 me = fresh;
-                now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                now = session.ServerNowMs;
                 left = ApiClient.ReadLong(me["left_treasure_chest"]);
                 right = ApiClient.ReadLong(me["right_treasure_chest"]);
             }
@@ -633,6 +633,7 @@ public sealed class App : ApplicationContext
         {
             bool ok = await Auth.TryRestoreAsync();
             Log.Write("恢复登录 " + ok);
+            Log.Write($"服务器时间偏移：{Auth.ServerTimeOffsetMs}ms");
             if (ok)
             {
                 Room.SyncServerClicks(Auth.TotalClickCount, Auth.TotalClickConsume);
@@ -780,6 +781,7 @@ public sealed class App : ApplicationContext
             roomNo = Room.RoomNo,
             chestLeft = ApiClient.ReadLong(Auth.UserInfo?["left_treasure_chest"]),
             chestRight = ApiClient.ReadLong(Auth.UserInfo?["right_treasure_chest"]),
+            serverOffsetMs = Auth.ServerTimeOffsetMs,
         });
     }
 

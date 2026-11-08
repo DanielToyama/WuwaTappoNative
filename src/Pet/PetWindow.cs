@@ -25,6 +25,16 @@ public sealed class PetWindow : Form
     readonly RoomManager _room;
     readonly GlobalInputHook _hook = new();
     readonly Dictionary<long, RemoteCatWindow> _cats = new();
+    const long SelfSelectionId = -1;
+    readonly HashSet<long> _selectedCatIds = new();
+    bool _selfSelected;
+    bool _groupDragging;
+    long _groupDragOwner = SelfSelectionId;
+    Point _groupDragCursor;
+    readonly Dictionary<long, Point> _groupDragOrigins = new();
+    bool _multiSelectClickPending;
+    long _multiSelectClickId = SelfSelectionId;
+    bool _multiSelectClickWasSelected;
 
     PetFrames _frames;
     readonly LayeredSurface _surface = new();
@@ -187,7 +197,7 @@ public sealed class PetWindow : Form
     {
         if (!IsHandleCreated) return;
         if (_frames == null || (!_frames.Ready && !_frames.Loading)) return;
-        var info = BuildInfo(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        var info = BuildInfo(_auth.ServerNowMs);
         info.Loading = _frames.Loading;
         info.LoadingPhase = (Environment.TickCount64 % 1000) / 1000.0;
         // 高频重绘（每次按键、每次计数变化）复用同一张后缓冲。
@@ -245,6 +255,7 @@ public sealed class PetWindow : Form
             ChestLeftTs = leftTs,
             ChestRightTs = rightTs,
             NowMs = now,
+            Selected = _selfSelected,
             AccOffsetX = accOffset.x,
             AccOffsetY = accOffset.y,
             // 关闭"总是显示宝箱"时：可领取按钮常显；鼠标悬停桌宠时像表情 UI 一样露出倒计时
@@ -279,40 +290,57 @@ public sealed class PetWindow : Form
         return (x, y);
     }
 
-    bool _hovering, _hoverFadeTarget;
+    bool _hovering, _catHovering, _hoverFadeTarget;
     double _hoverFadeAmount;
 
     /// <summary>统一用光标轮询判断悬停：穿透/非穿透行为一致，也避免窗口透明区域造成误触发。</summary>
-    void SetHovering(bool hovering)
+    void SetHovering(bool hovering, bool catHovering)
     {
-        if (_hovering == hovering) return;
-        _hovering = hovering;
-        _hoverFadeTimer.Stop();
-        if (hovering)
+        bool contentChanged = _hovering != hovering;
+        bool catChanged = _catHovering != catHovering;
+        if (!contentChanged && !catChanged) return;
+
+        if (contentChanged)
         {
-            // 停留 500ms 才淡出：只是划过桌宠时不应该闪一下透明度。
-            _wheelCloseTimer.Stop();
-            if (_cfg.HoverFade) _hoverFadeTimer.Start();
-            // 轮盘也延迟出现；鼠标只是在角色身上快速划过时，不反复启动展开动画。
-            if (!_cfg.ClickThrough)
+            _hovering = hovering;
+            if (hovering)
+            {
+                _wheelCloseTimer.Stop();
+                // 轮盘也延迟出现；鼠标只是在角色身上快速划过时，不反复启动展开动画。
+                if (!_cfg.ClickThrough)
+                {
+                    _wheelShowTimer.Stop();
+                    _wheelShowTimer.Start();
+                }
+            }
+            else
             {
                 _wheelShowTimer.Stop();
-                _wheelShowTimer.Start();
+                _wheelCloseTimer.Start();
             }
-            return;
         }
-        _wheelShowTimer.Stop();
-        _wheelCloseTimer.Start();
-        StartHoverFade(false);
+
+        if (catChanged)
+        {
+            _catHovering = catHovering;
+            _hoverFadeTimer.Stop();
+            if (catHovering)
+            {
+                // 停留 500ms 才淡出：只是划过桌宠时不应该闪一下透明度。
+                if (_cfg.HoverFade) _hoverFadeTimer.Start();
+            }
+            else StartHoverFade(false);
+        }
     }
 
     void PollHover()
     {
         if (!IsHandleCreated || IsDisposed) return;
         var p = Cursor.Position;
-        SetHovering(Visible && !_hiddenByHotkey && ContainsPetPoint(p));
+        bool visible = Visible && !_hiddenByHotkey;
+        SetHovering(visible && ContainsPetPoint(p), visible && ContainsCatPoint(p));
         foreach (var cat in _cats.Values)
-            cat.SetHovered(cat.Visible && !_hiddenByHotkey && cat.ContainsScreenPoint(p));
+            cat.SetHovered(cat.Visible && !_hiddenByHotkey && cat.ContainsCatScreenPoint(p));
     }
 
     /// <summary>按当前合成位图的 alpha 判断光标是否落在实际可见内容上，透明留白不触发悬停。</summary>
@@ -324,6 +352,169 @@ public sealed class PetWindow : Form
         var bmp = _surface.Bitmap;
         if (bmp == null) return false;
         try { return bmp.GetPixel(pt.X, pt.Y).A > 8; } catch { return false; }
+    }
+
+    /// <summary>只命中主角图片本体，不计入表情/键帽气泡、HUD 和轮盘；用于悬停虚化。</summary>
+    bool ContainsCatPoint(Point p)
+    {
+        if (!Visible || IsDisposed || !IsHandleCreated || _frames == null) return false;
+        var pt = PointToClient(p);
+        if (pt.X < 0 || pt.Y < 0 || pt.X >= Width || pt.Y >= Height) return false;
+        float s = Width / (float)PetComposer.WindowW;
+        float logicalX = pt.X / s;
+        float logicalY = pt.Y / s;
+        float centerX = PetComposer.CatX + PetComposer.CatSize / 2f;
+        float centerY = PetComposer.CatY + PetComposer.CatSize / 2f;
+        if (_bubbles.HitTest(logicalX, logicalY, centerX, centerY) ||
+            _keyBubbles.HitTest(logicalX, logicalY, centerX, centerY))
+            return false;
+        int x = (int)Math.Round(logicalX) - PetComposer.CatX;
+        int y = (int)Math.Round(logicalY) - PetComposer.CatY;
+        var acc = AccessoryOffsetFor(_cfg.AccessoryAssetId);
+        return PetComposer.HitTestCat(
+            _frames, _bodyFrame, _headFrame, x, y,
+            (int)Math.Round(_frames.AccOffsetX + acc.x),
+            (int)Math.Round(_frames.AccOffsetY + acc.y));
+    }
+
+    bool IsSelected(long id)
+        => id == SelfSelectionId ? _selfSelected : _selectedCatIds.Contains(id);
+
+    int SelectedCount()
+        => (_selfSelected ? 1 : 0) + _selectedCatIds.Count(id => _cats.ContainsKey(id));
+
+    void SetSelected(long id, bool selected)
+    {
+        if (id == SelfSelectionId)
+        {
+            if (_selfSelected == selected) return;
+            _selfSelected = selected;
+            Compose();
+            return;
+        }
+        if (_cats.TryGetValue(id, out var cat))
+        {
+            if (selected) _selectedCatIds.Add(id);
+            else _selectedCatIds.Remove(id);
+            cat.SetSelected(selected);
+        }
+        else _selectedCatIds.Remove(id);
+    }
+
+    void ClearSelection()
+    {
+        if (!_selfSelected && _selectedCatIds.Count == 0) return;
+        _selfSelected = false;
+        foreach (var id in _selectedCatIds.ToList())
+            if (_cats.TryGetValue(id, out var cat)) cat.SetSelected(false);
+        _selectedCatIds.Clear();
+        Compose();
+    }
+
+    /// <summary>多选拖拽开始时记录所有选中角色的起始位置。</summary>
+    void BeginGroupDrag(long ownerId, Point cursor)
+    {
+        _groupDragging = true;
+        _groupDragOwner = ownerId;
+        _groupDragCursor = cursor;
+        _groupDragOrigins.Clear();
+        if (_selfSelected) _groupDragOrigins[SelfSelectionId] = Location;
+        foreach (var id in _selectedCatIds)
+            if (_cats.TryGetValue(id, out var cat) && cat.Visible)
+                _groupDragOrigins[id] = cat.Location;
+    }
+
+    void UpdateGroupDrag(Point cursor)
+    {
+        if (!_groupDragging) return;
+        int dx = cursor.X - _groupDragCursor.X, dy = cursor.Y - _groupDragCursor.Y;
+        foreach (var pair in _groupDragOrigins)
+        {
+            var target = new Point(pair.Value.X + dx, pair.Value.Y + dy);
+            if (pair.Key == SelfSelectionId) Location = target;
+            else if (_cats.TryGetValue(pair.Key, out var cat)) cat.Location = target;
+        }
+        long tick = Environment.TickCount64;
+        if (tick - _lastGeometryMs >= 16)
+        {
+            _lastGeometryMs = tick;
+            GeometryChanged?.Invoke();
+        }
+    }
+
+    void EndGroupDrag(bool moved)
+    {
+        if (!_groupDragging) return;
+        _groupDragging = false;
+        if (moved)
+        {
+            if (_selfSelected)
+            {
+                _cfg.PetX = Left;
+                _cfg.PetY = Top;
+            }
+            foreach (var id in _selectedCatIds)
+                if (_cats.TryGetValue(id, out var cat))
+                    _cfg.MemberPositions[CatKey(id)] = new[] { cat.Left, cat.Top };
+            Save();
+            GeometryChanged?.Invoke();
+            if (!_cfg.AllowOverlap) ResolveOverlaps();
+        }
+        CompleteMultiSelectClick(moved);
+        _groupDragOrigins.Clear();
+    }
+
+    /// <summary>Ctrl+单击但没有拖动时，取消点击前已选中的那个角色；拖动过则保留选择。</summary>
+    void CompleteMultiSelectClick(bool moved)
+    {
+        if (!_multiSelectClickPending) return;
+        long id = _multiSelectClickId;
+        bool wasSelected = _multiSelectClickWasSelected;
+        _multiSelectClickPending = false;
+        if (!moved && wasSelected) SetSelected(id, false);
+    }
+
+    void OnCatDragStarted(RemoteCatWindow cat)
+    {
+        _multiSelectClickPending = false;
+        cat.ExternalDrag = false;
+        // 透明气泡区域不参与选择/拖动。
+        if (!cat.ContainsCatScreenPoint(Cursor.Position)) return;
+        long id = cat.MemberId;
+        bool ctrl = (Control.ModifierKeys & Keys.Control) != 0;
+        if (!ctrl)
+        {
+            ClearSelection();
+            cat.ExternalDrag = false;
+            return;
+        }
+
+        bool wasSelected = _selectedCatIds.Contains(id);
+        if (!wasSelected) SetSelected(id, true);
+        _multiSelectClickPending = true;
+        _multiSelectClickId = id;
+        _multiSelectClickWasSelected = wasSelected;
+        if (SelectedCount() > 1)
+        {
+            cat.ExternalDrag = true;
+            BeginGroupDrag(id, Cursor.Position);
+        }
+        else cat.ExternalDrag = false;
+    }
+
+    void OnCatDragMoved(RemoteCatWindow cat, Point cursor)
+    {
+        if (_groupDragging && _groupDragOwner == cat.MemberId) UpdateGroupDrag(cursor);
+    }
+
+    void OnCatDragEnded(RemoteCatWindow cat, bool moved)
+    {
+        if (_groupDragging && _groupDragOwner == cat.MemberId)
+        {
+            EndGroupDrag(moved);
+            return;
+        }
+        CompleteMultiSelectClick(moved);
     }
 
     void StartHoverFade(bool on)
@@ -370,7 +561,7 @@ public sealed class PetWindow : Form
         _countdownTimer.Tick += (s, e) =>
         {
             if (!_auth.IsLoggedIn) return;
-            long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            long now = _auth.ServerNowMs;
             long left = ApiClient.ReadLong(_auth.UserInfo?["left_treasure_chest"]);
             long right = ApiClient.ReadLong(_auth.UserInfo?["right_treasure_chest"]);
             // 宝箱倒计时没显示时不需要每秒重画整只桌宠。
@@ -401,7 +592,7 @@ public sealed class PetWindow : Form
         _hoverFadeTimer.Tick += (s, e) =>
         {
             _hoverFadeTimer.Stop();
-            if (!_hovering || !_cfg.HoverFade) return;
+            if (!_catHovering || !_cfg.HoverFade) return;
             StartHoverFade(true);
         };
         _hoverFadeAnimTimer = new System.Windows.Forms.Timer { Interval = 16 };
@@ -518,7 +709,7 @@ public sealed class PetWindow : Form
         bool counter = PetComposer.CounterRect.Contains(x, y) && !kb && !menu;
         bool cat = PetComposer.CatRect.Contains(x, y);
 
-        long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        long now = _auth.ServerNowMs;
         long leftTs = ApiClient.ReadLong(_auth.UserInfo?["left_treasure_chest"]);
         long rightTs = ApiClient.ReadLong(_auth.UserInfo?["right_treasure_chest"]);
         string chest = null;
@@ -565,6 +756,25 @@ public sealed class PetWindow : Form
         }
         if (!zone.Cat) return;
 
+        bool ctrl = (Control.ModifierKeys & Keys.Control) != 0;
+        if (ctrl)
+        {
+            bool wasSelected = _selfSelected;
+            if (!wasSelected) SetSelected(SelfSelectionId, true);
+            _multiSelectClickPending = true;
+            _multiSelectClickId = SelfSelectionId;
+            _multiSelectClickWasSelected = wasSelected;
+            _dragging = true;
+            _moved = false;
+            _dragCursor = Cursor.Position;
+            _dragOrigin = Location;
+            Capture = true;
+            if (SelectedCount() > 1) BeginGroupDrag(SelfSelectionId, Cursor.Position);
+            return;
+        }
+
+        _multiSelectClickPending = false;
+        ClearSelection();
         _room.AddClicks(1);
         _room.NotifyLocalAction();
         HandDown();
@@ -587,8 +797,15 @@ public sealed class PetWindow : Form
         int dx = now.X - _dragCursor.X, dy = now.Y - _dragCursor.Y;
         if (!_moved && Math.Abs(dx) + Math.Abs(dy) < 3) return;
         _moved = true;
-        Location = new Point(_dragOrigin.X + dx, _dragOrigin.Y + dy);
-        SnapToWorkingArea(now);
+        if (_groupDragging && _groupDragOwner == SelfSelectionId)
+        {
+            UpdateGroupDrag(now);
+        }
+        else
+        {
+            Location = new Point(_dragOrigin.X + dx, _dragOrigin.Y + dy);
+            SnapToWorkingArea(now);
+        }
         if (dx < 0) SetBody(2); else if (dx > 0) SetBody(3);
         _moveReset.Stop();
         _moveReset.Start();
@@ -630,6 +847,13 @@ public sealed class PetWindow : Form
         base.OnMouseUp(e);
         if (e.Button == MouseButtons.Left)
         {
+            if (_groupDragging && _groupDragOwner == SelfSelectionId)
+            {
+                bool moved = _moved;
+                _dragging = false;
+                EndGroupDrag(moved);
+                return;
+            }
             if (_moved) SnapToWorkingArea(Cursor.Position);
             _dragging = false;
             _cfg.PetX = Left;
@@ -637,6 +861,7 @@ public sealed class PetWindow : Form
             ConfigStore.Save(_cfg);
             GeometryChanged?.Invoke();
             if (!_cfg.AllowOverlap) ResolveOverlaps();
+            CompleteMultiSelectClick(_moved);
         }
     }
 
@@ -678,7 +903,7 @@ public sealed class PetWindow : Form
             _hoverFadeTarget = false;
             _hoverFadeAmount = 0;
         }
-        else if (_hovering && !_hoverFadeTarget)
+        else if (_catHovering && !_hoverFadeTarget)
         {
             // 运行中打开悬停半透明时，也按正常停留时间开始淡出。
             _hoverFadeTimer.Stop();
@@ -784,7 +1009,7 @@ public sealed class PetWindow : Form
             _captureFrame?.Dispose();
             _captureFrame = new Bitmap(w, h, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
         }
-        var info = BuildInfo(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+        var info = BuildInfo(_auth.ServerNowMs);
         info.Loading = _frames.Loading;
         info.LoadingPhase = (Environment.TickCount64 % 1000) / 1000.0;
         PetComposer.ComposeInto(_captureFrame, _frames, _bodyFrame, _headFrame, info, 1.0);
@@ -952,6 +1177,88 @@ public sealed class PetWindow : Form
             Safe(() => HandleHotkey(action));
     }
 
+    /// <summary>F8/设置选择屏幕时的基准屏幕；未设置时使用主屏幕。</summary>
+    public Screen ConfiguredScreen()
+    {
+        var screens = Screen.AllScreens;
+        if (screens.Length == 0) return Screen.PrimaryScreen;
+        if (!string.IsNullOrWhiteSpace(_cfg.PetScreen))
+        {
+            var configured = screens.FirstOrDefault(s =>
+                string.Equals(s.DeviceName, _cfg.PetScreen, StringComparison.OrdinalIgnoreCase));
+            if (configured != null) return configured;
+        }
+        return screens.FirstOrDefault(s => s.Primary) ?? screens[0];
+    }
+
+    public static string ScreenLabel(Screen screen, int index)
+    {
+        var bounds = screen.Bounds;
+        return $"屏幕 {index + 1} · {bounds.Width}×{bounds.Height}{(screen.Primary ? "（主屏幕）" : "")}";
+    }
+
+    /// <summary>把主桌宠移动到指定屏幕；只有一个屏幕有桌宠时整组平移，跨屏分布时保持联机成员不动。</summary>
+    public void MoveToScreen(string deviceName, bool announce = false)
+    {
+        var screens = Screen.AllScreens;
+        if (screens.Length == 0) return;
+        var screen = screens.FirstOrDefault(s =>
+            string.Equals(s.DeviceName, deviceName, StringComparison.OrdinalIgnoreCase))
+            ?? screens.FirstOrDefault(s => s.Primary)
+            ?? screens[0];
+
+        _cfg.PetScreen = screen.DeviceName;
+        var wa = screen.WorkingArea;
+        int targetX = wa.Right - Width - 40;
+        int targetY = wa.Bottom - Height - 60;
+        int dx = targetX - Left;
+        int dy = targetY - Top;
+        bool groupMove = _cats.Count > 0 && !PetsOnMultipleScreens();
+
+        Location = new Point(targetX, targetY);
+        _cfg.PetX = Left;
+        _cfg.PetY = Top;
+
+        // 所有桌宠原本都在同一屏幕时，保持相对布局整体平移；
+        // 已经分布在多个屏幕时说明是用户刻意摆放的，只移动主角，不重排其他人。
+        if (groupMove)
+        {
+            foreach (var pair in _cats)
+            {
+                var cat = pair.Value;
+                if (!cat.Visible) continue;
+                cat.Location = new Point(cat.Left + dx, cat.Top + dy);
+                _cfg.MemberPositions[CatKey(pair.Key)] = new[] { cat.Left, cat.Top };
+            }
+        }
+
+        Save();
+        GeometryChanged?.Invoke();
+        NotifySettingsChanged();
+        if (announce)
+            NotifyHotkey("已切换到 " + ScreenLabel(screen, Array.IndexOf(screens, screen)));
+    }
+
+    bool PetsOnMultipleScreens()
+    {
+        string first = null;
+        bool multiple = false;
+
+        void Track(Rectangle rect)
+        {
+            if (rect.IsEmpty || multiple) return;
+            var center = new Point(rect.Left + rect.Width / 2, rect.Top + rect.Height / 2);
+            string key = Screen.FromPoint(center).DeviceName;
+            if (first == null) first = key;
+            else if (!string.Equals(first, key, StringComparison.OrdinalIgnoreCase)) multiple = true;
+        }
+
+        Track(LocalVisibleRect());
+        foreach (var cat in _cats.Values)
+            if (cat.Visible && !_hiddenByHotkey) Track(CatVisibleRect(cat));
+        return multiple;
+    }
+
     void HandleHotkey(string action)
     {
         if (action == "reload")
@@ -972,15 +1279,11 @@ public sealed class PetWindow : Form
         {
             var screens = Screen.AllScreens;
             if (screens.Length < 2) return;
-            var current = Screen.FromControl(this);
+            var current = ConfiguredScreen();
             int idx = Array.IndexOf(screens, current);
+            if (idx < 0) idx = 0;
             var next = screens[(idx + 1) % screens.Length];
-            var wa = next.WorkingArea;
-            Location = new Point(wa.Right - Width - 40, wa.Bottom - Height - 60);
-            _cfg.PetX = Left;
-            _cfg.PetY = Top;
-            Save();
-            GeometryChanged?.Invoke();
+            MoveToScreen(next.DeviceName, true);
         }
         else if (action == "visibility")
         {
@@ -1278,6 +1581,9 @@ public sealed class PetWindow : Form
                 cat.RemoteScaleRequested += ApplyRemoteScale;
                 cat.RemoteOpacityRequested += ApplyRemoteOpacity;
                 cat.Location = PlaceNewCat(id);
+                cat.DragStarted += OnCatDragStarted;
+                cat.DragMoved += OnCatDragMoved;
+                cat.DragEnded += OnCatDragEnded;
                 cat.Moved += p =>
                 {
                     _cfg.MemberPositions[CatKey(id)] = new[] { p.X, p.Y };
@@ -1447,9 +1753,11 @@ public sealed class PetWindow : Form
     /// 纵向时沿屏幕右侧向下排列，排满后向左换列并从顶部继续。
     /// 锚点使用可见区域并贴住工作区底边/右边，和手动拖动贴边后的位置一致。
     /// </summary>
-    public void ResetCatOrder()
+    public void ResetCatOrder() => ResetCatOrder(null);
+
+    public void ResetCatOrder(Screen targetScreen)
     {
-        var wa = Screen.FromControl(this).WorkingArea;
+        var wa = (targetScreen ?? Screen.FromControl(this)).WorkingArea;
         float s = RemoteScaleFactor;
         float ms = Width / (float)PetComposer.WindowW;
         int gap = Math.Max(6, (int)Math.Round(10 * s));
@@ -1707,6 +2015,8 @@ public sealed class PetWindow : Form
         if (_cats.TryGetValue(id, out var cat))
         {
             _cats.Remove(id);
+            _selectedCatIds.Remove(id);
+            _groupDragOrigins.Remove(id);
             cat.Close();
             cat.Dispose();
         }
@@ -1724,7 +2034,7 @@ public sealed class PetWindow : Form
 
     Point DefaultLocation()
     {
-        var wa = Screen.PrimaryScreen.WorkingArea;
+        var wa = ConfiguredScreen().WorkingArea;
         var size = WindowSize();
         return new Point(wa.Right - size.Width - 40, wa.Bottom - size.Height - 60);
     }

@@ -200,6 +200,7 @@ public static class PetComposer
         public long ChestLeftTs, ChestRightTs;
         public long NowMs;
         public bool ShowChestLeft, ShowChestRight;
+        public bool Selected;
         public Image ChestButton, ChestCountdown;
         public bool Loading;
         public double LoadingPhase;
@@ -239,6 +240,8 @@ public static class PetComposer
             int ay = (int)Math.Round((CatY + f.AccOffsetY + info.AccOffsetY) * s);
             g.DrawImage(f.Accessory, ax, ay, cat.Width, cat.Height);
         }
+        if (info.Selected)
+            DrawSelection(g, new RectangleF(cat.X, cat.Y, cat.Width, cat.Height), s);
 
         if (info.Bubbles != null)
             info.Bubbles.Draw(g, s, (CatX + CatSize / 2f) * s, (CatY + CatSize / 2f) * s);
@@ -422,5 +425,38 @@ public static class PetComposer
         path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
         path.CloseFigure();
         return path;
+    }
+
+    /// <summary>多选拖拽时在主角色/联机角色周围绘制选中框。</summary>
+    public static void DrawSelection(Graphics g, RectangleF rect, float s)
+    {
+        using var path = Rounded(rect, 18 * s);
+        using var fill = new SolidBrush(Color.FromArgb(24, 76, 151, 141));
+        using var pen = new Pen(Color.FromArgb(220, 76, 151, 141), Math.Max(1.5f, 2f * s));
+        g.FillPath(fill, path);
+        g.DrawPath(pen, path);
+    }
+
+    /// <summary>
+    /// 只按角色图片的 alpha 判断鼠标是否真正落在角色本体上。
+    /// 表情/键帽气泡画在角色上方，不能参与悬停虚化判定。
+    /// </summary>
+    public static bool HitTestCat(PetFrames f, int bodyFrame, int headFrame, int x, int y, int accOffsetX = 0, int accOffsetY = 0)
+    {
+        if (f == null || !f.Ready || x < 0 || y < 0 || x >= CatSize || y >= CatSize) return false;
+        Image head = headFrame == 2 ? f.Head2 ?? f.Head1 : f.Head1;
+        Image body = bodyFrame switch { 2 => f.Body2 ?? f.Body1, 3 => f.Body3 ?? f.Body1, _ => f.Body1 };
+        if (HasOpaquePixel(head, x, y)) return true;
+        if (HasOpaquePixel(body, x, y)) return true;
+        return f.Accessory != null && HasOpaquePixel(f.Accessory, x - accOffsetX, y - accOffsetY);
+    }
+
+    static bool HasOpaquePixel(Image image, int x, int y)
+    {
+        if (image is not Bitmap bmp || x < 0 || y < 0) return false;
+        int px = (int)Math.Round(x * (bmp.Width - 1) / (double)(CatSize - 1));
+        int py = (int)Math.Round(y * (bmp.Height - 1) / (double)(CatSize - 1));
+        if (px < 0 || py < 0 || px >= bmp.Width || py >= bmp.Height) return false;
+        try { return bmp.GetPixel(px, py).A > 8; } catch { return false; }
     }
 }

@@ -45,8 +45,13 @@ public sealed class ApiClient : IDisposable
     readonly HttpClient _http;
     readonly CookieContainer _cookies = new();
     string _token = "";
+    long _serverOffsetMs;
     public string Token => _token;
     public string LastCid { get; private set; } = "";
+    /// <summary>服务器时间减去本机时间（毫秒）；用于本机时钟不准时校准宝箱倒计时。</summary>
+    public long ServerTimeOffsetMs => Interlocked.Read(ref _serverOffsetMs);
+    /// <summary>当前服务器时间（毫秒）；未收到服务器 Date 头时退回本机时间。</summary>
+    public long ServerNowMs => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + ServerTimeOffsetMs;
     public event Action<string> TokenRefreshed;
 
     public ApiClient(string cid, string baseUrl = null)
@@ -87,7 +92,16 @@ public sealed class ApiClient : IDisposable
         if (body != null)
             req.Content = new StringContent(JsonSerializer.Serialize(body, JsonOpts), Encoding.UTF8, "application/json");
 
+        long requestStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         using var resp = await _http.SendAsync(req).ConfigureAwait(false);
+        long requestEndedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        // 用服务器 Date 头校准本机时钟：宝箱解锁时间戳是服务器时间，
+        // 用户 BIOS/Windows 时间慢几十分钟时不能直接与本机时间比较。
+        if (resp.Headers.Date is DateTimeOffset serverDate)
+        {
+            long midpoint = requestStartedMs + Math.Max(0, requestEndedMs - requestStartedMs) / 2;
+            Interlocked.Exchange(ref _serverOffsetMs, serverDate.ToUnixTimeMilliseconds() - midpoint);
+        }
         var text = await resp.Content.ReadAsStringAsync().ConfigureAwait(false);
         if ((int)resp.StatusCode == 601)
             throw new ApiException(601, "当前服务正在维护中，请稍后再试。", null);

@@ -68,6 +68,25 @@ public sealed class EmoteBubbleLayer
 
     public void Clear() => _items.Clear();
 
+    /// <summary>逻辑坐标命中当前表情气泡；用于避免气泡挡住角色时误触发悬停。</summary>
+    public bool HitTest(float x, float y, float cx, float cy)
+    {
+        var now = DateTime.UtcNow;
+        foreach (var b in _items)
+        {
+            double p = Math.Clamp((now - b.Start).TotalMilliseconds / LifeMs, 0, 1);
+            double ease = 1 - Math.Pow(1 - p, 2);
+            double alpha = p < 0.7 ? 1.0 : 1.0 - (p - 0.7) / 0.3;
+            if (alpha <= 0.01) continue;
+            double scl = 1 + 0.08 * ease;
+            double size = 80 * scl;
+            double left = cx + b.OffsetX - size / 2;
+            double top = cy + b.OffsetY - size * 0.3 - Rise * ease;
+            if (x >= left && x <= left + size && y >= top && y <= top + size) return true;
+        }
+        return false;
+    }
+
     /// <summary>在猫中心 (cx, cy) 处绘制，scale 为窗口缩放。</summary>
     public void Draw(Graphics g, float scale, float cx, float cy)
     {

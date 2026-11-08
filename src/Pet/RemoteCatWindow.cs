@@ -39,8 +39,23 @@ public sealed class RemoteCatWindow : Form
     bool _dragging;
     Point _dragCursor, _dragOrigin;
     bool _movedDuringDrag;
+    bool _selected;
 
     public event Action<Point> Moved;
+    public event Action<RemoteCatWindow> DragStarted;
+    public event Action<RemoteCatWindow, Point> DragMoved;
+    public event Action<RemoteCatWindow, bool> DragEnded;
+
+    /// <summary>由主窗口接管本次拖动（多选批量移动）时，远程窗口自身不再移动。</summary>
+    public bool ExternalDrag { get; set; }
+    public bool Selected => _selected;
+
+    public void SetSelected(bool selected)
+    {
+        if (_selected == selected) return;
+        _selected = selected;
+        if (IsHandleCreated && !IsDisposed) Compose();
+    }
 
     public RemoteCatWindow(RoomMember member, PetImageLoader loader, Catalog catalog, AssetStore store)
     {
@@ -221,6 +236,20 @@ public sealed class RemoteCatWindow : Form
         try { return bmp.GetPixel(pt.X, pt.Y).A > 8; } catch { return false; }
     }
 
+    /// <summary>只命中角色图片本体，不计入表情/键帽气泡和昵称条；用于悬停虚化。</summary>
+    public bool ContainsCatScreenPoint(Point p)
+    {
+        if (!Visible || IsDisposed || !IsHandleCreated || _frames == null) return false;
+        var pt = PointToClient(p);
+        if (pt.X < 0 || pt.Y < 0 || pt.X >= Width || pt.Y >= Height) return false;
+        float s = _scale;
+        int x = (int)Math.Round(pt.X / s);
+        int y = (int)Math.Round(pt.Y / s) - Headroom;
+        if (_bubbles.HitTest(x, y, CatSize / 2f, CatSize / 2f)) return false;
+        return PetComposer.HitTestCat(_frames, _bodyFrame, 1, x, y,
+            (int)Math.Round(_frames.AccOffsetX), (int)Math.Round(_frames.AccOffsetY));
+    }
+
     void ApplyWindowStyles()
     {
         if (!IsHandleCreated) return;
@@ -386,6 +415,8 @@ public sealed class RemoteCatWindow : Form
                 if (body != null) g.DrawImage(body, 0, top, cat, cat);
                 if (_frames.Accessory != null)
                     g.DrawImage(_frames.Accessory, (float)(_frames.AccOffsetX * s), (float)(_frames.AccOffsetY * s) + top, cat, cat);
+                if (_selected)
+                    PetComposer.DrawSelection(g, new RectangleF(0, top, cat, cat), s);
 
                 float nameFontPx = 13.5f * s * (float)_remoteNameScale;
                 float pillH = Math.Max(32f * s, nameFontPx * 1.35f);
@@ -442,8 +473,8 @@ public sealed class RemoteCatWindow : Form
     protected override void OnMouseEnter(EventArgs e)
     {
         base.OnMouseEnter(e);
-        // 悬停半透明按窗口各自生效：鼠标在谁身上谁变淡，而不是一悬停全体一起淡。
-        SetHovered(true);
+        // 悬停半透明按窗口各自生效；只有角色本体命中，气泡/透明留白不触发。
+        SetHovered(ContainsCatScreenPoint(Cursor.Position));
     }
 
     protected override void OnMouseLeave(EventArgs e)
@@ -461,6 +492,7 @@ public sealed class RemoteCatWindow : Form
         _dragCursor = Cursor.Position;
         _dragOrigin = Location;
         Capture = true;
+        DragStarted?.Invoke(this);
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
@@ -470,6 +502,11 @@ public sealed class RemoteCatWindow : Form
         var p = Cursor.Position;
         int dx = p.X - _dragCursor.X, dy = p.Y - _dragCursor.Y;
         if (Math.Abs(dx) + Math.Abs(dy) > 2) _movedDuringDrag = true;
+        if (ExternalDrag)
+        {
+            DragMoved?.Invoke(this, p);
+            return;
+        }
         // 先算好贴边后的目标位置，再一次性移动，避免先移出边缘再吸回来造成左右闪烁。
         Location = SnapToWorkingArea(new Point(_dragOrigin.X + dx, _dragOrigin.Y + dy), p);
     }
@@ -502,9 +539,17 @@ public sealed class RemoteCatWindow : Form
             return;
         }
         if (e.Button != MouseButtons.Left) return;
-        if (_movedDuringDrag) Location = SnapToWorkingArea(Location, Cursor.Position);
+        bool moved = _movedDuringDrag;
         _dragging = false;
-        if (_movedDuringDrag) Moved?.Invoke(Location);
+        if (ExternalDrag)
+        {
+            ExternalDrag = false;
+            DragEnded?.Invoke(this, moved);
+            return;
+        }
+        if (moved) Location = SnapToWorkingArea(Location, Cursor.Position);
+        if (moved) Moved?.Invoke(Location);
+        DragEnded?.Invoke(this, moved);
     }
 
     protected override void OnClosed(EventArgs e)

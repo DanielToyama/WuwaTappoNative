@@ -1,6 +1,6 @@
 #define MyAppName "Wuwatappo Native"
 #ifndef MyVersion
-  #define MyVersion "0.1.7"
+  #define MyVersion "0.1.8"
 #endif
 #ifndef MySourceDir
   #define MySourceDir "..\publish\app-" + MyVersion
