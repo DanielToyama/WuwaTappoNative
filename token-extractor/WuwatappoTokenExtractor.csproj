@@ -28,6 +28,8 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
+    <!-- 与主程序保持同一套已修补的原生 SQLite（CVE-2025-6965）。 -->
+    <PackageReference Include="SQLitePCLRaw.bundle_e_sqlite3" Version="2.1.14" />
     <!-- 与主程序共用同一份解密实现，避免两个工具的行为不一致。 -->
     <Compile Include="..\src\Net\OfficialTokenReader.cs" Link="OfficialTokenReader.cs" />
   </ItemGroup>
