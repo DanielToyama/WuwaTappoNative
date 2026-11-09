@@ -32,6 +32,11 @@ public sealed class Settings
     /// <summary>用户自建的本地外观预设，不依赖官方预设接口。</summary>
     public List<LocalPreset> LocalPresets { get; set; } = new();
 
+    // 隐藏测试模式：仅作用于合成请求，不改变其他接口。
+    public bool TestModeEnabled { get; set; }
+    public int TestUploadLimitKbps { get; set; } = 30;
+    public int TestRequestRepeatCount { get; set; } = 3;
+
     public double Scale { get; set; } = 1.0;
     public double Opacity { get; set; } = 1.0;
     /// <summary>联机角色自定义大小；RemoteFollowMainScale=true 时忽略此值，直接跟随主角 Scale。</summary>
@@ -101,10 +106,18 @@ public sealed class Settings
     public string PetScreen { get; set; } = "";
     /// <summary>获得新道具后的合成提醒检查偏好：up / same / off。</summary>
     public string SynthCheckMode { get; set; } = "up";
-    /// <summary>OBS 绿幕采集窗口：只显示主角，背景纯绿。</summary>
+    /// <summary>OBS 采集窗口：只显示主角，可自定义背景色或使用透明背景。</summary>
     public bool CaptureMode { get; set; }
     public int CaptureWidth { get; set; } = 400;
     public int CaptureHeight { get; set; } = 700;
+    public string CaptureColor { get; set; } = "#00FF00";
+    public bool CaptureTransparent { get; set; }
+    /// <summary>首次开启 OBS 采集时展示 Win10 采集方式提示。</summary>
+    public bool CaptureObsNoticeShown { get; set; }
+    /// <summary>OBS 兼容模式：回退到 0.1.10 之前的普通窗口渲染。</summary>
+    public bool CaptureCompatibilityMode { get; set; }
+    /// <summary>OBS 模式下停止在桌面渲染主角；采集窗口仍会绘制主角。</summary>
+    public bool CaptureStopRenderingMain { get; set; }
     public bool AlwaysShowChest { get; set; }
     public bool AutoChest { get; set; }
     /// <summary>每次产生敲击时自动发送一个表情。</summary>
@@ -222,6 +235,7 @@ public static class ConfigStore
                     if (string.IsNullOrWhiteSpace(cfg.AnnouncementApiUrl))
                         cfg.AnnouncementApiUrl = AnnouncementService.DefaultApiUrl;
                     cfg.CatLayout = string.Equals(cfg.CatLayout, "vertical", StringComparison.OrdinalIgnoreCase) ? "vertical" : "horizontal";
+                    cfg.CaptureColor = NormalizeCaptureColor(cfg.CaptureColor);
                     cfg.SynthCheckMode = cfg.SynthCheckMode switch
                     {
                         "same" => "same",
@@ -241,6 +255,8 @@ public static class ConfigStore
                             Array.Copy(preset.EmoteAssetIds, slots, Math.Min(5, preset.EmoteAssetIds.Length));
                         preset.EmoteAssetIds = slots;
                     }
+                    cfg.TestUploadLimitKbps = Math.Clamp(cfg.TestUploadLimitKbps, 1, 1024);
+                    cfg.TestRequestRepeatCount = Math.Clamp(cfg.TestRequestRepeatCount, 1, 10);
                     return cfg;
                 }
             }
@@ -249,6 +265,20 @@ public static class ConfigStore
         var def = new Settings();
         def.ServerRegion = AutoDetectRegion();
         return def;
+    }
+
+    /// <summary>规范化 OBS 背景色号：只接受 #RRGGBB。</summary>
+    public static string NormalizeCaptureColor(string value)
+    {
+        value = (value ?? "").Trim();
+        if (value.Length == 7 && value[0] == '#')
+        {
+            bool ok = true;
+            for (int i = 1; i < 7; i++)
+                if (!Uri.IsHexDigit(value[i])) { ok = false; break; }
+            if (ok) return value.ToUpperInvariant();
+        }
+        return "#00FF00";
     }
 
     static string NormalizeRegion(string region)

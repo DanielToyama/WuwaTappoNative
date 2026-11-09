@@ -913,17 +913,64 @@ public sealed class PetWindow : Form
             {
                 try { old.ClosingFromOwner = true; old.Close(); old.Dispose(); } catch { }
             }
+            ApplyMainPetVisibility();
             return;
         }
 
+        bool recreate = _capture != null && !_capture.IsDisposed && _capture.Compatibility != _cfg.CaptureCompatibilityMode;
+        if (recreate)
+        {
+            var old = _capture;
+            _capture = null;
+            if (old != null)
+            {
+                try { old.ClosingFromOwner = true; old.Close(); old.Dispose(); } catch { }
+            }
+        }
         if (_capture == null || _capture.IsDisposed)
         {
-            _capture = new CaptureWindow(this);
+            _capture = new CaptureWindow(this, _cfg.CaptureCompatibilityMode);
             _capture.FormClosed += (s, e) => { if (ReferenceEquals(_capture, s)) _capture = null; };
+            _capture.SetBackground(_cfg.CaptureColor, _cfg.CaptureTransparent);
             _capture.Show();
+        }
+        else
+        {
+            _capture.SetBackground(_cfg.CaptureColor, _cfg.CaptureTransparent);
         }
         _capture.SetCaptureSize(w, h);
         _capture.Invalidate();
+        ApplyMainPetVisibility();
+
+        if (!_cfg.CaptureObsNoticeShown)
+        {
+            _cfg.CaptureObsNoticeShown = true;
+            Save();
+            try
+            {
+                MessageBox.Show(_capture,
+                    "请务必在 OBS 的窗口采集属性中，把「采集方式」改为「Windows 10（1903 及以上）」。\n" +
+                    "默认的自动采集方式可能只显示黑影或黑屏。\n\n" +
+                    "透明背景还需要勾选「允许透明」。\n" +
+                    "如果仍然异常，可在设置中开启「兼容模式」，改用纯色背景 + 色度键。",
+                    "OBS 采集提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch { }
+        }
+    }
+
+    /// <summary>OBS 模式下按设置停止在桌面渲染主角；采集窗口仍正常绘制。</summary>
+    void ApplyMainPetVisibility()
+    {
+        bool hiddenForCapture = _cfg.CaptureMode && _cfg.CaptureStopRenderingMain;
+        if (hiddenForCapture)
+        {
+            if (Visible) Hide();
+        }
+        else if (!_hiddenByHotkey && !Visible)
+        {
+            Show();
+        }
     }
 
     /// <summary>绿幕窗口右键关闭时同步关掉设置开关，避免下次 ApplySettings 又弹出来。</summary>
@@ -953,6 +1000,7 @@ public sealed class PetWindow : Form
         if (!_cfg.CaptureMode) return;
         _cfg.CaptureMode = false;
         Save();
+        ApplyMainPetVisibility();
         NotifySettingsChanged();
     }
 
@@ -1113,24 +1161,29 @@ public sealed class PetWindow : Form
     void PushBubble(Image image)
     {
         _bubbles.Add(image);
+        if (_capture != null && !_capture.IsDisposed) Safe(() => CaptureChanged?.Invoke());
         RequestCompose();
     }
 
     /// <summary>按键边沿生成一个键帽气泡；与表情和动作共享活动动画时钟。</summary>
     void PushKeyBubble(int vk)
     {
-        if (!_cfg.KeyBubbles || _hiddenByHotkey || !Visible) return;
+        bool captureOnly = _cfg.CaptureMode && _cfg.CaptureStopRenderingMain;
+        if (!_cfg.KeyBubbles || _hiddenByHotkey || (!Visible && !captureOnly)) return;
         if (vk == 0x01 || vk == 0x02) return; // 鼠标按键只计入点击，不生成键帽气泡
         if (!_keyBubbles.Add(vk)) return;
+        if (_capture != null && !_capture.IsDisposed) CaptureChanged?.Invoke();
         RequestCompose();
     }
 
     /// <summary>手柄按键边沿生成一个键帽气泡；肩键/扳机用浅金色强调。</summary>
     public void PushGamepadBubble(string label)
     {
-        if (!_cfg.KeyBubbles || _hiddenByHotkey || !Visible) return;
+        bool captureOnly = _cfg.CaptureMode && _cfg.CaptureStopRenderingMain;
+        if (!_cfg.KeyBubbles || _hiddenByHotkey || (!Visible && !captureOnly)) return;
         bool accent = label is "LB" or "RB" or "LT" or "RT";
         if (!_keyBubbles.AddLabel(label, accent)) return;
+        if (_capture != null && !_capture.IsDisposed) CaptureChanged?.Invoke();
         RequestCompose();
     }
 
@@ -1284,7 +1337,7 @@ public sealed class PetWindow : Form
         else if (action == "visibility")
         {
             _hiddenByHotkey = !_hiddenByHotkey;
-            Visible = !_hiddenByHotkey;
+            Visible = !_hiddenByHotkey && !(_cfg.CaptureMode && _cfg.CaptureStopRenderingMain);
             foreach (var c in _cats.Values) c.Visible = !_hiddenByHotkey;
             if (!_hiddenByHotkey) Compose();
             PetVisibilityChanged?.Invoke(!_hiddenByHotkey);
@@ -1299,7 +1352,7 @@ public sealed class PetWindow : Form
             _cfg.CaptureMode = !_cfg.CaptureMode;
             Save();
             ApplyCaptureMode();
-            NotifyHotkey(_cfg.CaptureMode ? "已开启 OBS 绿幕窗口" : "已关闭 OBS 绿幕窗口");
+            NotifyHotkey(_cfg.CaptureMode ? "已开启 OBS 采集窗口" : "已关闭 OBS 采集窗口");
             NotifySettingsChanged();
         }
         else if (action == "mainPanel")

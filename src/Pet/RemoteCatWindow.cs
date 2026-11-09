@@ -660,11 +660,11 @@ public sealed class LayeredSurface : IDisposable
     /// 提交窗口。opacity 通过 UpdateLayeredWindow 的 SourceConstantAlpha 完成，
     /// 不再为了淡出效果重画整张位图，鼠标频繁悬停时能明显降低 GDI+ 占用。
     /// </summary>
-    public void Apply(Form form, double opacity = 1.0)
+    public bool Apply(Form form, double opacity = 1.0)
     {
-        if (_bitmap == null) return;
+        if (_bitmap == null) return false;
         byte alpha = (byte)Math.Round(255 * Math.Clamp(opacity, 0.0, 1.0));
-        Layered.Commit(form, _bitmap, _dc, _w, _h, alpha);
+        return Layered.Commit(form, _bitmap, _dc, _w, _h, alpha);
     }
 
     void Release()
@@ -821,14 +821,15 @@ public static class Layered
 
     [StructLayout(LayoutKind.Sequential)] struct BlendFunction { public byte Op, Flags, ConstantAlpha, Format; }
 
-    public static void Apply(Form form, Bitmap surface) => Commit(form, surface, IntPtr.Zero, surface.Width, surface.Height);
+    public static bool Apply(Form form, Bitmap surface) => Commit(form, surface, IntPtr.Zero, surface.Width, surface.Height);
 
-    internal static void Commit(Form form, Bitmap surface, IntPtr cachedDc, int width, int height, byte constantAlpha = 255)
+    internal static bool Commit(Form form, Bitmap surface, IntPtr cachedDc, int width, int height, byte constantAlpha = 255)
     {
         IntPtr screenDc = GetDC(IntPtr.Zero);
         bool ownDc = cachedDc == IntPtr.Zero;
         IntPtr memDc = ownDc ? CreateCompatibleDC(screenDc) : cachedDc;
         IntPtr hBitmap = IntPtr.Zero, previous = IntPtr.Zero;
+        bool ok = false;
         try
         {
             if (ownDc)
@@ -840,7 +841,7 @@ public static class Layered
             var size = new Size(width, height);
             var source = new Point(0, 0);
             var blend = new BlendFunction { Op = AcSrcOver, Flags = 0, ConstantAlpha = constantAlpha, Format = AcSrcAlpha };
-            UpdateLayeredWindow(form.Handle, screenDc, ref topLeft, ref size, memDc, ref source, 0, ref blend, UlwAlpha);
+            ok = UpdateLayeredWindow(form.Handle, screenDc, ref topLeft, ref size, memDc, ref source, 0, ref blend, UlwAlpha);
         }
         finally
         {
@@ -849,6 +850,7 @@ public static class Layered
             if (ownDc) DeleteDC(memDc);
             ReleaseDC(IntPtr.Zero, screenDc);
         }
+        return ok;
     }
 
     [DllImport("user32.dll")] static extern IntPtr GetDC(IntPtr hWnd);

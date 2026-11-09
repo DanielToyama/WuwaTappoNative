@@ -60,6 +60,8 @@
     synthRarity: 'all',
     synthSlots: [],
     synthCanCraft: false,
+    testPanelVisible: false,
+    test: null,
     presets: null,
     localPresets: null,
     presetBusy: false,
@@ -145,6 +147,39 @@
 
   function isLogged() { return DEMO || !!(state.boot && state.boot.auth && state.boot.auth.loggedIn); }
 
+  /* ---------------- 隐藏测试入口 ---------------- */
+  const KONAMI_CODE = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowLeft', 'ArrowRight', 'b', 'a', 'b', 'a'];
+  let konamiIndex = 0;
+
+  async function showTestPanel() {
+    if (state.page !== 'synth') return;
+    try {
+      const r = await call('test.get');
+      if (r) state.test = r;
+    } catch { }
+    state.test = state.test || { enabled: false, uploadLimitKbps: 30, repeatCount: 3 };
+    state.testPanelVisible = true;
+    await renderSynth();
+    document.querySelector('.test-panel')?.scrollIntoView({ block: 'nearest' });
+  }
+
+  document.addEventListener('keydown', e => {
+    if (state.page !== 'synth') { konamiIndex = 0; return; }
+    if (e.repeat) return;
+    const target = e.target;
+    if (target && target instanceof Element && target.closest('input, textarea, select')) { konamiIndex = 0; return; }
+    const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+    if (key === KONAMI_CODE[konamiIndex]) {
+      konamiIndex++;
+      if (konamiIndex === KONAMI_CODE.length) {
+        konamiIndex = 0;
+        showTestPanel();
+      }
+    } else {
+      konamiIndex = key === KONAMI_CODE[0] ? 1 : 0;
+    }
+  });
+
   /* ---------------- 初始化 ---------------- */
   const HASH_PARAMS = new URLSearchParams(location.hash.replace(/^#/, ''));
 
@@ -177,6 +212,7 @@
     try {
       const b = await call('boot');
       state.boot = b;
+      state.test = b.testMode || { enabled: false, uploadLimitKbps: 30, repeatCount: 3 };
       state.update = b.update || state.update;
       state.announcements = Array.isArray(b.announcements) ? b.announcements : [];
       renderChrome();
@@ -1432,6 +1468,19 @@
       return `<div class="synth-slot ${item ? 'filled' : ''}" data-slot="${i}" title="${item ? esc(item.name) : '空槽位'}">
         ${item ? img(item.thumb) : ''}<span class="idx">${i + 1}</span></div>`;
     }).join('');
+    const testCfg = state.test || state.boot?.testMode || { enabled: false, uploadLimitKbps: 30, repeatCount: 3 };
+    const testPanelHtml = state.testPanelVisible ? `
+      <div class="test-panel">
+        <div class="test-panel-head">
+          <span>测试选项</span>
+          <button class="btn ghost" id="testHide">隐藏并恢复</button>
+        </div>
+        <label class="test-row"><input type="checkbox" id="testEnabled" ${testCfg.enabled ? 'checked' : ''}> 启用合成请求测试</label>
+        <div class="test-row">上传限速 <input class="input" type="number" id="testLimit" min="1" max="1024" value="${Math.max(1, Number(testCfg.uploadLimitKbps) || 30)}"> KB/s</div>
+        <div class="test-row">重复请求 <input class="input" type="number" id="testRepeat" min="1" max="10" value="${Math.min(10, Math.max(1, Number(testCfg.repeatCount) || 3))}"> 次</div>
+        <div class="test-note">仅影响合成请求；开启后不弹出合成结果窗口，请到背包查看。</div>
+        <button class="btn" id="testSave">保存</button>
+      </div>` : '';
 
     setPage(`
       <div class="synth-top">
@@ -1470,7 +1519,8 @@
         <button class="btn ghost" id="synthClear">清空</button>
         <button class="btn ghost" id="synthOne">一键选择</button>
         <button class="btn" id="synthSubmit" ${filled === need ? '' : 'disabled'}>合成</button>
-      </div>`);
+      </div>
+      ${testPanelHtml}`);
 
     document.querySelectorAll('[data-sm]').forEach(b => b.onclick = () => {
       state.synthMode = b.dataset.sm; synthResetSlots(); renderSynth();
@@ -1503,6 +1553,30 @@
       synthOneClick().catch(e => toast(e.message || '一键选择失败', 'err'));
     };
     document.getElementById('synthSubmit').onclick = doSynth;
+    if (state.testPanelVisible) {
+      document.getElementById('testHide').onclick = async () => {
+        try {
+          const r = await tryCall('test.set', { enabled: false, uploadLimitKbps: 30, repeatCount: 3 });
+          state.test = r;
+          if (state.boot) state.boot.testMode = r;
+          state.testPanelVisible = false;
+          renderSynth();
+          toast('已隐藏测试开关并恢复默认');
+        } catch { }
+      };
+      document.getElementById('testSave').onclick = async () => {
+        const enabled = !!document.getElementById('testEnabled')?.checked;
+        const uploadLimitKbps = Math.min(1024, Math.max(1, Number(document.getElementById('testLimit')?.value) || 30));
+        const repeatCount = Math.min(10, Math.max(1, Number(document.getElementById('testRepeat')?.value) || 3));
+        try {
+          const r = await tryCall('test.set', { enabled, uploadLimitKbps, repeatCount });
+          state.test = r;
+          if (state.boot) state.boot.testMode = r;
+          renderSynth();
+          toast(enabled ? '合成测试已开启' : '合成测试已关闭');
+        } catch { }
+      };
+    }
 
     const grid = document.getElementById('synthGrid');
     if (!items.length) {
@@ -1740,13 +1814,18 @@
       const found = (state.bag || []).find(v => v.id === id);
       let thumb = '', name = '合成成功';
       if (found) { thumb = found.thumb; name = found.name; }
-      modal(`<div class="reward">
-        <div class="rays"></div>
-        ${thumb ? img(thumb, 'prize', name) : '<div style="font-size:64px">🎁</div>'}
-        <div class="r-name">${esc(name)}</div>
-        <div class="r-sub">合成成功</div>
-        <button class="btn" id="mOk" style="margin-top:8px">收下</button>
-      </div>`, host => host.querySelector('#mOk').onclick = closeModal);
+      const testEnabled = !!(state.test?.enabled || state.boot?.testMode?.enabled);
+      if (testEnabled) {
+        toast('合成请求已发送，请到背包查看结果');
+      } else {
+        modal(`<div class="reward">
+          <div class="rays"></div>
+          ${thumb ? img(thumb, 'prize', name) : '<div style="font-size:64px">🎁</div>'}
+          <div class="r-name">${esc(name)}</div>
+          <div class="r-sub">合成成功</div>
+          <button class="btn" id="mOk" style="margin-top:8px">收下</button>
+        </div>`, host => host.querySelector('#mOk').onclick = closeModal);
+      }
       synthResetSlots();
       renderSynth();
     } catch { }
@@ -2937,16 +3016,38 @@
             <div class="switch ${s.allowOverlap !== false ? 'on' : ''}" data-switch="allowOverlap"></div>
           </div>
           <div class="setting-item">
-            <div><div class="setting-title">OBS 绿幕窗口</div><div class="setting-sub">主角完整 GUI（数字/计数条/宝箱/昵称）和键盘/手柄面板一起显示在纯绿窗口中；带标题栏，可拖动/拉边调整</div></div>
+            <div><div class="setting-title">OBS 采集窗口</div><div class="setting-sub">主角完整 GUI（数字/计数条/宝箱/昵称）和键盘/手柄面板一起显示；可自定义背景色或设为透明</div></div>
             <div class="switch ${s.captureMode ? 'on' : ''}" data-switch="captureMode"></div>
           </div>
           <div class="setting-item">
-            <div><div class="setting-title">绿幕窗口大小</div><div class="setting-sub">单位像素，指绿色客户区大小；OBS 窗口采集选择 “Wuwatappo Capture”</div></div>
+            <div><div class="setting-title">采集窗口大小</div><div class="setting-sub">单位像素，指客户区大小；OBS 窗口采集选择 “Wuwatappo Capture”</div></div>
             <div class="setting-content">
               <input class="input" id="captureW" type="number" min="160" max="1600" step="10" value="${s.captureWidth ?? 400}" style="width:86px" />
               <span class="muted">×</span>
               <input class="input" id="captureH" type="number" min="160" max="1600" step="10" value="${s.captureHeight ?? 700}" style="width:86px" />
             </div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">采集背景颜色</div><div class="setting-sub">支持 #RRGGBB 色号；透明模式下不使用此颜色</div></div>
+            <div class="setting-content" style="flex-wrap:wrap;justify-content:flex-end">
+              <input type="color" id="captureColor" value="${esc(s.captureColor || '#00FF00')}" style="width:40px;height:34px;padding:2px;border:1.5px solid var(--border);border-radius:8px;background:var(--cream)" />
+              <input class="input" id="captureColorHex" maxlength="7" value="${esc(s.captureColor || '#00FF00')}" style="width:86px;text-transform:uppercase" />
+              <div class="capture-palette" id="capturePalette">
+                ${['#00FF00', '#0000FF', '#FF00FF', '#00FFFF', '#FFFFFF', '#000000'].map(c => `<button type="button" class="capture-swatch" data-capture-color="${c}" style="background:${c}" title="${c}"></button>`).join('')}
+              </div>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">透明背景</div><div class="setting-sub">OBS 窗口采集需勾选「允许透明」；兼容模式下忽略透明，使用纯色背景</div></div>
+            <div class="switch ${s.captureTransparent ? 'on' : ''}" data-switch="captureTransparent"></div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">OBS 兼容模式</div><div class="setting-sub">回退到 0.1.10 之前的普通窗口渲染；OBS 显示黑影/黑屏时开启</div></div>
+            <div class="switch ${s.captureCompatibilityMode ? 'on' : ''}" data-switch="captureCompatibilityMode"></div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">停止渲染桌面主角</div><div class="setting-sub">OBS 模式下隐藏桌面上的主角，采集窗口仍会显示主角</div></div>
+            <div class="switch ${s.captureStopRenderingMain ? 'on' : ''}" data-switch="captureStopRenderingMain"></div>
           </div>
         </div>
 
@@ -3173,7 +3274,7 @@
     { id: 'visibility', label: '显示／隐藏桌宠', def: 'F9' },
     { id: 'reload', label: '刷新界面', def: 'F5' },
     ...[1, 2, 3, 4, 5, 6].map(i => ({ id: 'emote' + i, label: '发送表情 · 槽位 ' + i, def: 'Ctrl+Alt+' + i })),
-    { id: 'capture', label: 'OBS 绿幕窗口', def: '' },
+    { id: 'capture', label: 'OBS 采集窗口', def: '' },
     { id: 'mainPanel', label: '打开主面板', def: '' },
     { id: 'catLayout', label: '切换横纵排列', def: '' },
     { id: 'keyBubbles', label: '开关按键气泡', def: '' },
@@ -3399,6 +3500,22 @@
     };
     captureW?.addEventListener('change', applyCaptureSize);
     captureH?.addEventListener('change', applyCaptureSize);
+    const captureColor = document.getElementById('captureColor');
+    const captureColorHex = document.getElementById('captureColorHex');
+    const normalizeCaptureColor = raw => /^#[0-9a-f]{6}$/i.test(String(raw || '').trim())
+      ? String(raw).trim().toUpperCase() : '#00FF00';
+    const applyCaptureColor = async raw => {
+      const value = normalizeCaptureColor(raw);
+      if (captureColor) captureColor.value = value.toLowerCase();
+      if (captureColorHex) captureColorHex.value = value;
+      try {
+        await tryCall('settings.set', { captureColor: value });
+        await syncBoot();
+      } catch { }
+    };
+    captureColor?.addEventListener('change', e => applyCaptureColor(e.target.value));
+    captureColorHex?.addEventListener('change', e => applyCaptureColor(e.target.value));
+    document.querySelectorAll('[data-capture-color]').forEach(b => b.onclick = () => applyCaptureColor(b.dataset.captureColor));
     const remoteFollowOpacity = document.getElementById('remoteFollowMainOpacity');
     const remoteOpacityRange = document.getElementById('setRemoteOpacityRange');
     const remoteOpacityVal = document.getElementById('remoteOpacityVal');
@@ -3818,6 +3935,10 @@
         allowOverlap: true,
         catLayout: 'vertical',
         captureMode: false,
+        captureColor: '#00FF00',
+        captureTransparent: false,
+        captureCompatibilityMode: false,
+        captureStopRenderingMain: false,
         autoChest: true,
         autoEmoteEnabled: false,
         autoClickEnabled: false,
@@ -3937,6 +4058,7 @@
 
   if (PREVIEW) {
     state.boot = previewBoot(PREVIEW);
+    state.test = state.boot.testMode || { enabled: false, uploadLimitKbps: 30, repeatCount: 3 };
     state.compatibility = previewCompatibility(PREVIEW);
     state.announcements = previewAnnouncements(PREVIEW);
     if (PREVIEW === 'synth') {

@@ -379,6 +379,11 @@ public sealed class PanelWindow : Form
             captureMode = _app.Cfg.CaptureMode,
             captureWidth = _app.Cfg.CaptureWidth,
             captureHeight = _app.Cfg.CaptureHeight,
+            captureColor = _app.Cfg.CaptureColor,
+            captureTransparent = _app.Cfg.CaptureTransparent,
+            captureObsNoticeShown = _app.Cfg.CaptureObsNoticeShown,
+            captureCompatibilityMode = _app.Cfg.CaptureCompatibilityMode,
+            captureStopRenderingMain = _app.Cfg.CaptureStopRenderingMain,
             alwaysShowChest = _app.Cfg.AlwaysShowChest,
             autoChest = _app.Cfg.AutoChest,
             autoEmoteEnabled = _app.Cfg.AutoEmoteEnabled,
@@ -415,6 +420,12 @@ public sealed class PanelWindow : Form
             skins = _app.Catalog.Count("character_skin"),
             accessories = _app.Catalog.Count("accessory"),
             emotes = _app.Catalog.Count("emote"),
+        },
+        testMode = new
+        {
+            enabled = _app.Cfg.TestModeEnabled,
+            uploadLimitKbps = _app.Cfg.TestUploadLimitKbps,
+            repeatCount = _app.Cfg.TestRequestRepeatCount,
         },
         version = typeof(PanelWindow).Assembly.GetName().Version?.ToString(3) ?? "0.0.1",
     };
@@ -887,6 +898,31 @@ public sealed class PanelWindow : Form
                 return new { ok = true, hotkeys = normalized };
             }
 
+            case "test.get":
+                return new
+                {
+                    enabled = cfg.TestModeEnabled,
+                    uploadLimitKbps = cfg.TestUploadLimitKbps,
+                    repeatCount = cfg.TestRequestRepeatCount,
+                };
+
+            case "test.set":
+            {
+                if (data.ContainsKey("enabled"))
+                    cfg.TestModeEnabled = ApiClient.ReadBool(data["enabled"]);
+                if (data.ContainsKey("uploadLimitKbps"))
+                    cfg.TestUploadLimitKbps = Math.Clamp((int)ApiClient.ReadLong(data["uploadLimitKbps"]), 1, 1024);
+                if (data.ContainsKey("repeatCount"))
+                    cfg.TestRequestRepeatCount = Math.Clamp((int)ApiClient.ReadLong(data["repeatCount"]), 1, 10);
+                ConfigStore.Save(cfg);
+                return new
+                {
+                    enabled = cfg.TestModeEnabled,
+                    uploadLimitKbps = cfg.TestUploadLimitKbps,
+                    repeatCount = cfg.TestRequestRepeatCount,
+                };
+            }
+
             case "settings.set":
             case "settings.update":
             {
@@ -975,6 +1011,10 @@ public sealed class PanelWindow : Form
                         case "captureMode": cfg.CaptureMode = ApiClient.ReadBool(kv.Value); break;
                         case "captureWidth": cfg.CaptureWidth = Math.Clamp((int)ApiClient.ReadLong(kv.Value), 160, 1600); break;
                         case "captureHeight": cfg.CaptureHeight = Math.Clamp((int)ApiClient.ReadLong(kv.Value), 160, 1600); break;
+                        case "captureColor": cfg.CaptureColor = ConfigStore.NormalizeCaptureColor(ApiClient.ReadString(kv.Value)); break;
+                        case "captureTransparent": cfg.CaptureTransparent = ApiClient.ReadBool(kv.Value); break;
+                        case "captureCompatibilityMode": cfg.CaptureCompatibilityMode = ApiClient.ReadBool(kv.Value); break;
+                        case "captureStopRenderingMain": cfg.CaptureStopRenderingMain = ApiClient.ReadBool(kv.Value); break;
                         case "alwaysShowChest": cfg.AlwaysShowChest = ApiClient.ReadBool(kv.Value); break;
                         case "autoChest":
                             cfg.AutoChest = ApiClient.ReadBool(kv.Value);
@@ -1073,7 +1113,10 @@ public sealed class PanelWindow : Form
                 if (data["ids"] is JsonArray arr) foreach (var n in arr) ids.Add(ApiClient.ReadLong(n));
                 bool same = ApiClient.ReadBool(data["sameLevel"]);
                 string path = same ? "api/frontend/assets/synthesis/same-level" : "api/frontend/assets/synthesis";
-                var resp = await auth.Api.PostAsync(path, new { asset_ids = ids.ToArray() });
+                // 隐藏测试模式：只对合成请求限速和重复发送，其他接口不受影响。
+                int uploadLimit = cfg.TestModeEnabled ? cfg.TestUploadLimitKbps * 1024 : 0;
+                int repeatCount = cfg.TestModeEnabled ? cfg.TestRequestRepeatCount : 1;
+                var resp = await auth.Api.PostAsync(path, new { asset_ids = ids.ToArray() }, uploadLimit, repeatCount);
                 return resp;
             }
 

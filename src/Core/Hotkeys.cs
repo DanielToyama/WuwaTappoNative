@@ -26,7 +26,7 @@ public static class Hotkeys
         ("emote4", "发送表情 · 槽位 4", "Ctrl+Alt+4"),
         ("emote5", "发送表情 · 槽位 5", "Ctrl+Alt+5"),
         ("emote6", "发送表情 · 槽位 6", "Ctrl+Alt+6"),
-        ("capture", "OBS 绿幕窗口", ""),
+        ("capture", "OBS 采集窗口", ""),
         ("mainPanel", "打开主面板", ""),
         ("catLayout", "切换横纵排列", ""),
         ("keyBubbles", "开关按键气泡", ""),
