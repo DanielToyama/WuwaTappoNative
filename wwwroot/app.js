@@ -837,6 +837,7 @@
             </select>
             <input class="input" id="bagSearch" placeholder="搜索名称 / 系列" value="${esc(state.bagSearch)}" style="flex:1;min-width:160px" />
             <button class="btn ghost" id="bagRefresh">刷新</button>
+            <button class="btn ghost" id="bagClearNew" ${state.bagNewIds.length ? '' : 'disabled'} title="只清除新物品红点，不清空最近获得记录">清除红点${state.bagNewIds.length ? ' (' + state.bagNewIds.length + ')' : ''}</button>
             ${tab === 'recent' ? '<button class="btn ghost" id="bagClearRecent">清空记录</button>' : ''}
             <button class="btn" id="bagSync">同步角色/配件</button>
             ${tab === 'accessory' ? `<button class="btn ghost" id="bagRemoveAccessory" ${equippedAccessoryId ? '' : 'disabled'} title="从本地和云端摘除当前头饰">摘下头饰</button>` : ''}
@@ -857,6 +858,12 @@
     document.getElementById('bagRarity').addEventListener('change', e => { state.bagRarity = e.target.value; renderBagList(); });
     document.getElementById('bagSearch').oninput = e => { state.bagSearch = e.target.value; renderBagList(); };
     document.getElementById('bagRefresh').onclick = async () => { await ensureBag(true); state.bagNewReady = false; renderBag(); };
+    document.getElementById('bagClearNew')?.addEventListener('click', () => {
+      saveUnseen([]);
+      state.bagNewIds = [];
+      renderBag();
+      toast('已清除所有新物品红点');
+    });
     document.getElementById('bagClearRecent')?.addEventListener('click', () => {
       dismissNewAssets();
       renderBag();
