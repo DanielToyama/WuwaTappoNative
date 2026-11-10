@@ -60,6 +60,7 @@ Wuwatappo Native 是 WuwaTappo 1.0.2 的 Windows 原生实现，使用 C# / .NET
    - **导入 token**：可用 `token-extractor/` 中的独立工具读取 `kuro_infoToken`，再粘贴到设置中导入。
 3. 在 `设置 → 账号 → 服务器区服` 选择国服（CN）或国际服（Global）；切换区服会退出当前账号并要求重新登录。
 4. 打开 `联机`，创建房间或输入房间号加入。加入成功后，房间成员会显示在右侧成员列表。新成员回房时优先恢复保存的位置；若与现有成员重叠超过可见面积的 30%，会按当前横向/纵向排序重新安排。没有保存位置的成员也按排序方案创建位置。
+- 房主房间会从 `rm` 快照自动识别并持久化；自动回房只以服务器 `user/me.room_no` 为准，本地记录不会覆盖服务器状态。房主房间自动回房时直接连接房间 socket，不调用 `rooms/join`；手动离开或切换房主房间前会弹出二次确认提醒。
 5. 首次运行会创建以下文件：
 
 ```text
@@ -192,14 +193,14 @@ dotnet run --project tests/SqliteChecks/SqliteChecks.csproj -c Release
 需要 PowerShell 7 和 Inno Setup 6.7 或更高版本。
 
 ```powershell
-pwsh -File .\installer\build.ps1 -Version 0.1.11
+pwsh -File .\installer\build.ps1 -Version 0.1.12
 ```
 
 输出：
 
 ```text
-dist/WuwatappoNative-0.1.11-Setup.exe
-dist/WuwatappoNative-0.1.11-portable.zip
+dist/WuwatappoNative-0.1.12-Setup.exe
+dist/WuwatappoNative-0.1.12-portable.zip
 dist/WuwatappoTokenExtractor-1.0.0-x64.zip
 ```
 

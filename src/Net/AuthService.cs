@@ -363,6 +363,9 @@ public sealed class AuthService
         {
             _cfg.LocalAppearance = false;
             _cfg.LocalEmoteSlots = false;
+            // 房主房间属于账号；换账号后不能沿用上一个账号的房主保护数据。
+            _cfg.OwnerRoomNo = "";
+            _cfg.OwnerRoomCuid = "";
         }
         _cfg.UserId = ApiClient.ReadLong(me["id"]);
         long pid = ApiClient.ReadLong(me["player_id"]);

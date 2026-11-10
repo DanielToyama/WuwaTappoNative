@@ -638,7 +638,7 @@ public sealed class PanelWindow : Form
 
             case "logout":
                 await auth.LogoutAsync();
-                await _app.Room.LeaveAsync();
+                await _app.Room.LeaveAsync(ownerConfirmed: true);
                 return new { loggedIn = false };
 
             case "user.refresh":
@@ -831,10 +831,10 @@ public sealed class PanelWindow : Form
                 await _app.Room.CreateAsync();
                 return _app.RoomState();
             case "room.join":
-                await _app.Room.JoinAsync(ApiClient.ReadString(data["roomNo"]));
+                await _app.Room.JoinAsync(ApiClient.ReadString(data["roomNo"]), ApiClient.ReadBool(data["ownerConfirmed"]));
                 return _app.RoomState();
             case "room.leave":
-                await _app.Room.LeaveAsync();
+                await _app.Room.LeaveAsync(ownerConfirmed: ApiClient.ReadBool(data["ownerConfirmed"]));
                 return _app.RoomState();
             case "room.state":
                 return _app.RoomState();

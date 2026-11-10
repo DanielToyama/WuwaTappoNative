@@ -122,7 +122,7 @@ public sealed class RoomManager : IDisposable
         finally { Interlocked.Exchange(ref _busy, 0); }
     }
 
-    public async Task JoinAsync(string roomNo)
+    public async Task JoinAsync(string roomNo, bool ownerConfirmed = false)
     {
         if (Interlocked.Exchange(ref _busy, 1) == 1) return;
         _reconnectSuppressed = false;
@@ -131,16 +131,28 @@ public sealed class RoomManager : IDisposable
             roomNo = (roomNo ?? "").Trim();
             if (string.IsNullOrEmpty(roomNo)) throw new ApiException(-1, "房间号不能为空");
 
+            bool currentOwnerRoom = IsOwnerRoom(RoomNo);
+            bool targetOwnerRoom = IsOwnerRoom(roomNo);
+            bool switchingRoom = !string.IsNullOrEmpty(RoomNo) && !string.Equals(RoomNo, roomNo, StringComparison.Ordinal);
+            if (currentOwnerRoom && switchingRoom && !ownerConfirmed)
+                throw new ApiException(-1, "当前账号是房主，不能离开/切换房主房间；请先在官方客户端操作");
+            if (targetOwnerRoom && switchingRoom && !ownerConfirmed)
+                throw new ApiException(-1, "目标房间是房主房间，不能通过挂机端切换；请先在官方客户端操作");
+
             // 已在别的房间时先发 rl 退出（原版没有 REST 退出接口，退房只走 socket），
             // 否则服务器会返回 80003 或把两个房间状态搅在一起。
-            if (State == "joined" && !string.IsNullOrEmpty(RoomNo) && RoomNo != roomNo)
+            if (State == "joined" && switchingRoom)
             {
                 await LeaveSocketOnlyAsync();
                 await Task.Delay(200);
             }
 
-            bool alreadyHere = ReadUserRoom() == roomNo;
-            if (!alreadyHere)
+            // 房主房间只直连 socket，绝不走 rooms/join。OwnerRoomNo 已持久化时，
+            // 即使当前 SelfIsOwner 还没来得及从快照恢复，也按房主房间处理。
+            bool alreadyHere = ReadUserRoom() == roomNo
+                || (targetOwnerRoom && (string.IsNullOrEmpty(RoomNo) || string.Equals(RoomNo, roomNo, StringComparison.Ordinal)));
+            bool skipJoin = targetOwnerRoom;
+            if (!alreadyHere && !skipJoin)
             {
                 await LeaveSocketOnlyAsync();
                 try
@@ -153,6 +165,8 @@ public sealed class RoomManager : IDisposable
                     string old = ReadUserRoom();
                     if (!string.IsNullOrEmpty(old))
                     {
+                        if (IsOwnerRoom(old) && !ownerConfirmed)
+                            throw new ApiException(-1, "旧房间是房主房间，已停止自动切换；请先在官方客户端操作");
                         await EnterAsync(old, announce: false);
                         await EmitLeaveAsync();
                         await CloseSocketAsync();
@@ -169,17 +183,25 @@ public sealed class RoomManager : IDisposable
     /// 退房后是否立刻回到大厅。切换区服时必须传 false：否则会用旧区服的 token/BaseUrl
     /// 重连旧大厅，随后登录新区服时 EnsureLobbyAsync 看到旧 socket 仍连接，就不会建立新连接。
     /// </param>
-    public async Task LeaveAsync(bool reconnectLobby = true)
+    public async Task LeaveAsync(bool reconnectLobby = true, bool ownerConfirmed = false)
     {
         if (Interlocked.Exchange(ref _busy, 1) == 1) return;
         // 退房后 cfg.RoomNo 会被清空，自动重连只会恢复大厅，不会误回旧房间。
         _reconnectSuppressed = false;
         try
         {
+            if (IsOwnerRoom(RoomNo) && !ownerConfirmed)
+                throw new ApiException(-1, "当前账号是房主，不能通过挂机端离开房主房间；请先在官方客户端操作");
+            string leavingRoom = RoomNo;
             await LeaveSocketOnlyAsync();
             State = "idle";
             RoomNo = "";
             _cfg.RoomNo = "";
+            if (!string.IsNullOrEmpty(leavingRoom) && string.Equals(_cfg.OwnerRoomNo, leavingRoom, StringComparison.Ordinal))
+            {
+                _cfg.OwnerRoomNo = "";
+                _cfg.OwnerRoomCuid = "";
+            }
             ConfigStore.Save(_cfg);
             Members.Clear();
             StateChanged?.Invoke();
@@ -202,6 +224,7 @@ public sealed class RoomManager : IDisposable
         try
         {
             if (_reconnectSuppressed || string.IsNullOrEmpty(_auth.Token)) return;
+            // 只重连服务器确认过的当前房间；本地 OwnerRoomNo 不能覆盖服务器状态。
             string desiredRoom = _cfg.RoomNo;
             if (!string.IsNullOrEmpty(desiredRoom))
             {
@@ -250,6 +273,46 @@ public sealed class RoomManager : IDisposable
     }
 
     string ReadUserRoom() => string.IsNullOrEmpty(_cfg.RoomNo) ? "" : _cfg.RoomNo;
+
+    /// <summary>该房间是否已被确认为房主房间；优先使用持久化的 OwnerRoomNo，避免重启/切设备时误操作。</summary>
+    bool IsOwnerRoom(string roomNo)
+    {
+        roomNo = (roomNo ?? "").Trim();
+        if (string.IsNullOrEmpty(roomNo)) return false;
+        if (SelfIsOwner && string.Equals(roomNo, RoomNo, StringComparison.Ordinal)) return true;
+        return !string.IsNullOrEmpty(_cfg.OwnerRoomNo)
+            && !string.IsNullOrEmpty(_cfg.OwnerRoomCuid)
+            && string.Equals(_cfg.OwnerRoomCuid, _auth.Cuid, StringComparison.Ordinal)
+            && string.Equals(roomNo, _cfg.OwnerRoomNo, StringComparison.Ordinal);
+    }
+
+    void RememberOwnerRoom(string roomNo)
+    {
+        roomNo = (roomNo ?? "").Trim();
+        if (string.IsNullOrEmpty(roomNo)
+            || (string.Equals(_cfg.OwnerRoomNo, roomNo, StringComparison.Ordinal)
+                && string.Equals(_cfg.OwnerRoomCuid, _auth.Cuid, StringComparison.Ordinal))) return;
+        _cfg.OwnerRoomNo = roomNo;
+        _cfg.OwnerRoomCuid = _auth.Cuid ?? "";
+        ConfigStore.Save(_cfg);
+    }
+
+    void ClearOwnerRoom(string roomNo = null)
+    {
+        roomNo = (roomNo ?? "").Trim();
+        if (string.IsNullOrEmpty(roomNo))
+        {
+            if (string.IsNullOrEmpty(_cfg.OwnerRoomNo)) return;
+            _cfg.OwnerRoomNo = "";
+        }
+        else
+        {
+            if (!string.Equals(_cfg.OwnerRoomNo, roomNo, StringComparison.Ordinal)) return;
+            _cfg.OwnerRoomNo = "";
+        }
+        _cfg.OwnerRoomCuid = "";
+        ConfigStore.Save(_cfg);
+    }
 
     /// <summary>把房间号记进历史（用于登录时补录服务器上的当前房间）。</summary>
     public void RememberRoom(string roomNo)
@@ -307,7 +370,10 @@ public sealed class RoomManager : IDisposable
         State = "joined";
         _roomReady = false;
         _awaitingSnapshot = false;
-        SelfIsOwner = false;
+        // 重启/切设备时先把持久化的房主房间视为受保护，等待 rm 快照再确认。
+        SelfIsOwner = !string.IsNullOrEmpty(_cfg.OwnerRoomNo)
+            && string.Equals(_cfg.OwnerRoomCuid, _auth.Cuid, StringComparison.Ordinal)
+            && string.Equals(_cfg.OwnerRoomNo, roomNo, StringComparison.Ordinal);
         // 先让 UI 进入“连接中”，即使后面 WebSocket 连接失败也还有自动重试。
         StateChanged?.Invoke();
         await ConnectSocketAsync(roomNo);
@@ -408,9 +474,13 @@ public sealed class RoomManager : IDisposable
             {
                 int code = snap is JsonObject o ? ApiClient.ReadInt(o["c"]) : -1;
                 if (code != 0 && code != 200)
+                {
                     RejectRoom($"房间不存在或已解散（{code}）");
-                else
-                    RejectRoom("房间数据异常，已停止自动重连");
+                    return;
+                }
+                // 快照无效不等于房间不存在；保持连接中，交给后台重连，避免误清房主房间。
+                Log.Write("房间快照无效，保持房间状态等待重连 " + RoomNo);
+                MarkConnectionFailure("房间快照无效");
                 return;
             }
             _roomReady = true;
@@ -433,9 +503,15 @@ public sealed class RoomManager : IDisposable
         _roomReady = false;
         _awaitingSnapshot = false;
         SelfIsOwner = false;
+        string rejectedRoom = RoomNo;
         State = "idle";
         RoomNo = "";
         _cfg.RoomNo = "";
+        if (!string.IsNullOrEmpty(rejectedRoom) && string.Equals(_cfg.OwnerRoomNo, rejectedRoom, StringComparison.Ordinal))
+        {
+            _cfg.OwnerRoomNo = "";
+            _cfg.OwnerRoomCuid = "";
+        }
         ConfigStore.Save(_cfg);
         Members.Clear();
         Log.Write(message);
@@ -449,7 +525,15 @@ public sealed class RoomManager : IDisposable
         if (snap is not JsonObject o) return false;
         int code = ApiClient.ReadInt(o["c"]);
         if (code != 0 && code != 200) return false;
-        var list = o["d"]?["m"] as JsonArray;
+        if (o["d"] is not JsonObject data) return false;
+        // 官方 1.0.4 的 rm 快照必须带 d.r；缺失或不是当前房间的旧快照不能拿来判断房主。
+        string snapshotRoom = ApiClient.ReadString(data["r"]).Trim();
+        if (string.IsNullOrEmpty(snapshotRoom) || !string.Equals(snapshotRoom, RoomNo, StringComparison.Ordinal))
+        {
+            Log.Write($"忽略不匹配的房间快照 snapshot={snapshotRoom} current={RoomNo}");
+            return false;
+        }
+        var list = data["m"] as JsonArray;
         if (list == null) return false;
         var seen = new HashSet<long>();
         bool touched = false;
@@ -479,7 +563,12 @@ public sealed class RoomManager : IDisposable
             if (Members.TryRemove(id, out _)) MemberRemoved?.Invoke(id);
         }
         // 部分服务端快照不返回自己；这时若名单里没有其他房主，则自己就是房主。
-        if (!selfSeen) SelfIsOwner = !Members.Values.Any(m => m.IsOwner);
+        // SelfId 尚未就绪时不能做这个兜底，否则会把普通成员误判成房主。
+        if (!selfSeen) SelfIsOwner = SelfId > 0 && !Members.Values.Any(m => m.IsOwner);
+        if (SelfIsOwner && !string.IsNullOrEmpty(RoomNo))
+            RememberOwnerRoom(RoomNo);
+        else if (selfSeen || Members.Values.Any(m => m.IsOwner))
+            ClearOwnerRoom(RoomNo);
         if (touched) RosterChanged?.Invoke();
         return true;
     }

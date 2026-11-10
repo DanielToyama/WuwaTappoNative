@@ -267,10 +267,14 @@ public sealed class App : ApplicationContext
     /// <summary>登录/启动后自动回到上次房间：优先服务器记录的 room_no，其次本地最近房间。</summary>
     public async Task ResumeLastRoomAsync()
     {
-        string room = !string.IsNullOrEmpty(Auth.ServerRoomNo) ? Auth.ServerRoomNo : Cfg.LastRoom;
-        // 服务器上的当前房间也补进历史，这样换机器登录后也能看到曾经待过的房间号。
-        if (!string.IsNullOrEmpty(Auth.ServerRoomNo)) Room.RememberRoom(Auth.ServerRoomNo);
-        if (string.IsNullOrEmpty(room)) return;
+        // 服务器 room_no 是唯一真值；本机 OwnerRoomNo/LastRoom 不能覆盖服务器的“当前不在房间”。
+        string room = Auth.ServerRoomNo;
+        if (!string.IsNullOrEmpty(room)) Room.RememberRoom(room);
+        if (string.IsNullOrEmpty(room))
+        {
+            Log.Write("服务器未记录当前房间，跳过自动回房");
+            return;
+        }
         try
         {
             await Room.JoinAsync(room);
@@ -296,7 +300,7 @@ public sealed class App : ApplicationContext
         ConfigStore.Save(Cfg);
 
         // 不能在这里回到大厅：此时 Auth 仍然指向旧区服，会留下旧区服的 socket。
-        try { await Room.LeaveAsync(reconnectLobby: false); } catch { }
+        try { await Room.LeaveAsync(reconnectLobby: false, ownerConfirmed: true); } catch { }
         try { await Auth.LogoutAsync(); } catch { }
 
         Auth.UpdateBaseUrl(ApiClient.ResolveBaseUrl(region));
@@ -643,7 +647,7 @@ public sealed class App : ApplicationContext
                     try
                     {
                         if (!string.IsNullOrEmpty(Cfg.RoomNo)) await Room.JoinAsync(Cfg.RoomNo);
-                        await Room.LeaveAsync();
+                        await Room.LeaveAsync(ownerConfirmed: true);
                         Log.Write("维护命令：已退出房间");
                     }
                     catch (Exception ex) { Log.Write("维护命令退出房间失败 " + ex.Message); }
@@ -792,13 +796,18 @@ public sealed class App : ApplicationContext
     public object RoomState()
     {
         var members = new System.Collections.Generic.List<object>();
-        members.Add(new { id = Auth.UserId, nickname = Auth.Nickname, owner = Room.SelfIsOwner, online = true, self = true, visible = true, skin = Cfg.CharacterAssetId, part = Cfg.AccessoryAssetId });
+        bool ownerRoomMatches = !string.IsNullOrEmpty(Cfg.OwnerRoomNo)
+            && string.Equals(Cfg.OwnerRoomCuid, Auth.Cuid, StringComparison.Ordinal)
+            && string.Equals(Cfg.OwnerRoomNo, Room.RoomNo, StringComparison.Ordinal);
+        members.Add(new { id = Auth.UserId, nickname = Auth.Nickname, owner = Room.SelfIsOwner || ownerRoomMatches, online = true, self = true, visible = true, skin = Cfg.CharacterAssetId, part = Cfg.AccessoryAssetId });
         foreach (var m in Room.Members.Values)
             members.Add(new { id = m.Id, nickname = m.Nickname, owner = m.IsOwner, online = m.Online, self = false, visible = m.Visible, skin = m.RoleKey, part = m.PartKey });
         return new
         {
             state = Room.State,
             roomNo = Room.RoomNo,
+            ownerRoomNo = ownerRoomMatches ? Cfg.OwnerRoomNo : "",
+            selfIsOwner = Room.SelfIsOwner || ownerRoomMatches,
             connected = Room.IsConnected,
             serviceUnavailable = Room.ServiceUnavailable,
             members,

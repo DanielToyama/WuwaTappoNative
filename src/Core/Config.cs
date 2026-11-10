@@ -148,6 +148,10 @@ public sealed class Settings
     [JsonIgnore] public int PetX { get; set; } = -1;
     [JsonIgnore] public int PetY { get; set; } = -1;
     [JsonIgnore] public string RoomNo { get; set; } = "";
+    /// <summary>最近确认过的房主房间号；用于重启/切设备时避免对房主房间执行 rooms/join 或 rl。</summary>
+    [JsonIgnore] public string OwnerRoomNo { get; set; } = "";
+    /// <summary>OwnerRoomNo 所属账号的 Cuid；换账号后旧房主房间数据不能复用。</summary>
+    [JsonIgnore] public string OwnerRoomCuid { get; set; } = "";
     [JsonIgnore] public string LastRoom { get; set; } = "";
     [JsonIgnore] public string[] RoomHistory { get; set; } = Array.Empty<string>();
     /// <summary>成员位置：key = 成员 id；由 StateStore 持久化，不写入 config.json。</summary>

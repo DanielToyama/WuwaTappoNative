@@ -133,6 +133,20 @@
     host.innerHTML = '';
   }
 
+  function confirmOwnerRoomAction(message, onConfirm) {
+    modal(`<div class="about">
+      <div class="about-title">房主房间提醒</div>
+      <div class="about-note about-note--warn"><p>${esc(message)}</p></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px">
+        <button class="btn ghost" id="ownerRoomCancel">取消</button>
+        <button class="btn danger" id="ownerRoomContinue">仍然继续</button>
+      </div>
+    </div>`, host => {
+      host.querySelector('#ownerRoomCancel').onclick = closeModal;
+      host.querySelector('#ownerRoomContinue').onclick = () => { closeModal(); onConfirm(); };
+    });
+  }
+
   function rarityClass(r) { return 'rarity-' + (r || 'common'); }
   function effRarity(r) { return (r || 'common').toLowerCase(); }
 
@@ -2277,6 +2291,7 @@
     const room = state.boot?.room || { state: 'idle', members: [], history: [] };
     state.roomSig = roomSignature(room);
     const joined = room.state === 'joined';
+    const selfIsOwner = !!room.selfIsOwner || !!(room.members || []).find(m => m.self)?.owner;
     const serviceDown = !!room.serviceUnavailable;
     const auth = state.boot?.auth || {};
     const emotes = state.boot?.appearance?.emoteAssetIds || [];
@@ -2364,14 +2379,45 @@
       navigator.clipboard?.writeText(room.roomNo).then(() => toast('房间号已复制')).catch(() => toast(room.roomNo));
     });
     document.getElementById('roomCreate').onclick = async () => { try { const r = await tryCall('room.create'); state.boot.room = r; renderRoom(); toast('房间已创建'); } catch { } };
-    document.getElementById('roomLeave').onclick = async () => { try { const r = await tryCall('room.leave'); state.boot.room = r; renderRoom(); toast('已离开房间'); } catch { } };
-    document.getElementById('roomJoin').onclick = async () => {
+    const leaveRoom = async (ownerConfirmed = false) => {
+      try {
+        const r = await tryCall('room.leave', { ownerConfirmed });
+        state.boot.room = r;
+        renderRoom();
+        toast('已离开房间');
+      } catch { }
+    };
+    const joinRoom = async (roomNo, ownerConfirmed = false) => {
+      try {
+        const r = await tryCall('room.join', { roomNo, ownerConfirmed });
+        state.boot.room = r;
+        renderRoom();
+        toast('已加入房间');
+      } catch { }
+    };
+    document.getElementById('roomLeave').onclick = () => {
+      if (selfIsOwner) {
+        confirmOwnerRoomAction('当前账号是房主。离开房间可能导致房间解散，其他成员会受到影响。确定要继续吗？', () => leaveRoom(true));
+        return;
+      }
+      leaveRoom(false);
+    };
+    document.getElementById('roomJoin').onclick = () => {
       const no = document.getElementById('joinNo').value.trim();
       if (!no) return toast('请输入房间号', 'err');
-      try { const r = await tryCall('room.join', { roomNo: no }); state.boot.room = r; renderRoom(); toast('已加入房间'); } catch { }
+      if (selfIsOwner && no !== room.roomNo) {
+        confirmOwnerRoomAction(`切换房间会先离开当前房主房间，可能导致房间解散。确定要切换到 ${no} 吗？`, () => joinRoom(no, true));
+        return;
+      }
+      joinRoom(no, false);
     };
-    document.querySelectorAll('[data-hist]').forEach(b => b.onclick = async () => {
-      try { const r = await tryCall('room.join', { roomNo: b.dataset.hist }); state.boot.room = r; renderRoom(); toast('已加入房间'); } catch { }
+    document.querySelectorAll('[data-hist]').forEach(b => b.onclick = () => {
+      const no = b.dataset.hist;
+      if (selfIsOwner && no !== room.roomNo) {
+        confirmOwnerRoomAction(`切换房间会先离开当前房主房间，可能导致房间解散。确定要切换到 ${no} 吗？`, () => joinRoom(no, true));
+        return;
+      }
+      joinRoom(no, false);
     });
     document.querySelectorAll('#catLayout [data-layout]').forEach(btn => {
       btn.onclick = async () => {
@@ -3912,6 +3958,7 @@
       },
       room: mode === 'room'
         ? {
+            state: 'joined',
             joined: true,
             roomNo: 'RYOlbDDRN',
             lastRoom: '',

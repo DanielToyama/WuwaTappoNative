@@ -53,6 +53,8 @@ public static class StateStore
                     ["petX"] = cfg.PetX,
                     ["petY"] = cfg.PetY,
                     ["roomNo"] = cfg.RoomNo ?? "",
+                    ["ownerRoomNo"] = cfg.OwnerRoomNo ?? "",
+                    ["ownerRoomCuid"] = cfg.OwnerRoomCuid ?? "",
                     ["lastRoom"] = cfg.LastRoom ?? "",
                     ["roomHistory"] = ToArray(cfg.RoomHistory),
                     ["memberPositions"] = ToPositions(cfg.MemberPositions),
@@ -81,6 +83,8 @@ public static class StateStore
         cfg.PetX = ReadInt(root["petX"], -1);
         cfg.PetY = ReadInt(root["petY"], -1);
         cfg.RoomNo = ReadString(root["roomNo"]);
+        cfg.OwnerRoomNo = ReadString(root["ownerRoomNo"]);
+        cfg.OwnerRoomCuid = ReadString(root["ownerRoomCuid"]);
         cfg.LastRoom = ReadString(root["lastRoom"]);
         cfg.RoomHistory = ReadStringArray(root["roomHistory"]);
         cfg.MemberPositions = ReadPositions(root["memberPositions"]);

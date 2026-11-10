@@ -13,11 +13,31 @@ public sealed class PetFrames
 {
     public Image Head1, Head2, Body1, Body2, Body3, Accessory;
     public double AccOffsetX, AccOffsetY;
-    public bool Ready => Head1 != null && Body1 != null;
+    readonly object _frameGate = new();
+
+    /// <summary>必须整套角色帧到齐才算 Ready，避免真实头部/默认身体这类拼接画面。</summary>
+    public bool Ready => Head1 != null && Head2 != null && Body1 != null && Body2 != null && Body3 != null;
+
+    public void ApplyCharacterFrames(Image head1, Image head2, Image body1, Image body2, Image body3)
+    {
+        lock (_frameGate)
+        {
+            Head1 = head1;
+            Head2 = head2;
+            Body1 = body1;
+            Body2 = body2;
+            Body3 = body3;
+        }
+        Interlocked.Exchange(ref _fallbackPending, 0);
+    }
+
+    internal void BeginFallback() => Interlocked.Exchange(ref _fallbackPending, 1);
+    internal void EndFallback() => Interlocked.Exchange(ref _fallbackPending, 0);
 
     int _pending;
-    /// <summary>还有图片在下载。Ready 可能已经是默认图，Loading 仍为 true。</summary>
-    public bool Loading => Volatile.Read(ref _pending) > 0;
+    int _fallbackPending;
+    /// <summary>还有图片在下载或等待超时默认帧。Ready 可能已经是默认图，Loading 仍为 true。</summary>
+    public bool Loading => Volatile.Read(ref _pending) > 0 || Volatile.Read(ref _fallbackPending) > 0;
 
     internal void AddPending() => Interlocked.Increment(ref _pending);
     internal void CompletePending()
@@ -68,11 +88,27 @@ public sealed class PetImageLoader
 
         if (hasSkin)
         {
-            frames.Head1 = Fetch(_catalog.CdnUrl(skin.Frame("head1").Url), v => frames.Head1 = v, frames);
-            frames.Head2 = Fetch(_catalog.CdnUrl((skin.Frame("head2") ?? skin.Frame("head1")).Url), v => frames.Head2 = v, frames);
-            frames.Body1 = Fetch(_catalog.CdnUrl(skin.Frame("body1").Url), v => frames.Body1 = v, frames);
-            frames.Body2 = Fetch(_catalog.CdnUrl((skin.Frame("body2") ?? skin.Frame("body1")).Url), v => frames.Body2 = v, frames);
-            frames.Body3 = Fetch(_catalog.CdnUrl((skin.Frame("body3") ?? skin.Frame("body1")).Url), v => frames.Body3 = v, frames);
+            string[] urls =
+            {
+                _catalog.CdnUrl(skin.Frame("head1").Url),
+                _catalog.CdnUrl((skin.Frame("head2") ?? skin.Frame("head1")).Url),
+                _catalog.CdnUrl(skin.Frame("body1").Url),
+                _catalog.CdnUrl((skin.Frame("body2") ?? skin.Frame("body1")).Url),
+                _catalog.CdnUrl((skin.Frame("body3") ?? skin.Frame("body1")).Url),
+            };
+            var loaded = new Image[5];
+            var remaining = new[] { urls.Length };
+            for (int i = 0; i < urls.Length; i++)
+            {
+                int slot = i;
+                Fetch(urls[i], img =>
+                {
+                    loaded[slot] = img;
+                    if (Interlocked.Decrement(ref remaining[0]) != 0) return;
+                    if (loaded[0] != null && loaded[1] != null && loaded[2] != null && loaded[3] != null && loaded[4] != null)
+                        frames.ApplyCharacterFrames(loaded[0], loaded[1], loaded[2], loaded[3], loaded[4]);
+                }, frames);
+            }
         }
         else
         {
@@ -86,9 +122,6 @@ public sealed class PetImageLoader
             frames.AccOffsetY = acc.OffsetY;
             frames.Accessory = Fetch(_catalog.CdnUrl(acc.Url), v => frames.Accessory = v, frames);
         }
-
-        // 先显示默认外观，避免网慢时桌宠空白；真实帧到货后会逐张替换，期间由 Loading 转圈提示。
-        if (!frames.Ready) LoadDefaultFrames(frames);
 
         // 目录还没加载完时无法判断这个 id 是真的不存在还是暂时查不到：先给默认图但不入缓存，
         // 等 Catalog.Loaded 后重新解析，避免把默认皮肤固化成结果。
@@ -104,11 +137,12 @@ public sealed class PetImageLoader
 
     static void LoadDefaultFrames(PetFrames frames)
     {
-        frames.Head1 ??= LoadLocal("role_1501_1001_head_1.png");
-        frames.Head2 ??= LoadLocal("role_1501_1001_head_2.png");
-        frames.Body1 ??= LoadLocal("role_1501_1001_body_1.png");
-        frames.Body2 ??= LoadLocal("role_1501_1001_body_2.png");
-        frames.Body3 ??= LoadLocal("role_1501_1001_body_3.png");
+        frames.ApplyCharacterFrames(
+            LoadLocal("role_1501_1001_head_1.png"),
+            LoadLocal("role_1501_1001_head_2.png"),
+            LoadLocal("role_1501_1001_body_1.png"),
+            LoadLocal("role_1501_1001_body_2.png"),
+            LoadLocal("role_1501_1001_body_3.png"));
     }
 
     static Image LoadLocal(string file)
@@ -128,12 +162,21 @@ public sealed class PetImageLoader
     /// <summary>下载迟迟不完成时用默认图补位，至少不留下空白桌宠。</summary>
     static void StartFallback(PetFrames frames)
     {
+        frames.BeginFallback();
         _ = Task.Run(async () =>
         {
             for (int i = 0; i < 3 && !frames.Ready; i++) await Task.Delay(4000);
-            if (frames.Ready) return;
+            if (frames.Ready)
+            {
+                frames.EndFallback();
+                return;
+            }
             LoadDefaultFrames(frames);
-            if (!frames.Ready) return;
+            if (!frames.Ready)
+            {
+                frames.EndFallback();
+                return;
+            }
             Core.Log.Write("外观下载超时，回退默认帧");
             frames.RaiseChanged();
         });
@@ -142,15 +185,14 @@ public sealed class PetImageLoader
     /// <summary>同步取图；未缓存时后台下载，完成后回填并通知所有窗口重绘。</summary>
     Image Fetch(string url, Action<Image> assign, PetFrames frames)
     {
-        if (string.IsNullOrEmpty(url)) return null;
+        if (string.IsNullOrEmpty(url)) { assign(null); return null; }
         // onStarted 在真正发起下载时 +1；完成回调无论成功失败都 -1，并只从缓存读取，
         // 绝不能再次调用 Get(url)，否则失败会重新 Prefetch，形成无限下载风暴。
         var img = _store.Get(url, () =>
         {
             try
             {
-                var loaded = _store.GetCached(url);
-                if (loaded != null) assign(loaded);
+                assign(_store.GetCached(url));
             }
             finally
             {
