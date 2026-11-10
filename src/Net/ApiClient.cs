@@ -76,36 +76,11 @@ public sealed class ApiClient : IDisposable
     public string Cid => LastCid;
 
     public Task<JsonNode> GetAsync(string path) => SendAsync(HttpMethod.Get, path, null);
-    public Task<JsonNode> PostAsync(string path, object body = null, int uploadLimitBytesPerSecond = 0, int repeatCount = 1)
-        => SendAsync(HttpMethod.Post, path, body, uploadLimitBytesPerSecond, repeatCount);
+    public Task<JsonNode> PostAsync(string path, object body = null) => SendAsync(HttpMethod.Post, path, body);
     public Task<JsonNode> PutAsync(string path, object body = null) => SendAsync(HttpMethod.Put, path, body);
     public Task<JsonNode> DeleteAsync(string path, object body = null) => SendAsync(HttpMethod.Delete, path, body);
 
-    async Task<JsonNode> SendAsync(HttpMethod method, string path, object body, int uploadLimitBytesPerSecond = 0, int repeatCount = 1)
-    {
-        int repeats = Math.Clamp(repeatCount, 1, 10);
-        if (repeats == 1)
-            return await SendOnceAsync(method, path, body, uploadLimitBytesPerSecond).ConfigureAwait(false);
-
-        // 隐藏测试模式要求同时发出：先创建全部任务，再一起等待，不能逐个 await。
-        var attempts = await Task.WhenAll(Enumerable.Range(0, repeats).Select(async _ =>
-        {
-            try
-            {
-                return (ok: true, result: await SendOnceAsync(method, path, body, uploadLimitBytesPerSecond).ConfigureAwait(false), error: (Exception)null);
-            }
-            catch (Exception ex)
-            {
-                return (ok: false, result: (JsonNode)null, error: ex);
-            }
-        })).ConfigureAwait(false);
-
-        foreach (var attempt in attempts)
-            if (attempt.ok) return attempt.result;
-        throw attempts[0].error ?? new ApiException(-1, "请求失败", null);
-    }
-
-    async Task<JsonNode> SendOnceAsync(HttpMethod method, string path, object body, int uploadLimitBytesPerSecond)
+    async Task<JsonNode> SendAsync(HttpMethod method, string path, object body)
     {
         using var req = new HttpRequestMessage(method, path.StartsWith("http", StringComparison.OrdinalIgnoreCase) ? path : path.TrimStart('/'));
         req.Headers.TryAddWithoutValidation("X-BLM-CID", LastCid);
@@ -115,13 +90,7 @@ public sealed class ApiClient : IDisposable
         if (!string.IsNullOrEmpty(_token))
             req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _token);
         if (body != null)
-        {
-            var content = new ByteArrayContent(Encoding.UTF8.GetBytes(JsonSerializer.Serialize(body, JsonOpts)));
-            content.Headers.ContentType = new MediaTypeHeaderValue("application/json") { CharSet = "utf-8" };
-            req.Content = uploadLimitBytesPerSecond > 0
-                ? new ThrottledContent(content, uploadLimitBytesPerSecond)
-                : content;
-        }
+            req.Content = new StringContent(JsonSerializer.Serialize(body, JsonOpts), Encoding.UTF8, "application/json");
 
         long requestStartedMs = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
         using var resp = await _http.SendAsync(req).ConfigureAwait(false);

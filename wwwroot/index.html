@@ -104,11 +104,8 @@
               { id: 'local-preview-1', name: '我的本地搭配', characterAssetId: 3060, accessoryAssetId: 1604, emoteAssetIds: [1971, 1965, 0, 0, 0] },
             ]);
           }
-          else if (msg.cmd === 'test.get') {
-            reply({ enabled: false, uploadLimitKbps: 30, repeatCount: 3 });
-          }
-          else if (msg.cmd === 'test.set') {
-            reply({ enabled: !!msg.data?.enabled, uploadLimitKbps: Number(msg.data?.uploadLimitKbps) || 30, repeatCount: Number(msg.data?.repeatCount) || 3 });
+          else if (msg.cmd === 'locks.toggle') {
+            reply({ locked: false, items: [] });
           }
           else if (msg.cmd === 'synthesize') {
             reply({ asset_id: 101 });

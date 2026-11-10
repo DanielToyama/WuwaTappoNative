@@ -60,8 +60,11 @@
     synthRarity: 'all',
     synthSlots: [],
     synthCanCraft: false,
-    testPanelVisible: false,
-    test: null,
+    synthPanelVisible: false,
+    synthUnlocked: false,
+    synthEnabled: false,
+    synthBusy: false,
+    locks: new Set(),
     presets: null,
     localPresets: null,
     presetBusy: false,
@@ -161,20 +164,72 @@
 
   function isLogged() { return DEMO || !!(state.boot && state.boot.auth && state.boot.auth.loggedIn); }
 
-  /* ---------------- 隐藏测试入口 ---------------- */
+  /* ---------------- 隐藏高级合成入口 ---------------- */
   const KONAMI_CODE = ['ArrowUp', 'ArrowUp', 'ArrowDown', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'ArrowLeft', 'ArrowRight', 'b', 'a', 'b', 'a'];
   let konamiIndex = 0;
 
-  async function showTestPanel() {
-    if (state.page !== 'synth') return;
+  function lockKey(type, id) { return String(type || '').toLowerCase() + ':' + Number(id); }
+  function isAssetLocked(type, id) { return state.locks.has(lockKey(type, id)); }
+  function syncLocks(items) {
+    state.locks = new Set((items || []).map(x => lockKey(x.type, x.id)));
+  }
+  function applySynthSettings(boot) {
+    if (!boot) return;
+    state.synthUnlocked = !!boot.settings?.anyItemSynthesisUnlocked;
+    state.synthEnabled = !!boot.settings?.anyItemSynthesisEnabled;
+    syncLocks(boot.locks || []);
+  }
+  async function toggleAssetLock(type, id) {
     try {
-      const r = await call('test.get');
-      if (r) state.test = r;
+      const r = await tryCall('locks.toggle', { type, id });
+      syncLocks(r?.items || []);
+      if (state.page === 'bag') renderBagList();
+      else if (state.page === 'atlas') renderAtlas();
+      else if (state.page === 'synth') renderSynth();
     } catch { }
-    state.test = state.test || { enabled: false, uploadLimitKbps: 30, repeatCount: 3 };
-    state.testPanelVisible = true;
+  }
+  function lockButtonHtml(type, id, extra = '') {
+    if (!state.synthUnlocked) return '';
+    const locked = isAssetLocked(type, id);
+    const icon = locked
+      ? '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>'
+      : '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="10" width="14" height="11" rx="2.5"/><path d="M8 10V7a4 4 0 0 1 7.2-2.2"/></svg>';
+    return `<button type="button" class="card-lock ${locked ? 'locked' : ''} ${extra}" data-lock-type="${esc(type)}" data-lock-id="${Number(id)}" title="${locked ? '解除锁定' : '锁定，避免消耗最后一份'}">${icon}</button>`;
+  }
+  function showAdvancedSynthWarning() {
+    modal(`<div class="about">
+      <div class="about-title">高级合成警告</div>
+      <div class="about-note about-note--warn"><p>此功能允许你使用所有库存物品进行合成，请务必看清后使用， 这将会损失你已解锁的图鉴！！！！</p></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px">
+        <button class="btn ghost" id="synthUnlockCancel">取消</button>
+        <button class="btn danger" id="synthUnlockOk">我已知晓并解锁</button>
+      </div>
+    </div>`, host => {
+      host.querySelector('#synthUnlockCancel').onclick = closeModal;
+      host.querySelector('#synthUnlockOk').onclick = async () => {
+        closeModal();
+        try {
+          const boot = await tryCall('settings.set', { anyItemSynthesisUnlocked: true, anyItemSynthesisEnabled: true });
+          state.boot = boot;
+          applySynthSettings(boot);
+          state.synthPanelVisible = true;
+          renderChrome();
+          if (state.page === 'synth') renderSynth();
+          toast('高级合成已解锁');
+        } catch { }
+      };
+    });
+  }
+
+  async function showSynthPanel() {
+    if (state.page !== 'synth') return;
+    if (!state.synthUnlocked) {
+      showAdvancedSynthWarning();
+      return;
+    }
+    state.synthPanelVisible = true;
     await renderSynth();
-    document.querySelector('.test-panel')?.scrollIntoView({ block: 'nearest' });
+    document.querySelector('.synth-advanced-panel')?.scrollIntoView({ block: 'nearest' });
   }
 
   document.addEventListener('keydown', e => {
@@ -187,7 +242,7 @@
       konamiIndex++;
       if (konamiIndex === KONAMI_CODE.length) {
         konamiIndex = 0;
-        showTestPanel();
+        showSynthPanel();
       }
     } else {
       konamiIndex = key === KONAMI_CODE[0] ? 1 : 0;
@@ -201,8 +256,9 @@
     const hashParams = HASH_PARAMS;
     const initialPage = hashParams.get('page');
     if (initialPage && PAGES.some(p => p.key === initialPage)) state.page = initialPage;
+    const warningIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2.8 20h18.4L12 3Z"/><path d="M12 9v4.5"/><path d="M12 17h.01"/></svg>';
     document.getElementById('tabs').innerHTML = PAGES.map(p =>
-      `<button class="tab" data-page="${p.key}">${ICONS[p.icon]}<span>${p.title}</span>${p.key === 'synth' ? '<span class="tab-dot" data-tab-badge="synth" title="有可合成物资"></span>' : ''}</button>`).join('');
+      `<button class="tab" data-page="${p.key}">${ICONS[p.icon]}<span>${p.title}</span>${p.key === 'synth' && state.synthEnabled ? `<span class="tab-warning" title="高级合成已开启">${warningIcon}</span>` : ''}${p.key === 'synth' ? '<span class="tab-dot" data-tab-badge="synth" title="有可合成物资"></span>' : ''}</button>`).join('');
     document.querySelectorAll('.tab').forEach(btn => btn.onclick = () => navigate(btn.dataset.page));
     document.getElementById('closeBtn').onclick = () => call('win.close');
     document.getElementById('winCloseBtn').onclick = () => call('win.close');
@@ -226,7 +282,7 @@
     try {
       const b = await call('boot');
       state.boot = b;
-      state.test = b.testMode || { enabled: false, uploadLimitKbps: 30, repeatCount: 3 };
+      applySynthSettings(b);
       state.update = b.update || state.update;
       state.announcements = Array.isArray(b.announcements) ? b.announcements : [];
       renderChrome();
@@ -977,6 +1033,9 @@
       };
       el.ondblclick = () => equip(itemOrId(id));
     });
+    host.querySelectorAll('[data-lock-type]').forEach(el => {
+      el.onclick = async e => { e.stopPropagation(); await toggleAssetLock(el.dataset.lockType, Number(el.dataset.lockId)); };
+    });
     host.querySelectorAll('.fav').forEach(el => {
       el.onclick = async e => {
         e.stopPropagation();
@@ -996,6 +1055,7 @@
     return `<div class="card ${selected ? 'selected' : ''}" data-id="${item.id}">
       ${isNew ? '<span class="new-dot" title="最近获得"></span>' : ''}
       ${withFav ? `<div class="fav" data-id="${item.id}" title="收藏">${fav}</div>` : ''}
+      ${lockButtonHtml(item.type, item.id)}
       ${img(item.thumb, 'thumb', item.name)}
       <div class="rarity-bar ${rarityClass(item.rarity)}"></div>
       <div class="name" title="${esc(item.name)}">${esc(item.name)}</div>
@@ -1279,6 +1339,7 @@
 
   function atlasCard(x, owned) {
     return `<div class="card ${owned ? '' : 'unowned'}" data-key="${x.type}:${x.mainId}" title="${esc(x.name)}">
+      ${owned ? lockButtonHtml(x.type, x.mainId) : ''}
       ${img(x.thumb, 'thumb', x.name)}
       <div class="rarity-bar ${rarityClass(x.rarity)}"></div>
       <div class="name">${esc(x.name)}</div>
@@ -1322,6 +1383,9 @@
         renderAtlasList(items, ownedNames);
       });
     }
+    host.querySelectorAll('[data-lock-type]').forEach(el => {
+      el.onclick = async e => { e.stopPropagation(); await toggleAssetLock(el.dataset.lockType, Number(el.dataset.lockId)); };
+    });
     host.querySelectorAll('.card').forEach(el => {
       el.onclick = async () => {
         const x = byKey.get(el.dataset.key);
@@ -1399,6 +1463,7 @@
 
   /* ---------------- 合成 ---------------- */
   function synthNeed() { return state.synthMode === 'same' ? 5 : 10; }
+  function synthAnyMode() { return !!(state.synthUnlocked && state.synthEnabled); }
   function synthResetSlots() { state.synthSlots = Array(synthNeed()).fill(null); }
   function synthSlotCount(id) { return state.synthSlots.filter(x => x === id).length; }
   function synthBagById(id) { return (state.bag || []).find(x => x.id === id) || null; }
@@ -1410,10 +1475,19 @@
     for (const it of list) if ((order[effRarity(it.rarity)] || 0) > (order[max] || 0)) max = effRarity(it.rarity);
     return max;
   }
-  function synthUsable(item) { return Math.max(0, (item.quantity || 1) - 1 - synthSlotCount(item.id)); }
+  /** 未扣除已放入槽位的可用数量；锁只保留 1 份，普通模式永远保留 1 份。 */
+  function synthBaseUsable(item) {
+    const quantity = Math.max(0, Number(item.quantity) || 1);
+    const locked = isAssetLocked(item.type, item.id);
+    const reserved = (!synthAnyMode() || locked) ? 1 : 0;
+    return Math.max(0, quantity - reserved);
+  }
+  function synthUsable(item) { return Math.max(0, synthBaseUsable(item) - synthSlotCount(item.id)); }
   function synthEligible(type) {
+    const list = (state.bag || []).filter(x => ['character_skin', 'accessory', 'emote'].includes(x.type));
+    if (synthAnyMode()) return type ? list.filter(x => x.type === type) : list;
     const maxR = synthMaxRarity(type);
-    return (state.bag || []).filter(x => x.type === type)
+    return list.filter(x => x.type === type)
       .filter(x => state.synthMode === 'same' || effRarity(x.rarity) !== maxR);
   }
   function synthAnchor() { const id = state.synthSlots.find(x => x !== null); return id ? synthBagById(id) : null; }
@@ -1437,10 +1511,11 @@
     const groups = new Map();
     for (const item of state.bag) {
       if (!['character_skin', 'accessory', 'emote'].includes(item.type)) continue;
-      const rarity = effRarity(item.rarity);
-      if (mode === 'up' && rarity === synthMaxRarityForCheck(item.type)) continue;
+      // 合成提醒只统计正常规则下可合成的数量；高级合成额外允许的最后一份不参与计算。
       const usable = Math.max(0, (Number(item.quantity) || 1) - 1);
       if (usable <= 0) continue;
+      const rarity = effRarity(item.rarity);
+      if (mode === 'up' && rarity === synthMaxRarityForCheck(item.type)) continue;
       const key = item.type + '|' + rarity;
       groups.set(key, (groups.get(key) || 0) + usable);
     }
@@ -1464,12 +1539,16 @@
     const need = synthNeed(), type = state.synthType;
     // 清理已不合法/超量的槽位
     const eligibleAll = synthEligible(type);
+    const anchorForCleanup = synthAnchor();
+    const cleanupAll = synthAnyMode()
+      ? synthEligible('').filter(x => !anchorForCleanup || (x.type === anchorForCleanup.type && effRarity(x.rarity) === effRarity(anchorForCleanup.rarity)))
+      : eligibleAll;
     const kept = state.synthSlots.map((id, i) => {
       if (id == null) return null;
-      const item = eligibleAll.find(x => x.id === id);
+      const item = cleanupAll.find(x => x.id === id);
       if (!item) return null;
       const before = state.synthSlots.slice(0, i).filter(x => x === id).length;
-      return before < Math.max(0, (item.quantity || 1) - 1) ? id : null;
+      return before < synthBaseUsable(item) ? id : null;
     });
     state.synthSlots = kept.filter(x => x !== null).concat(Array(need - kept.filter(x => x !== null).length).fill(null));
 
@@ -1489,18 +1568,17 @@
       return `<div class="synth-slot ${item ? 'filled' : ''}" data-slot="${i}" title="${item ? esc(item.name) : '空槽位'}">
         ${item ? img(item.thumb) : ''}<span class="idx">${i + 1}</span></div>`;
     }).join('');
-    const testCfg = state.test || state.boot?.testMode || { enabled: false, uploadLimitKbps: 30, repeatCount: 3 };
-    const testPanelHtml = state.testPanelVisible ? `
-      <div class="test-panel">
-        <div class="test-panel-head">
-          <span>测试选项</span>
-          <button class="btn ghost" id="testHide">隐藏并恢复</button>
+    const advancedReminderHtml = synthAnyMode() ? '<div class="synth-danger-note">高级合成已开启，使用完毕务必及时关闭。</div>' : '';
+    const advancedPanelHtml = state.synthPanelVisible ? `
+      <div class="synth-advanced-panel">
+        <div class="synth-advanced-head">
+          <span>高级合成 <span class="synth-advanced-state ${state.synthEnabled ? 'on' : ''}">${state.synthEnabled ? '已启用' : '已关闭'}</span></span>
+          <label class="synth-advanced-toggle"><input type="checkbox" id="synthEnabled" ${state.synthEnabled ? 'checked' : ''}> 任意物品</label>
+          <span class="synth-advanced-meta">锁定 ${state.locks.size} 件</span>
+          <button class="btn ghost" id="synthHide">隐藏</button>
         </div>
-        <label class="test-row"><input type="checkbox" id="testEnabled" ${testCfg.enabled ? 'checked' : ''}> 启用合成请求测试</label>
-        <div class="test-row">上传限速 <input class="input" type="number" id="testLimit" min="1" max="1024" value="${Math.max(1, Number(testCfg.uploadLimitKbps) || 30)}"> KB/s</div>
-        <div class="test-row">重复请求 <input class="input" type="number" id="testRepeat" min="1" max="10" value="${Math.min(10, Math.max(1, Number(testCfg.repeatCount) || 3))}"> 次</div>
-        <div class="test-note">仅影响合成请求；开启后不弹出合成结果窗口，请到背包查看。</div>
-        <button class="btn" id="testSave">保存</button>
+        <div class="synth-advanced-note">锁定物资不参与合成，单独保存在 locks.json；每次合成前会二次确认。</div>
+        <div class="synth-advanced-actions"><button class="btn" id="synthSave">保存设置</button></div>
       </div>` : '';
 
     setPage(`
@@ -1538,10 +1616,11 @@
         <span class="synth-count">已选 ${filled} / ${need}${anchor ? ' · ' + esc(anchor.name) : ''}</span>
         <span class="spacer"></span>
         <button class="btn ghost" id="synthClear">清空</button>
-        <button class="btn ghost" id="synthOne">一键选择</button>
+        <button class="btn ghost" id="synthOne" ${synthAnyMode() ? 'disabled title="高级合成禁止一键放置"' : ''}>一键选择</button>
         <button class="btn" id="synthSubmit" ${filled === need ? '' : 'disabled'}>合成</button>
       </div>
-      ${testPanelHtml}`);
+      ${advancedPanelHtml}
+      ${advancedReminderHtml}`);
 
     document.querySelectorAll('[data-sm]').forEach(b => b.onclick = () => {
       state.synthMode = b.dataset.sm; synthResetSlots(); renderSynth();
@@ -1574,27 +1653,22 @@
       synthOneClick().catch(e => toast(e.message || '一键选择失败', 'err'));
     };
     document.getElementById('synthSubmit').onclick = doSynth;
-    if (state.testPanelVisible) {
-      document.getElementById('testHide').onclick = async () => {
-        try {
-          const r = await tryCall('test.set', { enabled: false, uploadLimitKbps: 30, repeatCount: 3 });
-          state.test = r;
-          if (state.boot) state.boot.testMode = r;
-          state.testPanelVisible = false;
-          renderSynth();
-          toast('已隐藏测试开关并恢复默认');
-        } catch { }
+    if (state.synthPanelVisible) {
+      document.getElementById('synthHide').onclick = () => {
+        state.synthPanelVisible = false;
+        renderSynth();
       };
-      document.getElementById('testSave').onclick = async () => {
-        const enabled = !!document.getElementById('testEnabled')?.checked;
-        const uploadLimitKbps = Math.min(1024, Math.max(1, Number(document.getElementById('testLimit')?.value) || 30));
-        const repeatCount = Math.min(10, Math.max(1, Number(document.getElementById('testRepeat')?.value) || 3));
+      document.getElementById('synthSave').onclick = async () => {
+        const enabled = !!document.getElementById('synthEnabled')?.checked;
         try {
-          const r = await tryCall('test.set', { enabled, uploadLimitKbps, repeatCount });
-          state.test = r;
-          if (state.boot) state.boot.testMode = r;
+          const boot = await tryCall('settings.set', { anyItemSynthesisEnabled: enabled });
+          state.boot = boot;
+          applySynthSettings(boot);
+          state.synthEnabled = enabled;
+          if (!enabled) synthResetSlots();
+          renderChrome();
           renderSynth();
-          toast(enabled ? '合成测试已开启' : '合成测试已关闭');
+          toast(enabled ? '高级合成已开启' : '高级合成已关闭');
         } catch { }
       };
     }
@@ -1608,6 +1682,7 @@
       const usable = synthUsable(x);
       const sel = synthSlotCount(x.id);
       return `<div class="card ${sel ? 'selected' : ''}" data-id="${x.id}">
+        ${lockButtonHtml(x.type, x.id)}
         ${img(x.thumb, 'thumb', x.name)}
         <div class="rarity-bar ${rarityClass(x.rarity)}"></div>
         <div class="name" title="${esc(x.name)}">${esc(x.name)}</div>
@@ -1615,6 +1690,9 @@
         ${x.quantity > 1 ? `<div class="qty">×${x.quantity}</div>` : ''}
       </div>`;
     }).join('');
+    grid.querySelectorAll('[data-lock-type]').forEach(el => {
+      el.onclick = async e => { e.stopPropagation(); await toggleAssetLock(el.dataset.lockType, Number(el.dataset.lockId)); };
+    });
     grid.querySelectorAll('.card').forEach(el => {
       el.onclick = () => {
         const item = synthBagById(Number(el.dataset.id));
@@ -1634,6 +1712,7 @@
   }
 
   async function synthOneClick() {
+    if (synthAnyMode()) return toast('高级合成禁止使用一键放置', 'err');
     const need = synthNeed();
     const filled = state.synthSlots.filter(x => x !== null).length;
     if (filled >= need) return;
@@ -1641,9 +1720,27 @@
     // 一键选择搜索全部三类材料，不再受当前“类型”页签限制。
     await Promise.all(['character_skin', 'accessory', 'emote']
       .map(t => ensureAtlas(t).catch(() => [])));
-    const pool = ['character_skin', 'accessory', 'emote']
-      .flatMap(t => synthEligible(t))
+    const pool = (synthAnyMode() ? synthEligible('') : ['character_skin', 'accessory', 'emote'].flatMap(t => synthEligible(t)))
       .filter(x => synthUsable(x) > 0);
+
+    if (synthAnyMode()) {
+      const remaining = need - filled;
+      if (pool.reduce((sum, x) => sum + synthUsable(x), 0) < remaining)
+        return toast('库存中的可用材料不足', 'err');
+      const slots = [...state.synthSlots];
+      for (const item of pool.sort((a, b) => synthUsable(b) - synthUsable(a))) {
+        const take = Math.min(synthUsable(item), remaining - slots.filter(Boolean).length);
+        for (let i = 0; i < take; i++) {
+          const idx = slots.findIndex(v => v === null);
+          if (idx < 0) break;
+          slots[idx] = item.id;
+        }
+        if (slots.filter(Boolean).length >= need) break;
+      }
+      state.synthSlots = slots;
+      renderSynth();
+      return;
+    }
 
     let group;
     let chosenType;
@@ -1823,33 +1920,62 @@
     else toast('兑换成功，奖励已发放到背包');
   }
 
-  async function doSynth() {
-    const need = synthNeed();
-    const ids = state.synthSlots.filter(x => x !== null);
-    if (ids.length !== need) return toast(`需要 ${need} 个材料`, 'err');
-    const sameLevel = state.synthMode === 'same';
+  async function performSynth(ids, sameLevel) {
     try {
+      state.synthBusy = true;
       const r = await tryCall('synthesize', { ids, sameLevel });
       const id = Number(r?.asset_id || r?.data?.asset_id) || 0;
       await refreshAfterAcquire(id);
       const found = (state.bag || []).find(v => v.id === id);
       let thumb = '', name = '合成成功';
       if (found) { thumb = found.thumb; name = found.name; }
-      const testEnabled = !!(state.test?.enabled || state.boot?.testMode?.enabled);
-      if (testEnabled) {
-        toast('合成请求已发送，请到背包查看结果');
-      } else {
-        modal(`<div class="reward">
-          <div class="rays"></div>
-          ${thumb ? img(thumb, 'prize', name) : '<div style="font-size:64px">🎁</div>'}
-          <div class="r-name">${esc(name)}</div>
-          <div class="r-sub">合成成功</div>
-          <button class="btn" id="mOk" style="margin-top:8px">收下</button>
-        </div>`, host => host.querySelector('#mOk').onclick = closeModal);
-      }
+      modal(`<div class="reward">
+        <div class="rays"></div>
+        ${thumb ? img(thumb, 'prize', name) : '<div style="font-size:64px">🎁</div>'}
+        <div class="r-name">${esc(name)}</div>
+        <div class="r-sub">合成成功</div>
+        <button class="btn" id="mOk" style="margin-top:8px">收下</button>
+      </div>`, host => host.querySelector('#mOk').onclick = closeModal);
       synthResetSlots();
       renderSynth();
     } catch { }
+    finally { state.synthBusy = false; }
+  }
+
+  async function doSynth() {
+    if (state.synthBusy) return;
+    const need = synthNeed();
+    const ids = state.synthSlots.filter(x => x !== null);
+    if (ids.length !== need) return toast(`需要 ${need} 个材料`, 'err');
+    const selectedItems = ids.map(id => synthBagById(id)).filter(Boolean);
+    if (selectedItems.length !== ids.length)
+      return toast('合成材料数据失效，请重新选择', 'err');
+    const first = selectedItems[0];
+    if (selectedItems.some(x => x.type !== first.type || effRarity(x.rarity) !== effRarity(first.rarity)))
+      return toast('不能跨材料合成，请选择相同类型和稀有度的收集物', 'err');
+    const sameLevel = state.synthMode === 'same';
+    if (synthAnyMode()) {
+      state.synthBusy = true;
+      modal(`<div class="about">
+        <div class="about-title">合成确认</div>
+        <div class="about-note about-note--warn"><p>确认要开始此次合成吗？这将可能损失你已解锁的图鉴</p></div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px">
+          <button class="btn ghost" id="synthCancel">取消</button>
+          <button class="btn danger" id="synthConfirm">确认合成</button>
+        </div>
+      </div>`, host => {
+        const release = () => { state.synthBusy = false; };
+        host.onclick = e => { if (e.target === host) { closeModal(); release(); } };
+        host.querySelector('#synthCancel').onclick = () => { closeModal(); release(); };
+        host.querySelector('#synthConfirm').onclick = async () => {
+          closeModal();
+          try { await performSynth(ids, sameLevel); }
+          finally { release(); }
+        };
+      });
+      return;
+    }
+    await performSynth(ids, sameLevel);
   }
 
   /* ---------------- 预设 ---------------- */
@@ -2941,6 +3067,10 @@
               <div class="detail-row"><span>可用点击</span><span data-click-avail>${auth.clicks || 0}</span></div>
               <div class="detail-row"><span>累计点击</span><span class="click-total"><span data-click-total>${auth.clickTotal ?? auth.clicks ?? 0}</span><button class="btn ghost click-boost" id="boostClicks" title="本地增加 10000 次点击并立即上报；连续操作间隔至少 0.5 秒">+10000</button></span></div>
               <div class="detail-row"><span>已消耗</span><span data-click-consume>${auth.clickConsume || 0}</span></div>
+              <div class="setting-item" style="padding:8px 0;border-top:1px solid var(--border,#eee);border-bottom:1px solid var(--border,#eee);background:transparent">
+                <div><div class="setting-title">自动补贴点击</div><div class="setting-sub">可用点击低于 1000 时自动补充 10000</div></div>
+                <div class="switch ${s.autoClickBoost ? 'on' : ''}" data-switch="autoClickBoost"></div>
+              </div>
               <div style="display:flex;gap:10px">
                 <button class="btn ghost" id="userRefresh">刷新账号信息</button>
                 <button class="btn danger" id="logoutBtn">退出登录</button>
@@ -3993,6 +4123,9 @@
         captureTransparent: false,
         captureCompatibilityMode: false,
         captureStopRenderingMain: false,
+        anyItemSynthesisUnlocked: mode === 'synth' || mode === 'bag-emote',
+        anyItemSynthesisEnabled: mode === 'synth',
+        autoClickBoost: false,
         autoChest: true,
         autoEmoteEnabled: false,
         autoClickEnabled: false,
@@ -4012,6 +4145,7 @@
         cloudEmoteAssetIds: [1971, 1965, 1969, 1970, 1968],
       },
       catalog: {},
+      locks: [],
       update: null,
     };
   }
@@ -4112,7 +4246,7 @@
 
   if (PREVIEW) {
     state.boot = previewBoot(PREVIEW);
-    state.test = state.boot.testMode || { enabled: false, uploadLimitKbps: 30, repeatCount: 3 };
+    applySynthSettings(state.boot);
     state.compatibility = previewCompatibility(PREVIEW);
     state.announcements = previewAnnouncements(PREVIEW);
     if (PREVIEW === 'synth') {

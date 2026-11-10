@@ -376,6 +376,9 @@ public sealed class PanelWindow : Form
             catLayout = _app.Cfg.CatLayout,
             petScreen = _app.Cfg.PetScreen,
             synthCheckMode = _app.Cfg.SynthCheckMode,
+            anyItemSynthesisUnlocked = _app.Cfg.AnyItemSynthesisUnlocked,
+            anyItemSynthesisEnabled = _app.Cfg.AnyItemSynthesisEnabled,
+            autoClickBoost = _app.Cfg.AutoClickBoost,
             captureMode = _app.Cfg.CaptureMode,
             captureWidth = _app.Cfg.CaptureWidth,
             captureHeight = _app.Cfg.CaptureHeight,
@@ -421,12 +424,7 @@ public sealed class PanelWindow : Form
             accessories = _app.Catalog.Count("accessory"),
             emotes = _app.Catalog.Count("emote"),
         },
-        testMode = new
-        {
-            enabled = _app.Cfg.TestModeEnabled,
-            uploadLimitKbps = _app.Cfg.TestUploadLimitKbps,
-            repeatCount = _app.Cfg.TestRequestRepeatCount,
-        },
+        locks = AssetLockStore.All(),
         version = typeof(PanelWindow).Assembly.GetName().Version?.ToString(3) ?? "0.0.1",
     };
 
@@ -898,29 +896,12 @@ public sealed class PanelWindow : Form
                 return new { ok = true, hotkeys = normalized };
             }
 
-            case "test.get":
-                return new
-                {
-                    enabled = cfg.TestModeEnabled,
-                    uploadLimitKbps = cfg.TestUploadLimitKbps,
-                    repeatCount = cfg.TestRequestRepeatCount,
-                };
-
-            case "test.set":
+            case "locks.toggle":
             {
-                if (data.ContainsKey("enabled"))
-                    cfg.TestModeEnabled = ApiClient.ReadBool(data["enabled"]);
-                if (data.ContainsKey("uploadLimitKbps"))
-                    cfg.TestUploadLimitKbps = Math.Clamp((int)ApiClient.ReadLong(data["uploadLimitKbps"]), 1, 1024);
-                if (data.ContainsKey("repeatCount"))
-                    cfg.TestRequestRepeatCount = Math.Clamp((int)ApiClient.ReadLong(data["repeatCount"]), 1, 10);
-                ConfigStore.Save(cfg);
-                return new
-                {
-                    enabled = cfg.TestModeEnabled,
-                    uploadLimitKbps = cfg.TestUploadLimitKbps,
-                    repeatCount = cfg.TestRequestRepeatCount,
-                };
+                string type = ApiClient.ReadString(data["type"]);
+                long id = ApiClient.ReadLong(data["id"]);
+                bool locked = AssetLockStore.Toggle(type, id);
+                return new { locked, items = AssetLockStore.All() };
             }
 
             case "settings.set":
@@ -1008,6 +989,9 @@ public sealed class PanelWindow : Form
                             cfg.SynthCheckMode = mode == "same" || mode == "off" ? mode : "up";
                             break;
                         }
+                        case "anyItemSynthesisUnlocked": cfg.AnyItemSynthesisUnlocked = ApiClient.ReadBool(kv.Value); break;
+                        case "anyItemSynthesisEnabled": cfg.AnyItemSynthesisEnabled = ApiClient.ReadBool(kv.Value); break;
+                        case "autoClickBoost": cfg.AutoClickBoost = ApiClient.ReadBool(kv.Value); break;
                         case "captureMode": cfg.CaptureMode = ApiClient.ReadBool(kv.Value); break;
                         case "captureWidth": cfg.CaptureWidth = Math.Clamp((int)ApiClient.ReadLong(kv.Value), 160, 1600); break;
                         case "captureHeight": cfg.CaptureHeight = Math.Clamp((int)ApiClient.ReadLong(kv.Value), 160, 1600); break;
@@ -1113,10 +1097,7 @@ public sealed class PanelWindow : Form
                 if (data["ids"] is JsonArray arr) foreach (var n in arr) ids.Add(ApiClient.ReadLong(n));
                 bool same = ApiClient.ReadBool(data["sameLevel"]);
                 string path = same ? "api/frontend/assets/synthesis/same-level" : "api/frontend/assets/synthesis";
-                // 隐藏测试模式：只对合成请求限速和重复发送，其他接口不受影响。
-                int uploadLimit = cfg.TestModeEnabled ? cfg.TestUploadLimitKbps * 1024 : 0;
-                int repeatCount = cfg.TestModeEnabled ? cfg.TestRequestRepeatCount : 1;
-                var resp = await auth.Api.PostAsync(path, new { asset_ids = ids.ToArray() }, uploadLimit, repeatCount);
+                var resp = await auth.Api.PostAsync(path, new { asset_ids = ids.ToArray() });
                 return resp;
             }
 

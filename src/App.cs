@@ -29,7 +29,9 @@ public sealed class App : ApplicationContext
     /// <summary>只读公告服务；只在设置页渲染，不打扰其他页面。</summary>
     public AnnouncementService Announcements { get; }
     System.Threading.Timer _autoChestTimer;
+    System.Threading.Timer _autoBoostTimer;
     System.Threading.Timer _clickRefreshTimer;
+    int _autoBoostBusy;
     System.Threading.Timer _autoClickTimer;
     System.Threading.Timer _gameModeRuleTimer;
     System.Threading.Timer _compatibilityTimer;
@@ -57,6 +59,8 @@ public sealed class App : ApplicationContext
         Auth = new AuthService(Cfg);
         _clickUserId = Auth.UserId;
         Room = new RoomManager(Auth, Cfg);
+        // 辅助功能：可用点击低于 1000 时自动补 10000；定时检查而不是依赖某个点击事件。
+        _autoBoostTimer = new System.Threading.Timer(_ => TryAutoBoostClicks(), null, 1000, 1000);
         Pet = new PetWindow(Cfg, Auth, Catalog, Store, Room);
         Keyboard = new KeyboardWindow();
         Pet.KeyboardUI = Keyboard;
@@ -671,6 +675,20 @@ public sealed class App : ApplicationContext
         catch (Exception ex) { Log.Write("启动登录失败 " + ex); }
     }
 
+    void TryAutoBoostClicks()
+    {
+        if (!Cfg.AutoClickBoost || !Auth.IsLoggedIn || Auth.UserInfo == null) return;
+        if (Room.AvailableClicks >= 1000) return;
+        if (Interlocked.Exchange(ref _autoBoostBusy, 1) == 1) return;
+        try
+        {
+            if (Room.BoostLocalClicks(10000))
+                Log.Write("自动补贴点击 +10000");
+        }
+        catch (Exception ex) { Log.Write("自动补贴点击失败 " + ex.Message); }
+        finally { Interlocked.Exchange(ref _autoBoostBusy, 0); }
+    }
+
     public void OpenPanel()
     {
         if (Panel == null || Panel.IsDisposed)
@@ -823,6 +841,7 @@ public sealed class App : ApplicationContext
         if (disposing)
         {
             try { _autoChestTimer?.Dispose(); } catch { }
+            try { _autoBoostTimer?.Dispose(); } catch { }
             try { _clickRefreshTimer?.Dispose(); } catch { }
             try { _autoClickTimer?.Dispose(); } catch { }
             try { _gameModeRuleTimer?.Dispose(); } catch { }

@@ -32,10 +32,12 @@ public sealed class Settings
     /// <summary>用户自建的本地外观预设，不依赖官方预设接口。</summary>
     public List<LocalPreset> LocalPresets { get; set; } = new();
 
-    // 隐藏测试模式：仅作用于合成请求，不改变其他接口。
-    public bool TestModeEnabled { get; set; }
-    public int TestUploadLimitKbps { get; set; } = 30;
-    public int TestRequestRepeatCount { get; set; } = 3;
+    /// <summary>隐藏高级合成功能是否已解锁。</summary>
+    public bool AnyItemSynthesisUnlocked { get; set; }
+    /// <summary>是否启用任意库存物品合成。</summary>
+    public bool AnyItemSynthesisEnabled { get; set; }
+    /// <summary>可用点击低于 1000 时自动补充 10000。</summary>
+    public bool AutoClickBoost { get; set; }
 
     public double Scale { get; set; } = 1.0;
     public double Opacity { get; set; } = 1.0;
@@ -259,8 +261,6 @@ public static class ConfigStore
                             Array.Copy(preset.EmoteAssetIds, slots, Math.Min(5, preset.EmoteAssetIds.Length));
                         preset.EmoteAssetIds = slots;
                     }
-                    cfg.TestUploadLimitKbps = Math.Clamp(cfg.TestUploadLimitKbps, 1, 1024);
-                    cfg.TestRequestRepeatCount = Math.Clamp(cfg.TestRequestRepeatCount, 1, 10);
                     return cfg;
                 }
             }
