@@ -529,6 +529,7 @@ public sealed class RemoteCatWindow : Form
     {
         base.OnMouseMove(e);
         if (!_dragging) return;
+        while (PeekMessage(out _, Handle, WM_MOUSEMOVE, WM_MOUSEMOVE, PM_REMOVE)) { }
         var p = Cursor.Position;
         int dx = p.X - _dragCursor.X, dy = p.Y - _dragCursor.Y;
         if (Math.Abs(dx) + Math.Abs(dy) > 2) _movedDuringDrag = true;
@@ -537,8 +538,8 @@ public sealed class RemoteCatWindow : Form
             DragMoved?.Invoke(this, p);
             return;
         }
-        // 先算好贴边后的目标位置，再一次性移动，避免先移出边缘再吸回来造成左右闪烁。
-        Location = SnapToWorkingArea(new Point(_dragOrigin.X + dx, _dragOrigin.Y + dy), p);
+        Point target = new Point(_dragOrigin.X + dx, _dragOrigin.Y + dy);
+        if (target != Location) Location = target;
     }
 
     /// <summary>联机成员桌宠与主角一样，拖到屏幕/任务栏边缘附近时自动贴边。</summary>
@@ -596,6 +597,12 @@ public sealed class RemoteCatWindow : Form
         _surface.Dispose();
         base.OnClosed(e);
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam; public IntPtr lParam; public uint time; public Point pt; }
+    [DllImport("user32.dll")] static extern bool PeekMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
+    const uint WM_MOUSEMOVE = 0x0200;
+    const uint PM_REMOVE = 0x0001;
 }
 
 /// <summary>
@@ -837,11 +844,10 @@ public static class Layered
                 hBitmap = surface.GetHbitmap(Color.FromArgb(0));
                 previous = SelectObject(memDc, hBitmap);
             }
-            var topLeft = new Point(form.Left, form.Top);
             var size = new Size(width, height);
             var source = new Point(0, 0);
             var blend = new BlendFunction { Op = AcSrcOver, Flags = 0, ConstantAlpha = constantAlpha, Format = AcSrcAlpha };
-            ok = UpdateLayeredWindow(form.Handle, screenDc, ref topLeft, ref size, memDc, ref source, 0, ref blend, UlwAlpha);
+            ok = UpdateLayeredWindow(form.Handle, screenDc, IntPtr.Zero, ref size, memDc, ref source, 0, ref blend, UlwAlpha);
         }
         finally
         {
@@ -861,6 +867,6 @@ public static class Layered
     [DllImport("gdi32.dll")] internal static extern bool DeleteObject(IntPtr obj);
     [DllImport("gdi32.dll")] internal static extern IntPtr CreateDIBSection(IntPtr hdc, ref BITMAPINFO info, uint usage,
         out IntPtr bits, IntPtr section, uint offset);
-    [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr hwnd, IntPtr dstDc, ref Point dstTopLeft,
+    [DllImport("user32.dll")] static extern bool UpdateLayeredWindow(IntPtr hwnd, IntPtr dstDc, IntPtr dstTopLeft,
         ref Size dstSize, IntPtr srcDc, ref Point srcTopLeft, int key, ref BlendFunction blend, int flags);
 }

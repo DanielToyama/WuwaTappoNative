@@ -45,6 +45,7 @@ public sealed class PetWindow : Form
     bool _handIsLeft;
     long _lastGeometryMs;
     Point _dragCursor, _dragOrigin;
+    int _lastDragCursorX;
     readonly EmoteBubbleLayer _bubbles = new(10);
     readonly KeyBubbleLayer _keyBubbles = new(10);
     readonly EmoteWheelLayer _wheel = new();
@@ -744,6 +745,7 @@ public sealed class PetWindow : Form
             _dragging = true;
             _moved = false;
             _dragCursor = Cursor.Position;
+            _lastDragCursorX = _dragCursor.X;
             _dragOrigin = Location;
             Capture = true;
             if (SelectedCount() > 1) BeginGroupDrag(SelfSelectionId, Cursor.Position);
@@ -759,6 +761,7 @@ public sealed class PetWindow : Form
         _dragging = true;
         _moved = false;
         _dragCursor = Cursor.Position;
+        _lastDragCursorX = _dragCursor.X;
         _dragOrigin = Location;
         Capture = true;
     }
@@ -770,22 +773,42 @@ public sealed class PetWindow : Form
         {
             return;
         }
+
+        // 抽干堆积的 WM_MOUSEMOVE 消息，防止 1000Hz+ 高回报率电竞鼠标队列延迟积压
+        while (PeekMessage(out _, Handle, WM_MOUSEMOVE, WM_MOUSEMOVE, PM_REMOVE)) { }
+
         var now = Cursor.Position;
         int dx = now.X - _dragCursor.X, dy = now.Y - _dragCursor.Y;
         if (!_moved && Math.Abs(dx) + Math.Abs(dy) < 3) return;
         _moved = true;
+
         if (_groupDragging && _groupDragOwner == SelfSelectionId)
         {
             UpdateGroupDrag(now);
+            return;
         }
-        else
+
+        // 拖动过程中纯 1:1 硬件级跟随，不执行贴边吸附，彻底消除边缘拖拽粘滞感与阻力
+        Point target = new Point(_dragOrigin.X + dx, _dragOrigin.Y + dy);
+        if (target != Location) Location = target;
+
+        // 转向死区（移动超过 15 像素才切换朝向），避免高频抖动狂刷 Compose 重绘
+        int stepDx = now.X - _lastDragCursorX;
+        if (stepDx < -15)
         {
-            Location = new Point(_dragOrigin.X + dx, _dragOrigin.Y + dy);
-            SnapToWorkingArea(now);
+            _lastDragCursorX = now.X;
+            SetBody(2);
+            _moveReset.Stop();
+            _moveReset.Start();
         }
-        if (dx < 0) SetBody(2); else if (dx > 0) SetBody(3);
-        _moveReset.Stop();
-        _moveReset.Start();
+        else if (stepDx > 15)
+        {
+            _lastDragCursorX = now.X;
+            SetBody(3);
+            _moveReset.Stop();
+            _moveReset.Start();
+        }
+
         // 高刷新率鼠标每秒能产生上千次移动；键盘跟随最多按 60Hz 更新即可，
         // 否则每次移动都重排键盘窗口，拖动时会吃掉一个核。
         long tick = Environment.TickCount64;
@@ -797,26 +820,26 @@ public sealed class PetWindow : Form
     }
 
     /// <summary>拖动到屏幕/任务栏边缘附近时自动贴边，松手后位置照常保存。</summary>
-    void SnapToWorkingArea(Point cursor)
+    Point SnapToWorkingArea(Point target, Point cursor)
     {
         var wa = Screen.FromPoint(cursor).WorkingArea;
         int threshold = Math.Max(8, (int)Math.Round(28 * DpiScale));
         float s = Width / (float)PetComposer.WindowW;
         int contentLeftOffset = (int)Math.Round(PetComposer.CatX * s);
         int contentRightOffset = (int)Math.Round(Math.Max(PetComposer.ToolbarX + PetComposer.ToolbarW, PetComposer.ChestRightRect.Right) * s);
-        int left = Left, top = Top;
+        int left = target.X, top = target.Y;
 
         // 左右按角色/HUD 的可见范围判断，避免窗口透明边距导致看起来没有贴住。
-        if (Math.Abs(Left + contentLeftOffset - wa.Left) <= threshold)
+        if (Math.Abs(left + contentLeftOffset - wa.Left) <= threshold)
             left = wa.Left - contentLeftOffset;
-        else if (Math.Abs(Left + contentRightOffset - wa.Right) <= threshold)
+        else if (Math.Abs(left + contentRightOffset - wa.Right) <= threshold)
             left = wa.Right - contentRightOffset;
 
         // 下方窗口底边就是计数条底边，正好落在任务栏上沿；上方保留气泡净空。
-        if (Math.Abs(Top - wa.Top) <= threshold) top = wa.Top;
-        else if (Math.Abs(Top + Height - wa.Bottom) <= threshold) top = wa.Bottom - Height;
+        if (Math.Abs(top - wa.Top) <= threshold) top = wa.Top;
+        else if (Math.Abs(top + Height - wa.Bottom) <= threshold) top = wa.Bottom - Height;
 
-        if (left != Left || top != Top) Location = new Point(left, top);
+        return new Point(left, top);
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
@@ -824,6 +847,7 @@ public sealed class PetWindow : Form
         base.OnMouseUp(e);
         if (e.Button == MouseButtons.Left)
         {
+            Capture = false;
             if (_groupDragging && _groupDragOwner == SelfSelectionId)
             {
                 bool moved = _moved;
@@ -831,7 +855,12 @@ public sealed class PetWindow : Form
                 EndGroupDrag(moved);
                 return;
             }
-            if (_moved) SnapToWorkingArea(Cursor.Position);
+            if (_moved)
+            {
+                Location = SnapToWorkingArea(Location, Cursor.Position);
+                _moveReset.Stop();
+                SetBody(1);
+            }
             _dragging = false;
             _cfg.PetX = Left;
             _cfg.PetY = Top;
@@ -1400,6 +1429,12 @@ public sealed class PetWindow : Form
             NotifySettingsChanged();
         }
     }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct MSG { public IntPtr hwnd; public uint message; public IntPtr wParam; public IntPtr lParam; public uint time; public Point pt; }
+    [DllImport("user32.dll")] static extern bool PeekMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax, uint wRemoveMsg);
+    const uint WM_MOUSEMOVE = 0x0200;
+    const uint PM_REMOVE = 0x0001;
 
     [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
     [DllImport("user32.dll", EntryPoint = "SetWindowLongPtrW")] static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
