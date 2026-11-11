@@ -39,9 +39,11 @@
     disclaimerOpen: false,
     uacPromptOpen: false,
     update: null,
+    updateDownload: null,
     updateDismissed: false,
     compatibility: null,
     announcements: [],
+    settingsOpenGroups: new Set(),
     loginMode: 'uid',
     favors: new Set(),
     catalog: {},
@@ -478,8 +480,23 @@
       return;
     }
     if (evt === 'update') {
+      const nextTag = data?.tag || data?.Tag || '';
+      const prevTag = state.update?.tag || state.update?.Tag || '';
+      if (nextTag && nextTag !== prevTag && state.updateDownload?.tag !== nextTag) state.updateDownload = null;
       state.update = data;
       if (state.page === 'settings') renderSettings();
+      return;
+    }
+    if (evt === 'update.progress') {
+      state.updateDownload = data;
+      if (state.page === 'settings') {
+        if (data?.phase === 'done' || data?.phase === 'error' || data?.phase === 'cancelled') renderSettings();
+        else updateDownloadStatusUi();
+      } else if (data?.phase === 'done') {
+        toast('更新安装包下载完成');
+      } else if (data?.phase === 'error') {
+        toast(data.message || '更新下载失败', 'err');
+      }
       return;
     }
     if (evt === 'auth') { if (state.boot) state.boot.auth = { ...state.boot.auth, ...data }; renderChrome(); renderPage(); return; }
@@ -2014,6 +2031,42 @@
     return atlasItem?.thumb || '';
   }
 
+  function catalogPreview(type, id) {
+    const item = (state.catalog[type] || []).find(v => Number(v.id) === Number(id));
+    return item?.previewUrl || item?.thumb || '';
+  }
+
+  function presetAccessoryOffset(accessoryId) {
+    const id = Number(accessoryId) || 0;
+    const item = (state.catalog.accessory || []).find(v => Number(v.id) === id);
+    let x = Number(item?.offsetX || 0);
+    let y = Number(item?.offsetY || 0);
+    // 预设预览按“应用后实际看到的样子”叠加该头饰自己的本地微调。
+    const stored = state.boot?.appearance?.accessoryOffsets?.[String(id)];
+    if (Array.isArray(stored) && stored.length >= 2) {
+      x += Number(stored[0] || 0);
+      y += Number(stored[1] || 0);
+    } else if (id > 0 && id === Number(state.boot?.appearance?.accessoryAssetId || 0)) {
+      x += Number(state.boot?.appearance?.accessoryOffsetX || 0);
+      y += Number(state.boot?.appearance?.accessoryOffsetY || 0);
+    }
+    return { x, y };
+  }
+
+  function presetStageHtml(characterId, accessoryId) {
+    const charSrc = catalogPreview('character_skin', characterId);
+    const accSrc = catalogPreview('accessory', accessoryId);
+    const offset = presetAccessoryOffset(accessoryId);
+    // 桌宠里角色和头饰共用 200×200 的猫区域；预览统一缩放为 140×140，偏移按同比例缩放。
+    const scale = 140 / 200;
+    return `<div class="preset-preview">
+      <div class="preset-preview-stage">
+        ${charSrc ? `<img class="preset-preview-char" src="${esc(charSrc)}" alt="">` : '<span class="muted preset-preview-empty">无角色</span>'}
+        ${accSrc ? `<img class="preset-preview-acc" src="${esc(accSrc)}" alt="" style="left:${(offset.x * scale).toFixed(2)}px;top:${(offset.y * scale).toFixed(2)}px">` : ''}
+      </div>
+    </div>`;
+  }
+
   function emoteKindLabel(x) {
     const name = String(x?.name || '');
     const parts = name.split(/[・·]/).map(s => s.trim()).filter(Boolean);
@@ -2031,16 +2084,11 @@
     const charId = Number(p.character_asset_id ?? p.characterAssetId ?? 0);
     const accId = Number(p.accessory_asset_id ?? p.accessoryAssetId ?? 0);
     const emotes = presetEmoteIds(p);
-    const charThumb = catalogThumb('character_skin', charId);
-    const accThumb = catalogThumb('accessory', accId);
     const emoteHtml = [0, 1, 2, 3, 4].map(i => {
       const thumb = catalogThumb('emote', emotes[i]);
       return `<div class="preset-emote">${thumb ? `<img src="${esc(thumb)}" alt="">` : '<span class="muted">空</span>'}<span>${i + 1}</span></div>`;
     }).join('');
-    return `<div class="preset-preview">
-      ${charThumb ? `<img class="preset-preview-char" src="${esc(charThumb)}" alt="">` : '<span class="muted">无角色</span>'}
-      ${accThumb ? `<img class="preset-preview-acc" src="${esc(accThumb)}" alt="">` : ''}
-    </div>
+    return `${presetStageHtml(charId, accId)}
     <div class="preset-emote-preview">${emoteHtml}</div>`;
   }
 
@@ -2165,12 +2213,7 @@
         return `<div class="preset-emote ${i === selectedSlot ? 'selected' : ''}" data-pe-slot="${i}" title="槽位 ${i + 1}">${thumb ? `<img src="${escAttr(thumb)}" alt="">` : '<span class="muted">空</span>'}<span>${i + 1}</span></div>`;
       }).join('');
       const renderPreview = () => {
-        const charThumb = catalogThumb('character_skin', temp.characterAssetId);
-        const accThumb = catalogThumb('accessory', temp.accessoryAssetId);
-        h.querySelector('#pePreview').innerHTML = `<div class="preset-preview">
-          ${charThumb ? `<img class="preset-preview-char" src="${escAttr(charThumb)}" alt="">` : '<span class="muted">无角色</span>'}
-          ${accThumb ? `<img class="preset-preview-acc" src="${escAttr(accThumb)}" alt="">` : ''}
-        </div><div class="preset-emote-preview">${emoteSlotsHtml()}</div>`;
+        h.querySelector('#pePreview').innerHTML = `${presetStageHtml(temp.characterAssetId, temp.accessoryAssetId)}<div class="preset-emote-preview">${emoteSlotsHtml()}</div>`;
         h.querySelector('#peSlotHint').textContent = tab === 'emote' ? `正在编辑槽位 ${selectedSlot + 1}` : '点击下方表情可放入当前槽位';
         h.querySelectorAll('[data-pe-slot]').forEach(el => {
           el.onclick = () => { selectedSlot = Number(el.dataset.peSlot); renderPreview(); renderGrid(); };
@@ -2970,6 +3013,38 @@
     </section>`;
   }
 
+  function formatUpdateBytes(value) {
+    const bytes = Number(value) || 0;
+    if (bytes >= 1024 * 1024 * 1024) return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+    if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    if (bytes >= 1024) return (bytes / 1024).toFixed(0) + ' KB';
+    return bytes > 0 ? bytes + ' B' : '未知大小';
+  }
+
+  function formatUpdateSpeed(value) {
+    const bytes = Number(value) || 0;
+    if (bytes >= 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB/s';
+    if (bytes >= 1024) return (bytes / 1024).toFixed(1) + ' KB/s';
+    return bytes.toFixed(0) + ' B/s';
+  }
+
+  function updateDownloadStatusUi() {
+    const d = state.updateDownload;
+    if (!d) return;
+    const status = document.getElementById('updateDownloadStatus');
+    if (status) {
+      const progress = d.total > 0 ? ` · ${formatUpdateBytes(d.downloaded)} / ${formatUpdateBytes(d.total)}` : '';
+      const speed = d.phase === 'downloading' && d.speed > 0 ? ` · ${formatUpdateSpeed(d.speed)}` : '';
+      const source = d.source ? ` · ${esc(d.source)}` : '';
+      status.textContent = (d.message || '正在下载更新…') + progress + speed + source;
+      status.classList.toggle('error', d.phase === 'error');
+    }
+    const bar = document.getElementById('updateProgressBar');
+    if (bar && d.total > 0) bar.style.width = Math.max(0, Math.min(100, Math.round(d.downloaded / d.total * 100))) + '%';
+    const progressHost = document.getElementById('updateProgress');
+    if (progressHost) progressHost.style.display = ['starting', 'downloading', 'verifying', 'fallback'].includes(d.phase) ? '' : 'none';
+  }
+
   function updateBannerHtml() {
     const u = state.update;
     if (!u || state.updateDismissed) return '';
@@ -2980,6 +3055,12 @@
     const date = dateValue ? new Date(dateValue).toLocaleDateString('zh-CN') : '';
     const entries = Array.isArray(u.entries) ? u.entries : (Array.isArray(u.Entries) ? u.Entries : []);
     const multi = entries.length > 1;
+    const installer = u.installer || u.Installer;
+    const download = state.updateDownload && (!state.updateDownload.tag || state.updateDownload.tag === tag)
+      ? state.updateDownload : null;
+    const phase = download?.phase || '';
+    const running = ['starting', 'downloading', 'verifying', 'fallback'].includes(phase);
+    const canInstall = phase === 'done' && !!download?.path;
     const notes = multi
       ? entries.map(e => {
           const etag = e.tag || e.Tag || '';
@@ -2991,18 +3072,35 @@
           </section>`;
         }).join('')
       : releaseNotesHtml(body);
+    const status = download?.message || (installer
+      ? `安装包 ${formatUpdateBytes(installer.size)}；下载后会自动校验 SHA-256`
+      : '此版本没有可自动下载的安装包，请手动前往 Release 下载');
+    const meta = download?.source ? ' · ' + download.source : '';
+    const downloadButton = !installer ? '' : canInstall
+      ? '<button class="btn" id="updateInstallBtn">立即安装</button>'
+      : running
+        ? '<button class="btn" id="updateDownloadBtn" disabled>下载中…</button><button class="btn ghost" id="updateCancelBtn">取消</button>'
+        : `<button class="btn" id="updateDownloadBtn">${phase === 'error' ? '重试下载' : '下载更新'}</button>`;
+    const progress = download && download.total > 0
+      ? Math.max(0, Math.min(100, Math.round(download.downloaded / download.total * 100)))
+      : 0;
     return `<section class="update-banner">
       <div class="update-banner-head">
         <div>
           <div class="update-banner-title">发现新版本 ${esc(tag)}</div>
           <div class="update-banner-sub">当前版本 ${esc(state.boot?.version || '')}${date ? ' · ' + esc(date) : ''}${multi ? ` · 包含 ${entries.length} 个版本更新` : ''}</div>
         </div>
-        <button class="update-dismiss" id="updateDismiss" title="本次启动不再显示">×</button>
+        ${running || canInstall ? '' : '<button class="update-dismiss" id="updateDismiss" title="本次启动不再显示">×</button>'}
       </div>
       <div class="update-notes">${notes}</div>
       <div class="update-banner-actions">
-        <a class="btn" href="${esc(u.url || u.Url || 'https://github.com/DanielToyama/WuwaTappoNative/releases/latest')}" target="_blank" rel="noreferrer">前往 GitHub 更新</a>
+        ${downloadButton}
+        <a class="btn ghost" href="${esc(u.url || u.Url || 'https://github.com/DanielToyama/WuwaTappoNative/releases/latest')}" target="_blank" rel="noreferrer">手动下载</a>
         <span class="update-qq">交流 QQ 群：<strong>1130030892</strong>，群文件也可下载</span>
+      </div>
+      <div class="update-download-status ${phase === 'error' ? 'error' : ''}" id="updateDownloadStatus">${esc(status + meta)}</div>
+      <div class="update-progress" id="updateProgress" style="${running || canInstall ? '' : 'display:none'}">
+        <div class="update-progress-bar" id="updateProgressBar" style="width:${canInstall ? 100 : progress}%"></div>
       </div>
     </section>`;
   }
@@ -3022,6 +3120,83 @@
       sel.value = current;
       if (sel.value !== current) sel.value = '0';
     } catch { }
+  }
+
+  function createSettingsGroup(id, title, subtitle, primary = false) {
+    const node = document.createElement(primary ? 'section' : 'details');
+    node.className = 'settings-group' + (primary ? ' settings-group-primary' : '');
+    node.id = `settings-group-${id}`;
+    const heading = `<span class="settings-group-heading"><span class="settings-group-title">${esc(title)}</span><span class="settings-group-sub">${esc(subtitle)}</span></span>`;
+    if (primary) {
+      node.innerHTML = `<div class="settings-group-head">${heading}</div><div class="settings-group-body"></div>`;
+    } else {
+      node.innerHTML = `<summary>${heading}</summary><div class="settings-group-body"></div>`;
+      node.open = state.settingsOpenGroups.has(id);
+      node.addEventListener('toggle', () => {
+        if (node.open) state.settingsOpenGroups.add(id);
+        else state.settingsOpenGroups.delete(id);
+      });
+    }
+    return node;
+  }
+
+  /// 把现有设置区按信息架构重新分组；只移动节点，不改变任何控件和事件。
+  function groupSettingsDom() {
+    const scroller = document.querySelector('.settings-scroll');
+    if (!scroller) return;
+    const sections = [...scroller.querySelectorAll(':scope > .section')];
+    const byTitle = new Map();
+    for (const section of sections) {
+      const title = section.querySelector('.section-title')?.textContent.trim();
+      if (title) byTitle.set(title, section);
+    }
+    const makeGroup = (id, title, subtitle, sectionTitles) => {
+      const group = createSettingsGroup(id, title, subtitle);
+      const body = group.querySelector('.settings-group-body');
+      for (const name of sectionTitles) {
+        const section = byTitle.get(name);
+        if (section) body.appendChild(section);
+      }
+      return body.children.length ? group : null;
+    };
+
+    const groups = [];
+    const basic = createSettingsGroup('basic', '基础辅助', '点击、自动补贴与自动开箱', true);
+    const basicBody = basic.querySelector('.settings-group-body');
+    const clickRows = [...scroller.querySelectorAll('.detail-row')]
+      .filter(row => /可用点击|累计点击|已消耗/.test(row.textContent || ''));
+    if (clickRows.length) {
+      const clickPanel = document.createElement('div');
+      clickPanel.className = 'panel-box settings-basic-clicks';
+      clickRows.forEach(row => clickPanel.appendChild(row));
+      basicBody.appendChild(clickPanel);
+    }
+    const autoBoost = scroller.querySelector('[data-switch="autoClickBoost"]')?.closest('.setting-item');
+    const autoChest = scroller.querySelector('[data-switch="autoChest"]')?.closest('.setting-item');
+    if (autoBoost) {
+      autoBoost.removeAttribute('style');
+      basicBody.appendChild(autoBoost);
+    }
+    if (autoChest) basicBody.appendChild(autoChest);
+    if (basicBody.children.length) groups.push(basic);
+
+    // 游戏模式规则属于桌面/穿透行为的补充设置，放在游戏模式开关正下方。
+    const gameModeItem = scroller.querySelector('[data-switch="clickThrough"]')?.closest('.setting-item');
+    const gameRuleItem = scroller.querySelector('#gameRuleInput')?.closest('.setting-item');
+    if (gameModeItem && gameRuleItem) gameModeItem.insertAdjacentElement('afterend', gameRuleItem);
+
+    groups.push(
+      makeGroup('account', '账号与兑换', '区服、账号、点击与兑换码', ['账号', '兑换']),
+      makeGroup('input', '输入与录制', '桌面键盘与快捷键', ['桌面键盘', '快捷键']),
+      makeGroup('desktop', '桌面与游戏模式', '窗口、桌宠、OBS 与头饰位置', ['窗口与桌宠', '头饰位置微调']),
+      makeGroup('interaction', '联机与互动', '联机桌宠、宝箱、自动化与通知', ['联机与宝箱', '自动化', '通知']),
+      makeGroup('maintenance', '程序与更新', '启动、权限、规则、更新、日志与关于', ['其他', '更新'])
+    );
+
+    const anchor = scroller.querySelector('.compat-banner') || scroller.querySelector('.settings-footer');
+    const fragment = document.createDocumentFragment();
+    for (const group of groups.filter(Boolean)) fragment.appendChild(group);
+    scroller.insertBefore(fragment, anchor || null);
   }
 
   function renderSettings() {
@@ -3240,17 +3415,41 @@
 
         <div class="section">
           <div class="section-title">头饰位置微调</div>
-          <div class="setting-item">
-            <div><div class="setting-title">当前头饰</div><div class="setting-sub">${accId ? '按方向微调当前头饰相对角色的位置，每个头饰独立保存' : '当前未佩戴头饰，先在背包 → 配件中选择一件'}</div></div>
-            <div class="setting-content" style="align-items:center">
-              <div class="nudge-pad">
-                <button class="btn ghost nudge-btn" data-nudge="0,-1" ${accId ? '' : 'disabled'} title="上移">↑</button>
-                <button class="btn ghost nudge-btn" data-nudge="-1,0" ${accId ? '' : 'disabled'} title="左移">←</button>
-                <button class="btn ghost nudge-btn" data-nudge="0,1" ${accId ? '' : 'disabled'} title="下移">↓</button>
-                <button class="btn ghost nudge-btn" data-nudge="1,0" ${accId ? '' : 'disabled'} title="右移">→</button>
+          <div class="setting-item accessory-tuning">
+            <div class="accessory-tuning-head">
+              <div>
+                <div class="setting-title">当前头饰</div>
+                <div class="setting-sub">${accId ? '拖动左侧 X/Y 滑条粗略移动，方向按钮微调；每个头饰独立保存' : '当前未佩戴头饰，先在背包 → 配件中选择一件'}</div>
+                <div class="setting-sub accessory-local-note">此调整仅本地生效，联机玩家看见的是默认样式</div>
               </div>
-              <span class="muted" style="font-size:12px">X ${accX} · Y ${accY}</span>
-              <button class="btn ghost" id="resetAccessoryOffset" ${accId && (accX || accY) ? '' : 'disabled'}>归零</button>
+              <span class="accessory-coords" id="accessoryCoords">X ${accX} · Y ${accY}</span>
+            </div>
+            <div class="accessory-tuning-body">
+              <div class="accessory-sliders">
+                <label class="axis-control">
+                  <span class="axis-label">X</span>
+                  <span class="axis-slider-wrap">
+                    <input class="axis-range" id="accOffsetX" type="range" min="-160" max="160" step="1" value="${accX}" aria-label="头饰 X 轴偏移" ${accId ? '' : 'disabled'}>
+                  </span>
+                  <output class="axis-value" id="accOffsetXValue">${accX}</output>
+                </label>
+                <label class="axis-control">
+                  <span class="axis-label">Y</span>
+                  <span class="axis-slider-wrap">
+                    <input class="axis-range" id="accOffsetY" type="range" min="-160" max="160" step="1" value="${accY}" aria-label="头饰 Y 轴偏移" ${accId ? '' : 'disabled'}>
+                  </span>
+                  <output class="axis-value" id="accOffsetYValue">${accY}</output>
+                </label>
+              </div>
+              <div class="accessory-actions">
+                <div class="nudge-pad">
+                  <button class="btn ghost nudge-btn" data-nudge="0,-1" ${accId ? '' : 'disabled'} title="上移">↑</button>
+                  <button class="btn ghost nudge-btn" data-nudge="-1,0" ${accId ? '' : 'disabled'} title="左移">←</button>
+                  <button class="btn ghost nudge-btn" data-nudge="0,1" ${accId ? '' : 'disabled'} title="下移">↓</button>
+                  <button class="btn ghost nudge-btn" data-nudge="1,0" ${accId ? '' : 'disabled'} title="右移">→</button>
+                </div>
+                <button class="btn ghost accessory-reset" id="resetAccessoryOffset" ${accId && (accX || accY) ? '' : 'disabled'}>归零</button>
+              </div>
             </div>
           </div>
         </div>
@@ -3272,7 +3471,7 @@
           <div class="setting-item">
             <div><div class="setting-title">音游触发键位</div><div class="setting-sub">从左到右 ${rhythmCount} 个键；支持字母、数字、空格和 ; ' , . / 等符号；空格显示为横过来的 [</div></div>
             <div class="setting-content">
-              ${Array.from({ length: rhythmCount }, (_, i) => `<input class="input" data-rhythm-key="${i}" maxlength="1" value="${esc(rhythmDisplay(rhythmKeys[i] || rhythmDefaults[rhythmCount][i]))}" style="width:42px;text-align:center;text-transform:uppercase;font-weight:700" inputmode="text" autocomplete="off" />`).join('')}
+              ${Array.from({ length: rhythmCount }, (_, i) => `<input class="input" data-rhythm-key="${i}" value="${esc(rhythmDisplay(rhythmKeys[i] || rhythmDefaults[rhythmCount][i]))}" style="width:42px;text-align:center;text-transform:uppercase;font-weight:700" inputmode="text" autocomplete="off" spellcheck="false" />`).join('')}
             </div>
           </div>` : ''}
           <div class="setting-item">
@@ -3299,9 +3498,9 @@
                 <button class="btn ghost hotkey-clear" data-hotkey-clear="${a.id}">清除</button>
               </div>`).join('')}
           </div>
-          <div style="display:flex;gap:10px;margin-top:10px">
-            <button class="btn" id="hotkeysSave">保存快捷键</button>
+          <div style="display:flex;gap:10px;margin-top:10px;align-items:center">
             <button class="btn ghost" id="hotkeysReset">恢复默认</button>
+            <span class="muted" style="font-size:12px">修改后自动保存</span>
           </div>
         </div>
 
@@ -3436,6 +3635,30 @@
             <div class="setting-content"><button class="btn ghost" id="aboutBtn">关于本程序</button></div>
           </div>
         </div>
+
+        <div class="section">
+          <div class="section-title">更新</div>
+          <div class="setting-item">
+            <div><div class="setting-title">更新下载源</div><div class="setting-sub">自动模式固定按 GH-Proxy → GitHub 官方的顺序尝试，失败才回退；不会在下载中按速度中断</div></div>
+            <div class="setting-content">
+              <select class="select" id="updateDownloadSource">
+                <option value="auto" ${(s.updateDownloadSource || 'auto') === 'auto' ? 'selected' : ''}>自动（GH-Proxy → GitHub）</option>
+                <option value="ghproxy" ${s.updateDownloadSource === 'ghproxy' ? 'selected' : ''}>GH-Proxy（第三方加速）</option>
+                <option value="github" ${s.updateDownloadSource === 'github' ? 'selected' : ''}>GitHub 直连</option>
+              </select>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">使用 HTTP 代理</div><div class="setting-sub">仅用于检查更新和下载安装包；关闭时使用系统代理，已填写地址会保留</div></div>
+            <div class="switch ${s.updateUseProxy ? 'on' : ''}" id="updateUseProxy"></div>
+          </div>
+          <div class="setting-item ${s.updateUseProxy ? '' : 'hidden'}" id="updateProxyItem" style="align-items:flex-start">
+            <div><div class="setting-title">HTTP 代理地址</div><div class="setting-sub">修改后自动保存，例如 http://127.0.0.1:7890</div></div>
+            <div class="setting-content" style="flex-wrap:nowrap;align-items:center;min-width:min(420px,100%)">
+              <input class="input" id="updateHttpProxy" value="${esc(s.updateHttpProxy || '')}" placeholder="http://127.0.0.1:7890" style="flex:1;min-width:0" ${s.updateUseProxy ? '' : 'disabled'} />
+            </div>
+          </div>
+        </div>
         ${compatibilityBannerHtml()}
         <div class="settings-footer">
           <button class="btn ghost" id="checkUpdateBtn">检查更新</button>
@@ -3443,6 +3666,7 @@
           <span class="muted" id="updateCheckStatus"></span>
         </div>
       </div>`);
+    groupSettingsDom();
 
     document.getElementById('updateDismiss')?.addEventListener('click', () => {
       state.updateDismissed = true;
@@ -3492,6 +3716,44 @@
 
   function bindHotkeys() {
     const rows = {};
+    let saveTimer = 0;
+    let savePending = false;
+    let saveBusy = false;
+    const collect = () => {
+      const table = {};
+      for (const a of HOTKEY_ACTIONS) {
+        const input = rows[a.id];
+        if (!input) continue;
+        const v = input.dataset.value ?? ((state.boot?.settings?.hotkeys || {})[a.id] || '');
+        table[a.id] = input.value === '未设置' ? '' : v;
+      }
+      return table;
+    };
+    const save = async () => {
+      clearTimeout(saveTimer);
+      if (!savePending || saveBusy) return;
+      savePending = false;
+      saveBusy = true;
+      try {
+        const r = await tryCall('hotkeys.save', { hotkeys: collect() });
+        if (r?.ok === false) {
+          savePending = false;
+          return toast(r.error || '快捷键保存失败', 'err');
+        }
+        await syncBoot();
+        toast('快捷键已自动保存');
+      } catch {
+        savePending = false;
+      } finally {
+        saveBusy = false;
+        if (savePending) saveTimer = setTimeout(save, 300);
+      }
+    };
+    const queueSave = () => {
+      savePending = true;
+      clearTimeout(saveTimer);
+      saveTimer = setTimeout(save, 300);
+    };
     document.querySelectorAll('[data-hotkey]').forEach(input => {
       const id = input.dataset.hotkey;
       rows[id] = input;
@@ -3500,49 +3762,44 @@
       input.addEventListener('blur', () => {
         listening = false;
         if (input.value === '请按下新快捷键…') input.value = (state.boot?.settings?.hotkeys || {})[id] || '未设置';
+        if (savePending) save();
       });
       input.addEventListener('keydown', e => {
         if (!listening) return;
         e.preventDefault(); e.stopPropagation();
         if (e.key === 'Escape') { input.blur(); return; }
-        if (e.key === 'Backspace' || e.key === 'Delete') { input.value = '未设置'; input.dataset.value = ''; input.blur(); return; }
+        if (e.key === 'Backspace' || e.key === 'Delete') {
+          input.value = '未设置'; input.dataset.value = '';
+          queueSave();
+          input.blur();
+          return;
+        }
         const chord = hotkeyFromEvent(e);
         if (!chord) return;
         input.value = chord;
         input.dataset.value = chord;
+        queueSave();
         input.blur();
       });
     });
     document.querySelectorAll('[data-hotkey-clear]').forEach(btn => btn.onclick = () => {
       const input = rows[btn.dataset.hotkeyClear];
-      if (input) { input.value = '未设置'; input.dataset.value = ''; }
+      if (input) {
+        input.value = '未设置';
+        input.dataset.value = '';
+        queueSave();
+      }
     });
-    document.getElementById('hotkeysSave')?.addEventListener('click', async () => {
-      const table = {};
+    document.getElementById('hotkeysReset')?.addEventListener('click', async () => {
       for (const a of HOTKEY_ACTIONS) {
         const input = rows[a.id];
         if (!input) continue;
-        const v = input.dataset.value ?? ((state.boot?.settings?.hotkeys || {})[a.id] || '');
-        table[a.id] = input.value === '未设置' ? '' : v;
+        input.value = a.def || '未设置';
+        input.dataset.value = a.def || '';
       }
-      try {
-        const r = await tryCall('hotkeys.save', { hotkeys: table });
-        if (r?.ok === false) return toast(r.error || '保存失败', 'err');
-        await syncBoot();
-        renderSettings();
-        toast('快捷键已保存');
-      } catch { }
-    });
-    document.getElementById('hotkeysReset')?.addEventListener('click', async () => {
-      const table = {};
-      for (const a of HOTKEY_ACTIONS) table[a.id] = a.def;
-      try {
-        const r = await tryCall('hotkeys.save', { hotkeys: table });
-        if (r?.ok === false) return toast(r.error || '保存失败', 'err');
-        await syncBoot();
-        renderSettings();
-        toast('已恢复默认快捷键');
-      } catch { }
+      queueSave();
+      await save();
+      toast('已恢复默认快捷键');
     });
   }
 
@@ -3854,7 +4111,51 @@
       try { await tryCall('settings.set', { autoEmoteId: Number(e.target.value) || 0 }); await syncBoot(); } catch { }
     });
     bindAutoRate('autoClickRate', 10, 'autoClickPerSecond', 10);
+    const accXRange = document.getElementById('accOffsetX');
+    const accYRange = document.getElementById('accOffsetY');
+    const accReadout = document.getElementById('accessoryCoords');
+    let accSliderTimer = 0;
+    const readAccSliders = () => ({
+      x: Number(accXRange?.value) || 0,
+      y: Number(accYRange?.value) || 0,
+    });
+    const updateAccReadout = () => {
+      if (!accXRange || !accYRange) return;
+      const { x, y } = readAccSliders();
+      const xValue = document.getElementById('accOffsetXValue');
+      const yValue = document.getElementById('accOffsetYValue');
+      if (xValue) xValue.textContent = String(x);
+      if (yValue) yValue.textContent = String(y);
+      if (accReadout) accReadout.textContent = `X ${x} · Y ${y}`;
+      const resetButton = document.getElementById('resetAccessoryOffset');
+      if (resetButton) {
+        const accId = Number(state.boot?.appearance?.accessoryAssetId || 0);
+        resetButton.disabled = !(accId > 0 && (x !== 0 || y !== 0));
+      }
+    };
+    const saveAccOffset = async () => {
+      if (!accXRange || !accYRange) return;
+      clearTimeout(accSliderTimer);
+      const { x, y } = readAccSliders();
+      try {
+        const r = await tryCall('appearance.offset', { x, y });
+        if (r?.boot) state.boot = r.boot;
+        updateAccReadout();
+      } catch { }
+    };
+    const queueAccOffset = () => {
+      updateAccReadout();
+      clearTimeout(accSliderTimer);
+      accSliderTimer = setTimeout(saveAccOffset, 80);
+    };
+    accXRange?.addEventListener('input', queueAccOffset);
+    accYRange?.addEventListener('input', queueAccOffset);
+    accXRange?.addEventListener('change', saveAccOffset);
+    accYRange?.addEventListener('change', saveAccOffset);
+    accXRange?.addEventListener('blur', saveAccOffset);
+    accYRange?.addEventListener('blur', saveAccOffset);
     document.querySelectorAll('[data-nudge]').forEach(el => el.onclick = async () => {
+      clearTimeout(accSliderTimer);
       const [dx, dy] = String(el.dataset.nudge || '0,0').split(',').map(Number);
       try {
         const r = await tryCall('appearance.offset', { dx, dy });
@@ -3864,6 +4165,7 @@
       } catch { }
     });
     document.getElementById('resetAccessoryOffset')?.addEventListener('click', async () => {
+      clearTimeout(accSliderTimer);
       try {
         const r = await tryCall('appearance.offset', { reset: true });
         if (r?.boot) state.boot = r.boot;
@@ -3872,10 +4174,16 @@
       } catch { }
     });
     const rhythmInputs = [...document.querySelectorAll('[data-rhythm-key]')];
+    const rhythmFullwidth = {
+      '，': ',', '。': '.', '；': ';', '、': ',', '／': '/',
+      '［': '[', '］': ']', '－': '-', '＝': '=', '＼': '\\',
+      '‘': "'", '’': "'",
+    };
     const rhythmNormalize = (value) => {
       let v = String(value || '').trim();
       if (v === ' ' || v === '␣' || /^space$/i.test(v)) return '␣';
       if (v.length > 1) v = v.slice(-1);
+      v = rhythmFullwidth[v] || v;
       if (/^[A-Za-z0-9]$/.test(v)) return v.toUpperCase();
       if (";',./[]=-`\\".includes(v)) return v;
       return '';
@@ -3892,8 +4200,17 @@
       return null;
     };
     rhythmInputs.forEach(input => {
+      let composing = false;
       input.addEventListener('focus', () => input.select());
+      input.addEventListener('compositionstart', () => { composing = true; });
+      input.addEventListener('compositionend', () => {
+        composing = false;
+        input.value = rhythmNormalize(input.value);
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+      });
       input.addEventListener('keydown', e => {
+        // 中文输入法组合期间不要抢按键，否则会被 e.code 误判成字母。
+        if (e.isComposing || e.keyCode === 229) return;
         if (e.ctrlKey || e.altKey || e.metaKey) return;
         const value = rhythmFromEvent(e);
         if (value === null) return;
@@ -3903,7 +4220,7 @@
         input.dispatchEvent(new Event('input', { bubbles: true }));
         input.dispatchEvent(new Event('change', { bubbles: true }));
       });
-      input.addEventListener('input', () => { input.value = rhythmNormalize(input.value); });
+      input.addEventListener('input', () => { if (!composing) input.value = rhythmNormalize(input.value); });
       input.addEventListener('change', async () => {
         const keys = rhythmInputs.map(x => rhythmToken(x.value));
         if (keys.some(k => !(k === 'SPACE' || /^[A-Z0-9]$/.test(k) || ";',./[]=-`\\".includes(k)))) return toast('音游键位包含不支持的字符', 'err');
@@ -3925,6 +4242,100 @@
     });
     document.getElementById('openLog')?.addEventListener('click', () => call('open.log'));
     document.getElementById('aboutBtn')?.addEventListener('click', showAbout);
+    document.getElementById('updateDownloadSource')?.addEventListener('change', async e => {
+      const select = e.target;
+      const value = select.value;
+      try {
+        const boot = await tryCall('settings.set', { updateDownloadSource: value });
+        if (boot?.settings) state.boot = boot;
+        toast(value === 'auto' ? '下载源：自动（GH-Proxy → GitHub）' : (value === 'ghproxy' ? '下载源：GH-Proxy' : '下载源：GitHub 直连'));
+      } catch {
+        select.value = state.boot?.settings?.updateDownloadSource || 'auto';
+      }
+    });
+    const proxyToggle = document.getElementById('updateUseProxy');
+    const proxyInput = document.getElementById('updateHttpProxy');
+    let proxySaveTimer = 0;
+    const syncProxyInput = () => {
+      const enabled = !!proxyToggle?.classList.contains('on');
+      if (proxyInput) proxyInput.disabled = !enabled;
+      document.getElementById('updateProxyItem')?.classList.toggle('hidden', !enabled);
+    };
+    const saveProxyValue = async () => {
+      clearTimeout(proxySaveTimer);
+      if (!proxyToggle?.classList.contains('on') || !proxyInput) return;
+      const value = proxyInput.value.trim();
+      if (value) {
+        try {
+          const parsed = new URL(value);
+          if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') throw new Error('scheme');
+        } catch {
+          return toast('代理格式应为 http://host:port 或 https://host:port', 'err');
+        }
+      }
+      proxyInput.value = value;
+      try {
+        const boot = await tryCall('settings.set', { updateHttpProxy: value });
+        if (boot?.settings) state.boot = boot;
+        toast(value ? 'HTTP 代理已自动保存' : 'HTTP 代理地址已清空');
+      } catch { }
+    };
+    if (proxyToggle) {
+      syncProxyInput();
+      proxyToggle.onclick = async () => {
+        const next = !proxyToggle.classList.contains('on');
+        proxyToggle.classList.toggle('on', next);
+        syncProxyInput();
+        try {
+          const boot = await tryCall('settings.set', { updateUseProxy: next });
+          if (boot?.settings) state.boot = boot;
+        } catch {
+          proxyToggle.classList.toggle('on', !next);
+          syncProxyInput();
+        }
+      };
+    }
+    proxyInput?.addEventListener('input', () => {
+      clearTimeout(proxySaveTimer);
+      proxySaveTimer = setTimeout(saveProxyValue, 450);
+    });
+    proxyInput?.addEventListener('change', saveProxyValue);
+    proxyInput?.addEventListener('blur', saveProxyValue);
+    document.getElementById('updateDownloadBtn')?.addEventListener('click', async () => {
+      const btn = document.getElementById('updateDownloadBtn');
+      if (btn) { btn.disabled = true; btn.textContent = '准备下载…'; }
+      state.updateDownload = { phase: 'starting', tag: state.update?.tag || '', message: '正在准备下载…' };
+      renderSettings();
+      try {
+        await tryCall('update.download');
+        toast('开始下载更新');
+      } catch {
+        state.updateDownload = null;
+        renderSettings();
+      }
+    });
+    document.getElementById('updateCancelBtn')?.addEventListener('click', async () => {
+      try { await tryCall('update.cancel'); } catch { }
+    });
+    document.getElementById('updateInstallBtn')?.addEventListener('click', () => {
+      modal(`<div class="about">
+        <div class="about-title">安装更新</div>
+        <div class="about-note"><p>安装包已下载并通过 SHA-256 校验。将启动安装程序，当前程序可能需要关闭。</p></div>
+        <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px">
+          <button class="btn ghost" id="updateInstallCancel">稍后</button>
+          <button class="btn" id="updateInstallConfirm">立即安装</button>
+        </div>
+      </div>`, host => {
+        host.querySelector('#updateInstallCancel').onclick = closeModal;
+        host.querySelector('#updateInstallConfirm').onclick = async () => {
+          try {
+            await tryCall('update.install');
+            closeModal();
+            toast('正在启动安装程序…');
+          } catch { }
+        };
+      });
+    });
     document.getElementById('checkUpdateBtn')?.addEventListener('click', async () => {
       const btn = document.getElementById('checkUpdateBtn');
       btn.disabled = true;

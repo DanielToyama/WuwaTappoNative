@@ -281,18 +281,26 @@ public sealed class PetWindow : Form
         return (0, 0);
     }
 
+    /// <summary>直接设置当前头饰偏移（滑条用），返回限制后的逻辑坐标。</summary>
+    public (int x, int y) SetAccessoryOffset(int x, int y)
+    {
+        long id = _cfg.AccessoryAssetId;
+        if (id <= 0) return (0, 0);
+        x = Math.Clamp(x, -160, 160);
+        y = Math.Clamp(y, -160, 160);
+        _cfg.AccessoryOffsets[id.ToString()] = new[] { x, y };
+        ConfigStore.Save(_cfg);
+        Compose();
+        return (x, y);
+    }
+
     /// <summary>微调当前头饰位置；reset=true 时回到 0,0。返回调整后的逻辑坐标。</summary>
     public (int x, int y) NudgeAccessory(int dx, int dy, bool reset = false)
     {
         long id = _cfg.AccessoryAssetId;
         if (id <= 0) return (0, 0);
         var current = AccessoryOffsetFor(id);
-        int x = reset ? 0 : Math.Clamp(current.x + dx, -160, 160);
-        int y = reset ? 0 : Math.Clamp(current.y + dy, -160, 160);
-        _cfg.AccessoryOffsets[id.ToString()] = new[] { x, y };
-        ConfigStore.Save(_cfg);
-        Compose();
-        return (x, y);
+        return SetAccessoryOffset(reset ? 0 : current.x + dx, reset ? 0 : current.y + dy);
     }
 
     bool _hovering, _catHovering, _hoverFadeTarget;
@@ -1678,7 +1686,9 @@ public sealed class PetWindow : Form
                     if (!_cfg.AllowOverlap) ResolveOverlaps(id);
                 };
                 _cats[id] = cat;
-                cat.Show();
+                // 主桌宠被 F9 隐藏时，新上线/新创建的远程成员也不能直接冒出来；
+                // 取消隐藏时由 ApplyMainPetVisibility 的统一循环恢复显示。
+                if (!_hiddenByHotkey) cat.Show();
             }
         }
     }

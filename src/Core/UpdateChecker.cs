@@ -1,11 +1,21 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
 
 namespace WuwatappoNative.Core;
+
+public sealed class ReleaseAsset
+{
+    [JsonPropertyName("name")] public string Name { get; set; } = "";
+    [JsonPropertyName("url")] public string Url { get; set; } = "";
+    [JsonPropertyName("digest")] public string Digest { get; set; } = "";
+    [JsonPropertyName("size")] public long Size { get; set; }
+}
 
 public sealed class ReleaseEntry
 {
@@ -14,6 +24,7 @@ public sealed class ReleaseEntry
     [JsonPropertyName("body")] public string Body { get; set; } = "";
     [JsonPropertyName("url")] public string Url { get; set; } = "";
     [JsonPropertyName("publishedAt")] public string PublishedAt { get; set; } = "";
+    [JsonPropertyName("installer")] public ReleaseAsset Installer { get; set; }
 }
 
 public sealed class ReleaseInfo
@@ -23,6 +34,7 @@ public sealed class ReleaseInfo
     [JsonPropertyName("body")] public string Body { get; set; } = "";
     [JsonPropertyName("url")] public string Url { get; set; } = "";
     [JsonPropertyName("publishedAt")] public string PublishedAt { get; set; } = "";
+    [JsonPropertyName("installer")] public ReleaseAsset Installer { get; set; }
     /// <summary>从新到旧的更新日志；当前版本与最新版之间跨多个版本时用于拼接展示。</summary>
     [JsonPropertyName("entries")] public ReleaseEntry[] Entries { get; set; } = Array.Empty<ReleaseEntry>();
 }
@@ -36,12 +48,12 @@ public static class UpdateChecker
     static ReleaseInfo _cached;
     static DateTimeOffset _cachedUntil;
 
-    public static async Task<ReleaseInfo> CheckAsync(Version current, bool force = false)
+    public static async Task<ReleaseInfo> CheckAsync(Version current, bool force = false, string httpProxy = null)
     {
         if (!force && DateTimeOffset.UtcNow < _cachedUntil) return _cached;
         try
         {
-            using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+            using var http = CreateHttpClient(httpProxy, TimeSpan.FromSeconds(15));
             http.DefaultRequestHeaders.UserAgent.ParseAdd("WuwatappoNative/" + current);
             http.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
             string json = await http.GetStringAsync(ReleasesApi).ConfigureAwait(false);
@@ -58,6 +70,7 @@ public static class UpdateChecker
                 if (ReadBool(root["draft"]) || ReadBool(root["prerelease"])) continue;
                 string tag = ReadString(root["tag_name"]);
                 if (!TryParseVersion(tag, out var version) || version <= current) continue;
+                var assets = ReadAssets(root["assets"]);
                 newer.Add(new ReleaseEntry
                 {
                     Tag = tag,
@@ -65,6 +78,7 @@ public static class UpdateChecker
                     Body = ReadString(root["body"]),
                     Url = ReadString(root["html_url"]),
                     PublishedAt = ReadString(root["published_at"]),
+                    Installer = SelectInstaller(assets),
                 });
             }
             if (newer.Count == 0)
@@ -89,6 +103,7 @@ public static class UpdateChecker
                 Body = latest.Body,
                 Url = string.IsNullOrEmpty(latest.Url) ? ReleasesPage : latest.Url,
                 PublishedAt = latest.PublishedAt,
+                Installer = latest.Installer,
                 Entries = newer.ToArray(),
             };
             _cachedUntil = DateTimeOffset.UtcNow.AddMinutes(30);
@@ -102,6 +117,47 @@ public static class UpdateChecker
         }
     }
 
+    static HttpClient CreateHttpClient(string httpProxy, TimeSpan timeout)
+    {
+        var handler = new HttpClientHandler();
+        if (!string.IsNullOrWhiteSpace(httpProxy) &&
+            Uri.TryCreate(httpProxy.Trim(), UriKind.Absolute, out var proxyUri) &&
+            (proxyUri.Scheme == Uri.UriSchemeHttp || proxyUri.Scheme == Uri.UriSchemeHttps))
+        {
+            handler.Proxy = new WebProxy(proxyUri);
+            handler.UseProxy = true;
+        }
+        return new HttpClient(handler) { Timeout = timeout };
+    }
+
+    static List<ReleaseAsset> ReadAssets(JsonNode node)
+    {
+        var assets = new List<ReleaseAsset>();
+        if (node is not JsonArray arr) return assets;
+        foreach (var item in arr)
+        {
+            if (item is not JsonObject asset) continue;
+            string name = ReadString(asset["name"]);
+            string url = ReadString(asset["browser_download_url"]);
+            if (string.IsNullOrWhiteSpace(name) || string.IsNullOrWhiteSpace(url)) continue;
+            assets.Add(new ReleaseAsset
+            {
+                Name = name,
+                Url = url,
+                Digest = ReadString(asset["digest"]),
+                Size = ReadLong(asset["size"]),
+            });
+        }
+        return assets;
+    }
+
+    static ReleaseAsset SelectInstaller(List<ReleaseAsset> assets)
+    {
+        return assets.FirstOrDefault(a => a.Name.EndsWith("-Setup.exe", StringComparison.OrdinalIgnoreCase))
+            ?? assets.FirstOrDefault(a => a.Name.IndexOf("Setup", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                                          a.Name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase));
+    }
+
     static bool TryParseVersion(string tag, out Version version)
     {
         string raw = (tag ?? "").Trim().TrimStart('v', 'V');
@@ -113,6 +169,11 @@ public static class UpdateChecker
     static string ReadString(JsonNode node)
     {
         try { return node?.GetValue<string>() ?? ""; } catch { return ""; }
+    }
+
+    static long ReadLong(JsonNode node)
+    {
+        try { return node?.GetValue<long>() ?? 0; } catch { return 0; }
     }
 
     static bool ReadBool(JsonNode node)

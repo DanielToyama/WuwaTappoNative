@@ -503,6 +503,10 @@ public sealed class App : ApplicationContext
                 right = ApiClient.ReadLong(me["right_treasure_chest"]);
             }
 
+            // 开箱前如果余额不足，先触发一次自动补贴，避免本轮开箱直接进入 60 秒退避。
+            if (Cfg.AutoClickBoost && Room.AvailableClicks < 1000)
+                TryAutoBoostClicks();
+
             await TryOpenChestAsync(session, "left", left, now, false);
             await TryOpenChestAsync(session, "right", right, now, true);
         }
@@ -522,11 +526,13 @@ public sealed class App : ApplicationContext
         catch (Exception ex)
         {
             Log.Write("自动宝箱 " + place + " 未成功：" + ex.Message);
+            bool insufficient = ex is ApiException api && (api.Message ?? "").Contains("可用点击数不足");
             Auth.TryUseSession(session, () =>
             {
-                if (right) _nextRightAttempt = DateTime.UtcNow.AddSeconds(60);
-                else _nextLeftAttempt = DateTime.UtcNow.AddSeconds(60);
+                if (right) _nextRightAttempt = DateTime.UtcNow.AddSeconds(insufficient && Cfg.AutoClickBoost ? 2 : 60);
+                else _nextLeftAttempt = DateTime.UtcNow.AddSeconds(insufficient && Cfg.AutoClickBoost ? 2 : 60);
             });
+            if (insufficient && Cfg.AutoClickBoost) TryAutoBoostClicks();
         }
     }
 
@@ -685,7 +691,13 @@ public sealed class App : ApplicationContext
         try
         {
             if (Room.BoostLocalClicks(10000))
+            {
+                // 补贴可能发生在开箱失败退避之后：清掉旧退避并立即再检查一次。
+                _nextLeftAttempt = DateTime.MinValue;
+                _nextRightAttempt = DateTime.MinValue;
                 Log.Write("自动补贴点击 +10000");
+                if (Cfg.AutoChest) CheckAutoChestNow();
+            }
         }
         catch (Exception ex) { Log.Write("自动补贴点击失败 " + ex.Message); }
         finally { Interlocked.Exchange(ref _autoBoostBusy, 0); }

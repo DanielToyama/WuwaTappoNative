@@ -2,10 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
+using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Microsoft.Web.WebView2.Core;
@@ -31,6 +33,11 @@ public sealed class PanelWindow : Form
     ReleaseInfo _updateInfo;
     bool _updateChecked;
     readonly Dictionary<string, HashSet<long>> _ownedAssets = new(StringComparer.OrdinalIgnoreCase);
+    CancellationTokenSource _updateDownloadCts;
+    string _updateDownloadPath = "";
+    string _updateDownloadTag = "";
+    bool _updateDownloading;
+    bool _updateInstalling;
     DateTimeOffset _ownedAssetsAt = DateTimeOffset.MinValue;
     string _ownedAssetsCuid = "";
 
@@ -249,10 +256,53 @@ public sealed class PanelWindow : Form
         if (_updateChecked) return;
         _updateChecked = true;
         var current = typeof(PanelWindow).Assembly.GetName().Version ?? new Version(0, 0, 0);
-        var info = await UpdateChecker.CheckAsync(current);
+        var info = await UpdateChecker.CheckAsync(current, false, _app.Cfg.UpdateUseProxy ? _app.Cfg.UpdateHttpProxy : null);
         if (info == null) return;
         _updateInfo = info;
         Push("update", info);
+    }
+
+    async Task DownloadUpdateAsync(ReleaseAsset installer, string tag, string source, string proxy, CancellationToken token)
+    {
+        try
+        {
+            var result = await UpdateDownloader.DownloadAsync(
+                installer,
+                source,
+                proxy,
+                token,
+                progress => Push("update.progress", new
+                {
+                    tag,
+                    phase = progress.Phase,
+                    source = progress.Source,
+                    downloaded = progress.Downloaded,
+                    total = progress.Total,
+                    speed = progress.SpeedBytesPerSecond,
+                    message = progress.Message,
+                    path = progress.Path,
+                }));
+            if (!token.IsCancellationRequested)
+            {
+                _updateDownloadPath = result.Path;
+                _updateDownloadTag = tag;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            Push("update.progress", new { tag, phase = "cancelled", message = "已取消下载" });
+        }
+        catch (Exception ex)
+        {
+            Log.Write("更新下载失败 " + ex.Message);
+            Push("update.progress", new { tag, phase = "error", message = ex.Message });
+        }
+        finally
+        {
+            _updateDownloading = false;
+            _updateDownloadCts?.Dispose();
+            _updateDownloadCts = null;
+        }
     }
     async void BuildWebView()
     {
@@ -405,6 +455,9 @@ public sealed class PanelWindow : Form
             roomNo = _app.Cfg.RoomNo,
             lastRoom = _app.Cfg.LastRoom,
             serverRegion = _app.Cfg.ServerRegion,
+            updateDownloadSource = _app.Cfg.UpdateDownloadSource,
+            updateUseProxy = _app.Cfg.UpdateUseProxy,
+            updateHttpProxy = _app.Cfg.UpdateHttpProxy,
             hotkeys = Hotkeys.FromSettings(_app.Cfg.Hotkeys),
         },
         appearance = new
@@ -414,6 +467,8 @@ public sealed class PanelWindow : Form
             accessoryAssetId = _app.Cfg.AccessoryAssetId,
             accessoryOffsetX = _app.Pet.AccessoryOffsetFor(_app.Cfg.AccessoryAssetId).x,
             accessoryOffsetY = _app.Pet.AccessoryOffsetFor(_app.Cfg.AccessoryAssetId).y,
+            // 预设预览需要任意头饰的本地微调，而不只是当前佩戴的这一件。
+            accessoryOffsets = _app.Cfg.AccessoryOffsets,
             emoteAssetIds = _app.Cfg.EmoteAssetIds,
             cloudEmoteAssetIds = _app.Cfg.CloudEmoteAssetIds,
         },
@@ -1021,6 +1076,18 @@ public sealed class PanelWindow : Form
                         case "launchAtLogin":
                             cfg.LaunchAtLogin = AutoStart.Apply(ApiClient.ReadBool(kv.Value), cfg.RunAsAdmin);
                             break;
+                        case "updateDownloadSource":
+                        {
+                            string source = ApiClient.ReadString(kv.Value).Trim().ToLowerInvariant();
+                            cfg.UpdateDownloadSource = source is "github" or "ghproxy" ? source : "auto";
+                            break;
+                        }
+                        case "updateUseProxy":
+                            cfg.UpdateUseProxy = ApiClient.ReadBool(kv.Value);
+                            break;
+                        case "updateHttpProxy":
+                            cfg.UpdateHttpProxy = ApiClient.ReadString(kv.Value).Trim();
+                            break;
                         case "serverRegion":
                         {
                             string reg = ApiClient.ReadString(kv.Value).Trim().ToLowerInvariant();
@@ -1166,10 +1233,65 @@ public sealed class PanelWindow : Form
             case "update.check":
             {
                 var current = typeof(PanelWindow).Assembly.GetName().Version ?? new Version(0, 0, 0);
-                var info = await UpdateChecker.CheckAsync(current, true);
+                var info = await UpdateChecker.CheckAsync(current, true, _app.Cfg.UpdateUseProxy ? _app.Cfg.UpdateHttpProxy : null);
                 _updateInfo = info;
                 Push("update", info);
                 return new { available = info != null, update = info, currentVersion = current.ToString(3) };
+            }
+
+            case "update.download":
+            {
+                if (_updateDownloading) return new { started = true, already = true };
+                var info = _updateInfo;
+                if (info?.Installer == null)
+                    throw new ApiException(-1, "当前发布没有可自动下载的安装包，请手动前往 Release");
+                string source = cfg.UpdateDownloadSource;
+                string proxy = cfg.UpdateUseProxy ? cfg.UpdateHttpProxy : null;
+                string tag = info.Tag;
+                var installer = info.Installer;
+                _updateDownloading = true;
+                _updateDownloadPath = "";
+                _updateDownloadTag = tag;
+                _updateDownloadCts = new CancellationTokenSource();
+                var token = _updateDownloadCts.Token;
+                _ = Task.Run(() => DownloadUpdateAsync(installer, tag, source, proxy, token));
+                return new { started = true, tag, source };
+            }
+
+            case "update.cancel":
+                _updateDownloadCts?.Cancel();
+                return new { cancelled = true };
+
+            case "update.install":
+            {
+                if (_updateInstalling)
+                    return new { started = true, already = true };
+                var info = _updateInfo;
+                if (info?.Installer == null || string.IsNullOrEmpty(_updateDownloadPath))
+                    throw new ApiException(-1, "请先下载更新安装包");
+                if (!string.Equals(_updateDownloadTag, info.Tag, StringComparison.Ordinal))
+                    throw new ApiException(-1, "下载的安装包与当前版本不匹配，请重新下载");
+                if (!UpdateDownloader.VerifyFile(_updateDownloadPath, info.Installer.Digest, out string actual))
+                {
+                    try { File.Delete(_updateDownloadPath); } catch { }
+                    throw new ApiException(-1, "安装包 SHA-256 校验失败，已删除，请重新下载（实际 " + actual + "）");
+                }
+                _updateInstalling = true;
+                try
+                {
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = _updateDownloadPath,
+                        UseShellExecute = true,
+                    });
+                    Log.Write("已启动更新安装包 " + _updateDownloadPath);
+                    return new { started = true, path = _updateDownloadPath };
+                }
+                catch
+                {
+                    _updateInstalling = false;
+                    throw;
+                }
             }
 
             case "compatibility.check":
@@ -1192,7 +1314,10 @@ public sealed class PanelWindow : Form
                 int dx = (int)ApiClient.ReadLong(data["dx"]);
                 int dy = (int)ApiClient.ReadLong(data["dy"]);
                 bool reset = ApiClient.ReadBool(data["reset"]);
-                var p = _app.Pet.NudgeAccessory(dx, dy, reset);
+                // 滑条传绝对 x/y；方向按钮仍传相对 dx/dy。
+                var p = data.ContainsKey("x") || data.ContainsKey("y")
+                    ? _app.Pet.SetAccessoryOffset((int)ApiClient.ReadLong(data["x"]), (int)ApiClient.ReadLong(data["y"]))
+                    : _app.Pet.NudgeAccessory(dx, dy, reset);
                 var boot = BootPayload();
                 return new { x = p.x, y = p.y, accessoryId = _app.Cfg.AccessoryAssetId, boot };
             }
@@ -1508,6 +1633,10 @@ public sealed class PanelWindow : Form
                 series,
                 rarity = catalog.Rarities.TryGetValue(e.Id, out var r) ? r : "common",
                 thumb = atlasByMain.TryGetValue(e.Id, out var t) ? t : catalog.CdnUrl(e.Url),
+                // 预设预览需要和桌宠一样使用完整 200×200 资源，并带上配件目录偏移。
+                previewUrl = catalog.CdnUrl(e.Url),
+                offsetX = e.OffsetX,
+                offsetY = e.OffsetY,
                 gameRoleId = e.GameRoleId,
             };
         }).ToList();

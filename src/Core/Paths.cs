@@ -14,6 +14,7 @@ public static class Paths
     public static string StateFile => Path.Combine(Root, "state.json");
     /// <summary>高级合成的锁定物资，单独存 JSON，避免状态/配置迁移时丢失。</summary>
     public static string LocksFile => Path.Combine(Root, "locks.json");
+    public static string UpdatesDir => Path.Combine(Root, "updates");
     public static string LogFile => Path.Combine(Root, "log.txt");
     public static string CatalogCache => Path.Combine(CacheDir, "appearance_asset.json");
     public static string CatalogMeta => Path.Combine(CacheDir, "appearance_meta.json");

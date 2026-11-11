@@ -164,6 +164,12 @@ public sealed class Settings
     [JsonIgnore] public List<string> ReadAnnouncementIds { get; set; } = new();
     /// <summary>服务器区服：cn（国服） | global（国际服），默认 cn。</summary>
     public string ServerRegion { get; set; } = "cn";
+    /// <summary>更新下载源：auto | github | ghproxy。auto 按 GH-Proxy -> GitHub 顺序回退。</summary>
+    public string UpdateDownloadSource { get; set; } = "auto";
+    /// <summary>更新检查和下载是否显式使用 HTTP 代理；关闭时使用系统代理。</summary>
+    public bool UpdateUseProxy { get; set; }
+    /// <summary>更新检查和下载使用的 HTTP 代理；关闭代理开关时保留此值但不使用。</summary>
+    public string UpdateHttpProxy { get; set; } = "";
     /// <summary>公告接口完整地址；只读 GET，不携带用户身份。</summary>
     public string AnnouncementApiUrl { get; set; } = AnnouncementService.DefaultApiUrl;
     public string Locale { get; set; } = "zh";
@@ -238,6 +244,13 @@ public static class ConfigStore
                     cfg.GameModeRules = GameModeRules.Normalize(cfg.GameModeRules);
                     if (cfg.AutoEmoteMode != "specific" && cfg.AutoEmoteMode != "library") cfg.AutoEmoteMode = "quickbar";
                     cfg.ServerRegion = NormalizeRegion(cfg.ServerRegion);
+                    cfg.UpdateDownloadSource = cfg.UpdateDownloadSource switch
+                    {
+                        "github" => "github",
+                        "ghproxy" => "ghproxy",
+                        _ => "auto",
+                    };
+                    cfg.UpdateHttpProxy = (cfg.UpdateHttpProxy ?? "").Trim();
                     if (string.IsNullOrWhiteSpace(cfg.AnnouncementApiUrl))
                         cfg.AnnouncementApiUrl = AnnouncementService.DefaultApiUrl;
                     cfg.CatLayout = string.Equals(cfg.CatLayout, "vertical", StringComparison.OrdinalIgnoreCase) ? "vertical" : "horizontal";
