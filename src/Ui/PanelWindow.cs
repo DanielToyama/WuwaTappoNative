@@ -785,27 +785,20 @@ public sealed class PanelWindow : Form
                 var (uploadChar, uploadAcc, characterBlocked, accessoryBlocked) = await ResolveCloudAppearanceAsync();
                 if (characterBlocked || accessoryBlocked)
                     Log.Write($"云端外观使用安全值 character={uploadChar} accessory={uploadAcc} blocked={characterBlocked}/{accessoryBlocked}");
-                var serverEmotes = new List<long>();
-                if (_app.Auth.UserInfo?["emote"] is JsonArray serverEmoteArr)
-                    foreach (var e in serverEmoteArr)
-                    {
-                        long eid = ApiClient.ReadLong(e?["id"]);
-                        if (eid > 0) serverEmotes.Add(eid);
-                    }
-                if (serverEmotes.Count == 0)
-                    serverEmotes.AddRange((cfg.CloudEmoteAssetIds ?? Array.Empty<long>()).Where(id => id > 0));
 
-                await auth.Api.PutAsync("api/frontend/user/me/appearance", new
-                {
-                    character_asset_id = uploadChar,
-                    accessory_asset_id = uploadAcc,
-                    // 表情栏只存本地；云端保留服务器现有表情，避免跨角色被拒
-                    emote_asset_ids = serverEmotes.ToArray(),
-                });
+                // 服务器返回的旧表情可能来自其他账号/旧状态，背包里已经不存在。
+                // 直接原样回传会让整次 appearance 更新失败并报 50006，必须先用当前背包校验。
+                var serverEmotes = _app.Auth.UserInfo is JsonObject me
+                    ? ReadServerEmoteIds(me)
+                    : NormalizeEmoteSlots(cfg.CloudEmoteAssetIds).Where(id => id > 0).ToArray();
+                var cloudEmotes = SanitizeCloudEmotes(uploadChar, serverEmotes);
+                LogCloudAppearanceRepair(serverEmotes, uploadChar, uploadAcc);
+
+                var appliedEmotes = await PutCloudAppearanceAsync(uploadChar, uploadAcc, cloudEmotes, clearEmotesOnReject: true);
 
                 cfg.CloudCharacterAssetId = uploadChar;
                 cfg.CloudAccessoryAssetId = uploadAcc;
-                cfg.CloudEmoteAssetIds = serverEmotes.ToArray();
+                cfg.CloudEmoteAssetIds = appliedEmotes;
                 // 本地装扮与云端安全值一致时才解除本地覆盖；未拥有的本地装扮继续保留。
                 bool localMatches = (cfg.CharacterAssetId == uploadChar || cfg.CharacterAssetId == 0)
                     && cfg.AccessoryAssetId == uploadAcc;
@@ -1310,18 +1303,15 @@ public sealed class PanelWindow : Form
         var cloudSlots = NormalizeEmoteSlots(cfg.CloudEmoteAssetIds);
         cloudSlots[slot] = id;
         var (uploadChar, uploadAcc, _, _) = await ResolveCloudAppearanceAsync();
-        await _app.Auth.Api.PutAsync("api/frontend/user/me/appearance", new
-        {
-            character_asset_id = uploadChar,
-            accessory_asset_id = uploadAcc,
-            emote_asset_ids = cloudSlots.Where(x => x > 0).ToArray(),
-        });
+        // 清掉旧账号/旧状态遗留的无效表情，否则服务器会以 50006 拒绝整个请求。
+        var uploadEmotes = SanitizeCloudEmotes(uploadChar, cloudSlots.Where(x => x > 0));
+        var appliedEmotes = await PutCloudAppearanceAsync(uploadChar, uploadAcc, uploadEmotes, clearEmotesOnReject: false);
 
         var localSlots = NormalizeEmoteSlots(cfg.EmoteAssetIds);
         localSlots[slot] = id;
         cfg.CloudCharacterAssetId = uploadChar;
         cfg.CloudAccessoryAssetId = uploadAcc;
-        cfg.CloudEmoteAssetIds = cloudSlots;
+        cfg.CloudEmoteAssetIds = NormalizeEmoteSlots(appliedEmotes);
         cfg.EmoteAssetIds = localSlots;
         cfg.LocalEmoteSlots = true;
         ConfigStore.Save(cfg);
@@ -1375,6 +1365,78 @@ public sealed class PanelWindow : Form
         if (node is JsonArray arr)
             for (int i = 0; i < 5 && i < arr.Count; i++) slots[i] = ApiClient.ReadLong(arr[i]);
         return slots;
+    }
+
+    static long[] ReadServerEmoteIds(JsonObject me)
+    {
+        var ids = new List<long>();
+        if (me?["emote"] is JsonArray arr)
+            foreach (var entry in arr)
+            {
+                long id = ApiClient.ReadLong(entry?["id"]);
+                if (id > 0 && !ids.Contains(id)) ids.Add(id);
+            }
+        return ids.ToArray();
+    }
+
+    /// <summary>
+    /// 云端表情必须是当前背包拥有、且与目标角色匹配的资源。
+    /// 旧账号/旧状态残留的 ID 不能原样回传，否则服务器会用 50006 拒绝整次外观更新。
+    /// </summary>
+    long[] SanitizeCloudEmotes(long characterId, IEnumerable<long> source)
+    {
+        var result = new List<long>();
+        foreach (long id in source ?? Enumerable.Empty<long>())
+        {
+            if (id <= 0 || result.Contains(id)) continue;
+            if (!IsOwned("emote", id)) continue;
+            if (!EmoteMatchesCharacter(characterId, id)) continue;
+            result.Add(id);
+            if (result.Count >= 5) break;
+        }
+        return result.ToArray();
+    }
+
+    void LogCloudAppearanceRepair(long[] serverEmotes, long uploadChar, long uploadAcc)
+    {
+        long serverChar = ApiClient.ReadLong(_app.Auth.UserInfo?["character"]?["id"]);
+        long serverAcc = ApiClient.ReadLong(_app.Auth.UserInfo?["accessory"]?["id"]);
+        var unknown = serverEmotes.Where(id => !IsOwned("emote", id)).ToArray();
+        var incompatible = serverEmotes.Where(id => IsOwned("emote", id) && !EmoteMatchesCharacter(uploadChar, id)).ToArray();
+        bool invalid = (serverChar > 0 && !IsOwned("character_skin", serverChar))
+            || (serverAcc > 0 && !IsOwned("accessory", serverAcc))
+            || unknown.Length > 0;
+        if (invalid)
+            Log.Write($"检测到云端外观异常，自动复位：character={serverChar}->{uploadChar} accessory={serverAcc}->{uploadAcc} 无效表情=[{string.Join(",", unknown)}]");
+        else if (incompatible.Length > 0)
+            Log.Write($"云端表情与新角色不匹配，自动移除=[{string.Join(",", incompatible)}]");
+    }
+
+    async Task<long[]> PutCloudAppearanceAsync(long character, long accessory, long[] emotes, bool clearEmotesOnReject)
+    {
+        try
+        {
+            await _app.Auth.Api.PutAsync("api/frontend/user/me/appearance", new
+            {
+                character_asset_id = character,
+                accessory_asset_id = accessory,
+                emote_asset_ids = emotes,
+            });
+            return emotes;
+        }
+        catch (ApiException ex) when (clearEmotesOnReject && ex.Code == 50006 && emotes.Length > 0)
+        {
+            // 即使按背包过滤后服务器仍拒绝，说明服务端表情状态本身不可用；
+            // 清空云端表情先把外观恢复为可保存状态，本地表情槽位不受影响。
+            Log.Write($"云端外观仍被拒绝，自动清空云端表情后重试：emotes=[{string.Join(",", emotes)}]");
+            await _app.Auth.Api.PutAsync("api/frontend/user/me/appearance", new
+            {
+                character_asset_id = character,
+                accessory_asset_id = accessory,
+                emote_asset_ids = Array.Empty<long>(),
+            });
+            return Array.Empty<long>();
+        }
     }
 
     static object[] MapLocalPresets(List<LocalPreset> presets)

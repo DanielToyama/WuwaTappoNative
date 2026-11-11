@@ -76,6 +76,8 @@ public sealed class PetWindow : Form
     public event Action RefreshRequested;
     /// <summary>窗口设置被快捷键/菜单改动后触发，面板据此刷新开关状态。</summary>
     public event Action SettingsChanged;
+    /// <summary>右键远程角色隐藏成员后，通知面板同步成员列表。</summary>
+    public event Action MemberVisibilityChanged;
     /// <summary>主角帧/手部/眨眼变化时通知绿幕采集窗口重绘。</summary>
     public event Action CaptureChanged;
     /// <summary>绿幕窗口需要一起绘制当前键盘/手柄 GUI。</summary>
@@ -1664,6 +1666,7 @@ public sealed class PetWindow : Form
                 cat.SetRemoteStyle(EffectiveRemoteScale, EffectiveRemoteOpacity, _cfg.RemoteNameScale);
                 cat.RemoteScaleRequested += ApplyRemoteScale;
                 cat.RemoteOpacityRequested += ApplyRemoteOpacity;
+                cat.HideRequested += OnCatHideRequested;
                 cat.Location = PlaceNewCat(id);
                 cat.DragStarted += OnCatDragStarted;
                 cat.DragMoved += OnCatDragMoved;
@@ -2092,6 +2095,18 @@ public sealed class PetWindow : Form
         Save();
         UpdateCatScales();
         NotifySettingsChanged();
+    }
+
+    void OnCatHideRequested(long id)
+    {
+        // 等右键菜单关闭后再销毁远程窗口，避免在菜单 Click 回调里 Dispose 当前菜单。
+        Safe(() =>
+        {
+            // 与面板里的“隐藏成员”共用同一份持久化状态；重新进房也会保持隐藏。
+            _room.SetMemberVisible(id, false);
+            RemoveCat(id);
+            MemberVisibilityChanged?.Invoke();
+        });
     }
 
     void RemoveCat(long id)

@@ -185,7 +185,7 @@
       syncLocks(r?.items || []);
       if (state.page === 'bag') renderBagList();
       else if (state.page === 'atlas') renderAtlas();
-      else if (state.page === 'synth') renderSynth();
+      else if (state.page === 'synth') renderSynth(true);
     } catch { }
   }
   function lockButtonHtml(type, id, extra = '') {
@@ -1530,7 +1530,9 @@
     return ready;
   }
 
-  async function renderSynth() {
+  async function renderSynth(preserveScroll = false) {
+    // 点击材料卡片会重建整个合成页；这里保留网格滚动位置，避免选择下方物品时弹回顶部。
+    const prevScroll = preserveScroll ? (document.getElementById('synthGrid')?.scrollTop || 0) : 0;
     setPage(`<div class="loading">正在读取背包…</div>`);
     try { await ensureBag(); } catch { setPage('<div class="empty-state">背包读取失败</div>'); return; }
     await ensureAtlas(state.synthType).catch(() => { });
@@ -1705,9 +1707,11 @@
         const idx = state.synthSlots.findIndex(v => v === null);
         if (idx < 0) return;
         state.synthSlots[idx] = item.id;
-        renderSynth();
+        renderSynth(true);
       };
     });
+    // 恢复点击前的网格位置；对选择材料这种同列表重绘，用户不应该被拉回顶部。
+    if (prevScroll > 0) grid.scrollTop = prevScroll;
     updateSynthBadge();
   }
 

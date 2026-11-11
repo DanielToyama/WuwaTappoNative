@@ -114,6 +114,8 @@ public sealed class App : ApplicationContext
         Pet.RefreshRequested += () => _ = RefreshEverythingAsync();
         // 快捷键/托盘菜单改了窗口设置后，面板里的开关要跟着变，否则界面显示和实际状态不一致。
         Pet.SettingsChanged += () => { try { Panel?.PushBoot(); } catch { } };
+        // 右键远程角色隐藏成员后，联机页的成员可见状态也要同步刷新。
+        Pet.MemberVisibilityChanged += PushRoom;
         // 手柄按键和键盘按键走同一条链路：计数、广播、挥手。
         Keyboard.PadButtonDown += () => Pet.BeginInvoke(new Action(Pet.GamepadTap));
         Keyboard.PadButtonUp += () => Pet.BeginInvoke(new Action(Pet.GamepadRelease));

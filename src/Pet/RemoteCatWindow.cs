@@ -47,6 +47,8 @@ public sealed class RemoteCatWindow : Form
     public event Action<RemoteCatWindow> DragStarted;
     public event Action<RemoteCatWindow, Point> DragMoved;
     public event Action<RemoteCatWindow, bool> DragEnded;
+    /// <summary>右键菜单请求隐藏该成员。</summary>
+    public event Action<long> HideRequested;
 
     /// <summary>由主窗口接管本次拖动（多选批量移动）时，远程窗口自身不再移动。</summary>
     public bool ExternalDrag { get; set; }
@@ -101,6 +103,11 @@ public sealed class RemoteCatWindow : Form
     void BuildRemoteMenu()
     {
         _menu = new ContextMenuStrip();
+        var hideItem = new ToolStripMenuItem("隐藏该角色");
+        hideItem.Click += (s, e) => HideRequested?.Invoke(MemberId);
+        _menu.Items.Add(hideItem);
+        _menu.Items.Add(new ToolStripSeparator());
+
         _scaleMenu = new ToolStripMenuItem("联机角色大小");
         foreach (var v in new[] { 0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0 })
         {
