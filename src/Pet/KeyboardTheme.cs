@@ -63,6 +63,7 @@ public sealed class KeyboardTheme
     // 手柄
     public Color PadBody { get; init; }
     public Color PadOutline { get; init; }
+    /// <summary>手柄按下态基础色：按 PadBody 校正到 3:1；具体部件用 PadPressedFor 再按当地底色校正。</summary>
     public Color PadPressed { get; init; }
     public Color PadText { get; init; }
     public Color PadTriggerTrack { get; init; }
@@ -71,6 +72,19 @@ public sealed class KeyboardTheme
     public Color PadStickCap { get; init; }
     public Color PadFaceOutline { get; init; }
     public Color PadFaceText { get; init; }
+
+    /// <summary>
+    /// 针对具体手柄部件的未按下底色返回可辨识的按下态颜色。
+    /// 深色高级配色里本体可能很亮、摇杆槽可能很暗，单一 PadPressed 无法同时满足两类背景；
+    /// 绘制端按所在部件底色二次校正，保证每个按下区域都达到 3:1。
+    /// </summary>
+    public Color PadPressedFor(Color background) => EnsureContrast(PadPressed, 3.0, background);
+
+    /// <summary>按当前实际填充底色重新校正手柄文字，避免同一文字色同时压在深色本体和浅色按下态上不可读。</summary>
+    public Color PadTextFor(Color background) => EnsureReadable(PadText, 3.0, background);
+
+    /// <summary>ABXY 按下后底色会变化，标签文字按实际底色重新校正。</summary>
+    public Color PadFaceTextFor(Color background) => EnsureReadable(PadFaceText, 3.0, background);
 
     /// <summary>
     /// 所有键盘窗口模式共用的入口：底栏跟随标准时使用面板主题；
@@ -121,6 +135,12 @@ public sealed class KeyboardTheme
         var padTriggerTrack = PetWindow.BlendColor(cream4, surface, 0.22f);
         var padOutline = PetWindow.BlendColor(border, ink, 0.30f);
         var keyShadow = PetWindow.BlendColor(border, ink, 0.25f);
+        var padStickCap = PetWindow.BlendColor(cream4, accent, 0.08f);
+        // 按下态与手柄本体、扳机槽、短横键的未按下底色都要有可辨识差异；
+        // 浅色 active 直接填充会和奶油底几乎同色，必须按实际背景做对比度保护。
+        var padPressed = EnsureContrast(active, 3.0, padBody);
+        var padPressedTrigger = EnsureContrast(padPressed, 3.0, padTriggerTrack);
+        var padText = EnsureReadable(inkStrong, 3.0, padBody, padTriggerTrack);
 
         return new KeyboardTheme
         {
@@ -160,13 +180,13 @@ public sealed class KeyboardTheme
             LaneNumber = WithAlpha(EnsureReadable(inkDim, 3.0, plateTop, plateBottom), 220),
 
             PadBody = padBody,
-            PadOutline = EnsureReadable(padOutline, 1.8, padBody),
-            PadPressed = active,
-            PadText = EnsureReadable(inkStrong, 3.0, padBody, active),
+            PadOutline = EnsureReadable(padOutline, 1.8, padBody, padPressed),
+            PadPressed = padPressed,
+            PadText = padText,
             PadTriggerTrack = padTriggerTrack,
-            PadTriggerFill = accentStrong,
+            PadTriggerFill = EnsureContrast(accentStrong, 3.0, padTriggerTrack, padPressedTrigger),
             PadStickWell = padStickWell,
-            PadStickCap = PetWindow.BlendColor(cream4, accent, 0.08f),
+            PadStickCap = padStickCap,
             PadFaceOutline = EnsureReadable(padOutline, 1.6, FaceY, FaceX, FaceB, FaceA),
             PadFaceText = EnsureReadable(inkStrong, 3.0, FaceY, FaceX, FaceB, FaceA),
         };
@@ -195,12 +215,9 @@ public sealed class KeyboardTheme
         var toolbarText = EnsureReadable(text, 3.0, bodyAlt, active);
         var keyText = EnsureReadable(text, 3.2, body);
         var keyTextPressed = EnsureReadable(text, 3.2, active);
-        var padText = EnsureReadable(text, 3.0, body, active);
-        var padOutline = EnsureReadable(outline, 1.8, body);
-        var faceOutline = EnsureReadable(outline, 1.6, FaceY, FaceX, FaceB, FaceA);
-        var faceText = EnsureReadable(text, 3.0, FaceY, FaceX, FaceB, FaceA);
         var inkDim = Blend(text, body, 0.45f);
         var laneNumber = WithAlpha(EnsureReadable(inkDim, 3.0, body), 220);
+        var padPressed = EnsureContrast(active, 3.0, body, bodyAlt);
 
         return new KeyboardTheme
         {
@@ -241,15 +258,15 @@ public sealed class KeyboardTheme
             LaneNumber = laneNumber,
 
             PadBody = body,
-            PadOutline = padOutline,
-            PadPressed = active,
-            PadText = padText,
+            PadOutline = EnsureReadable(outline, 1.8, body, padPressed),
+            PadPressed = padPressed,
+            PadText = EnsureReadable(text, 3.0, body, bodyAlt),
             PadTriggerTrack = bodyAlt,
-            PadTriggerFill = triggerFill,
+            PadTriggerFill = EnsureContrast(triggerFill, 3.0, bodyAlt, padPressed),
             PadStickWell = bodyAlt,
             PadStickCap = body,
-            PadFaceOutline = faceOutline,
-            PadFaceText = faceText,
+            PadFaceOutline = EnsureReadable(outline, 1.6, FaceY, FaceX, FaceB, FaceA),
+            PadFaceText = EnsureReadable(text, 3.0, FaceY, FaceX, FaceB, FaceA),
         };
     }
 
@@ -307,6 +324,38 @@ public sealed class KeyboardTheme
             if (Worst(candidate) >= minRatio) return candidate;
         }
         return target;
+    }
+
+    /// <summary>
+    /// 非文本组件（手柄按下态等）的对比度保护：对比度不足时向黑/白方向做最小混合，
+    /// 只混到刚好达到阈值，保留主题色相，避免浅色 active 直接填充后与本体同色。
+    /// </summary>
+    static Color EnsureContrast(Color color, double minRatio, params Color[] backgrounds)
+    {
+        double Worst(Color candidate) => backgrounds.Min(b => ContrastRatio(candidate, b));
+        if (Worst(color) >= minRatio) return color;
+
+        double towardBlack = Worst(Color.Black);
+        double towardWhite = Worst(Color.White);
+        bool darken = towardBlack >= towardWhite;
+        Color target = darken ? Color.Black : Color.White;
+        if (Math.Max(towardBlack, towardWhite) < minRatio) return target;
+
+        double low = 0, high = 1;
+        for (int i = 0; i < 24; i++)
+        {
+            double mid = (low + high) / 2;
+            var candidate = PetWindow.BlendColor(color, target, (float)mid);
+            if (Worst(candidate) >= minRatio) high = mid;
+            else low = mid;
+        }
+        var result = PetWindow.BlendColor(color, target, (float)high);
+        for (int i = 0; i < 4 && Worst(result) < minRatio; i++)
+        {
+            high = Math.Min(1, high + 0.02);
+            result = PetWindow.BlendColor(color, target, (float)high);
+        }
+        return Worst(result) >= minRatio ? result : target;
     }
 
     static (double H, double S, double L) ToHsl(Color color)

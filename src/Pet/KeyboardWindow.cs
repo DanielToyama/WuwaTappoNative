@@ -784,7 +784,7 @@ public sealed class KeyboardWindow : Form
             PadPressed(0x0001), PadPressed(0x0002), PadPressed(0x0004), PadPressed(0x0008), theme);
 
         var guide = new RectangleF(board.X + 88 * s, board.Y + 32 * s, 18 * s, 18 * s);
-        using (var brush = new SolidBrush(PadPressed(0x0400) ? theme.PadPressed : theme.PadBody))
+        using (var brush = new SolidBrush(PadPressed(0x0400) ? theme.PadPressedFor(theme.PadBody) : theme.PadBody))
             g.FillEllipse(brush, guide);
         using (var pen = new Pen(theme.PadOutline, 1.8f * s))
             g.DrawEllipse(pen, guide);
@@ -849,7 +849,7 @@ public sealed class KeyboardWindow : Form
         try
         {
             g.SetClip(cross);
-            using var press = new SolidBrush(theme.PadPressed);
+            using var press = new SolidBrush(theme.PadPressedFor(theme.PadBody));
             if (up) g.FillRectangle(press, cx - t / 2, cy - arm, t, arm);
             if (down) g.FillRectangle(press, cx - t / 2, cy, t, arm);
             if (left) g.FillRectangle(press, cx - arm, cy - t / 2, arm, t);
@@ -879,7 +879,7 @@ public sealed class KeyboardWindow : Form
     {
         var rect = new RectangleF(x, y, w, h);
         using (var path = PetComposer.Rounded(rect, Math.Min(h, 3.5f * s)))
-        using (var brush = new SolidBrush(down ? theme.PadPressed : theme.Cream2))
+        using (var brush = new SolidBrush(down ? theme.PadPressedFor(theme.Cream2) : theme.Cream2))
         using (var pen = new Pen(theme.PadOutline, 1.1f * s))
         {
             g.FillPath(brush, path);
@@ -891,14 +891,14 @@ public sealed class KeyboardWindow : Form
     {
         var rect = new RectangleF(x, y, w, 10 * s);
         using (var path = PetComposer.Rounded(rect, 5 * s))
-        using (var brush = new SolidBrush(down ? theme.PadPressed : theme.PadBody))
+        using (var brush = new SolidBrush(down ? theme.PadPressedFor(theme.PadBody) : theme.PadBody))
         using (var pen = new Pen(theme.PadOutline, 1.2f * s))
         {
             g.FillPath(brush, path);
             g.DrawPath(pen, path);
         }
         using var font = new Font("Microsoft YaHei UI", 5.8f * s, FontStyle.Bold, GraphicsUnit.Pixel);
-        using var text = new SolidBrush(theme.PadText);
+        using var text = new SolidBrush(theme.PadTextFor(down ? theme.PadPressedFor(theme.PadBody) : theme.PadBody));
         using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
         g.DrawString(label, font, text, rect, fmt);
     }
@@ -906,8 +906,9 @@ public sealed class KeyboardWindow : Form
     void DrawPadTrigger(Graphics g, float s, float x, float y, float w, string label, byte value, KeyboardTheme theme)
     {
         var rect = new RectangleF(x, y, w, 9.5f * s);
+        bool down = value > 10;
         using (var path = PetComposer.Rounded(rect, 4.75f * s))
-        using (var brush = new SolidBrush(value > 10 ? theme.PadPressed : theme.PadTriggerTrack))
+        using (var brush = new SolidBrush(down ? theme.PadPressedFor(theme.PadTriggerTrack) : theme.PadTriggerTrack))
         using (var pen = new Pen(theme.PadOutline, 1.1f * s))
         {
             g.FillPath(brush, path);
@@ -917,7 +918,7 @@ public sealed class KeyboardWindow : Form
         using (var brush = new SolidBrush(theme.PadTriggerFill))
             g.FillRectangle(brush, bar);
         using var font = new Font("Microsoft YaHei UI", 5.8f * s, FontStyle.Bold, GraphicsUnit.Pixel);
-        using var text = new SolidBrush(theme.PadText);
+        using var text = new SolidBrush(theme.PadTextFor(down ? theme.PadPressedFor(theme.PadTriggerTrack) : theme.PadTriggerTrack));
         using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
         g.DrawString(label + " " + (int)(value / 255f * 100) + "%", font, text, new RectangleF(rect.X, rect.Y, rect.Width, rect.Height - 1.5f * s), fmt);
     }
@@ -925,15 +926,16 @@ public sealed class KeyboardWindow : Form
     void DrawTrigger(Graphics g, float s, float x, float y, float w, string label, byte value, KeyboardTheme theme)
     {
         var box = new RectangleF(x, y, w, 14 * s);
+        bool down = value > 10;
         using (var path = PetComposer.Rounded(box, 6 * s))
-        using (var brush = new SolidBrush(value > 10 ? theme.PadPressed : theme.PadTriggerTrack))
+        using (var brush = new SolidBrush(down ? theme.PadPressedFor(theme.PadTriggerTrack) : theme.PadTriggerTrack))
         using (var pen = new Pen(theme.PadOutline, 1.1f * s))
         { g.FillPath(brush, path); g.DrawPath(pen, path); }
         var bar = new RectangleF(box.X + 4 * s, box.Bottom - 5 * s, (box.Width - 8 * s) * (value / 255f), 2.5f * s);
         using (var brush = new SolidBrush(theme.PadTriggerFill))
             g.FillRectangle(brush, bar);
         using var font = new Font("Microsoft YaHei UI", 8f * s, FontStyle.Bold, GraphicsUnit.Pixel);
-        using var text = new SolidBrush(theme.PadText);
+        using var text = new SolidBrush(theme.PadTextFor(down ? theme.PadPressedFor(theme.PadTriggerTrack) : theme.PadTriggerTrack));
         using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
         g.DrawString(label + " " + (int)(value / 255f * 100) + "%", font, text, new RectangleF(box.X, box.Y, box.Width, box.Height - 4 * s), fmt);
     }
@@ -949,7 +951,7 @@ public sealed class KeyboardWindow : Form
         using (var pen = new Pen(theme.PadFaceOutline, 1.3f * s))
             g.DrawEllipse(pen, rect);
         using var font = new Font("Microsoft YaHei UI", 9.5f * s, FontStyle.Bold, GraphicsUnit.Pixel);
-        using var text = new SolidBrush(theme.PadFaceText);
+        using var text = new SolidBrush(theme.PadFaceTextFor(face));
         using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
         g.DrawString(label, font, text, rect, fmt);
     }
@@ -958,7 +960,7 @@ public sealed class KeyboardWindow : Form
     {
         float r = 15.5f * s;
         var well = new RectangleF(cx - r, cy - r, r * 2, r * 2);
-        using (var brush = new SolidBrush(down ? theme.PadPressed : theme.PadStickWell))
+        using (var brush = new SolidBrush(down ? theme.PadPressedFor(theme.PadStickWell) : theme.PadStickWell))
             g.FillEllipse(brush, well);
         using (var pen = new Pen(theme.PadOutline, 1.8f * s))
             g.DrawEllipse(pen, well);
@@ -966,7 +968,7 @@ public sealed class KeyboardWindow : Form
         float capR = r * 0.62f;
         float ox = ax / 32767f * 4 * s, oy = -ay / 32767f * 4 * s;
         var cap = new RectangleF(cx - capR + ox, cy - capR + oy, capR * 2, capR * 2);
-        using (var brush = new SolidBrush(down ? theme.PadPressed : theme.PadStickCap))
+        using (var brush = new SolidBrush(down ? theme.PadPressedFor(theme.PadStickCap) : theme.PadStickCap))
             g.FillEllipse(brush, cap);
         using (var pen = new Pen(theme.PadOutline, 1.5f * s))
             g.DrawEllipse(pen, cap);
@@ -976,13 +978,13 @@ public sealed class KeyboardWindow : Form
     {
         var r = new RectangleF(x, y, w, h);
         using (var path = PetComposer.Rounded(r, radius))
-        using (var brush = new SolidBrush(down ? theme.PadPressed : theme.Cream2))
+        using (var brush = new SolidBrush(down ? theme.PadPressedFor(theme.Cream2) : theme.Cream2))
             g.FillPath(brush, path);
         using (var path = PetComposer.Rounded(r, radius))
         using (var pen = new Pen(theme.Border, 1f * s))
             g.DrawPath(pen, path);
         using var font = new Font("Microsoft YaHei UI", 7.5f * s, FontStyle.Bold, GraphicsUnit.Pixel);
-        using var text = new SolidBrush(theme.PadText);
+        using var text = new SolidBrush(theme.PadTextFor(down ? theme.PadPressedFor(theme.Cream2) : theme.Cream2));
         using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
         g.DrawString(label, font, text, r, fmt);
     }

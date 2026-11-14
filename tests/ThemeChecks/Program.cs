@@ -441,6 +441,49 @@ internal static class Program
         var coolCfg = new Settings { ThemeAccentColor = "#3366CC", ThemeFontColor = "#8E5E43" };
         var warm = KeyboardTheme.Resolve(warmCfg);
         var cool = KeyboardTheme.Resolve(coolCfg);
+        AssertPadPressedContrast(warm, "Warm");
+        AssertPadPressedContrast(cool, "Cool");
+
+        // 浅色主题/低饱和主题：active 不再能直接当按下态，派生色必须仍与本体、扳机槽、摇杆槽有 3:1。
+        var paleCfg = new Settings { ThemeAccentColor = "#F4EBDD", ThemeFontColor = "#8E5E43" };
+        var pale = KeyboardTheme.Resolve(paleCfg);
+        AssertPadPressedContrast(pale, "Pale standard");
+        Assert(HueDistance(pale.PadPressed, pale.Active) <= 10,
+            $"Pale standard pressed state must keep the theme hue, got {pale.PadPressed.GetHue():F1} vs {pale.Active.GetHue():F1}.");
+        Assert(pale.PadPressed != pale.Active,
+            "Pale standard PadPressed must be derived instead of reusing the too-light active color.");
+        Assert(pale.KeyPressed == pale.Active && pale.ToolbarActive == pale.Active,
+            "Keyboard and toolbar pressed states must not be altered by the gamepad pressed-state fix.");
+
+        var lowSatCfg = new Settings { ThemeAccentColor = "#B8B8B8", ThemeFontColor = "#8E5E43" };
+        var lowSat = KeyboardTheme.Resolve(lowSatCfg);
+        AssertPadPressedContrast(lowSat, "Low-saturation standard");
+
+        var paleIndependentCfg = new Settings
+        {
+            ThemeAccentColor = "#F2E9DD",
+            ThemeFontColor = "#8E5E43",
+            ThemeBarFollowStandard = false,
+            ThemeBarColor = "#F7F3EC",
+            ThemeBarTextFollowTheme = false,
+            ThemeBarTextColor = "#3F3A34",
+        };
+        var paleIndependent = KeyboardTheme.Resolve(paleIndependentCfg);
+        AssertPadPressedContrast(paleIndependent, "Pale independent");
+
+        var darkIndependentCfg = new Settings
+        {
+            ThemeAccentColor = "#223344",
+            ThemeFontColor = "#8E5E43",
+            ThemeBarFollowStandard = false,
+            ThemeBarColor = "#101820",
+            ThemeBarTextFollowTheme = false,
+            ThemeBarTextColor = "#F0F4F8",
+        };
+        var darkIndependent = KeyboardTheme.Resolve(darkIndependentCfg);
+        AssertPadPressedContrast(darkIndependent, "Dark independent");
+        Assert(darkIndependent.PadPressed.GetBrightness() > darkIndependent.PadBody.GetBrightness(),
+            "Dark independent palette must lighten the pressed state instead of blending into the body.");
 
         Assert(warm.ToolbarBackground != cool.ToolbarBackground,
             "Toolbar background must follow the theme accent.");
@@ -481,6 +524,7 @@ internal static class Program
                             "\"border\":\"#8899AA\"}",
         };
         var dark = KeyboardTheme.Resolve(darkCfg);
+        AssertPadPressedContrast(dark, "Dark advanced");
         Assert(KeyboardTheme.ContrastRatio(dark.KeyText, dark.KeyTop) >= 3.0 &&
                KeyboardTheme.ContrastRatio(dark.KeyTextPressed, dark.KeyPressed) >= 3.0 &&
                KeyboardTheme.ContrastRatio(dark.ToolbarText, dark.ToolbarBackground) >= 3.0 &&
@@ -497,6 +541,7 @@ internal static class Program
                             "\"active\":\"#C0D0E0\",\"border\":\"#405060\"}",
         };
         var advanced = KeyboardTheme.Resolve(advancedCfg);
+        AssertPadPressedContrast(advanced, "Advanced palette");
         Assert(advanced.Cream == ColorTranslator.FromHtml("#101820"), "Advanced cream override was ignored.");
         Assert(advanced.Cream2 == ColorTranslator.FromHtml("#202830"), "Advanced cream2 override was ignored.");
         Assert(advanced.Cream3 == ColorTranslator.FromHtml("#303840"), "Advanced cream3 override was ignored.");
@@ -555,10 +600,14 @@ internal static class Program
         Assert(followTextPalette.Ink == warm.Ink,
             "All modes must follow the theme font when ThemeBarTextFollowTheme is enabled.");
         Assert(KeyboardTheme.ContrastRatio(followTextPalette.PadText, followTextPalette.PadBody) >= 3.0 &&
-               KeyboardTheme.ContrastRatio(followTextPalette.PadText, followTextPalette.PadPressed) >= 3.0,
+               KeyboardTheme.ContrastRatio(
+                   followTextPalette.PadTextFor(followTextPalette.PadPressedFor(followTextPalette.PadBody)),
+                   followTextPalette.PadPressedFor(followTextPalette.PadBody)) >= 3.0,
             "Theme-following text must remain readable on independent bar colors.");
         Assert(KeyboardTheme.ContrastRatio(independent.PadText, independent.PadBody) >= 3.0 &&
-               KeyboardTheme.ContrastRatio(independent.PadText, independent.PadPressed) >= 3.0 &&
+               KeyboardTheme.ContrastRatio(
+                   independent.PadTextFor(independent.PadPressedFor(independent.PadBody)),
+                   independent.PadPressedFor(independent.PadBody)) >= 3.0 &&
                KeyboardTheme.ContrastRatio(independent.PadFaceText, Color.FromArgb(252, 226, 156)) >= 3.0 &&
                KeyboardTheme.ContrastRatio(independent.PadFaceText, Color.FromArgb(214, 233, 248)) >= 3.0 &&
                KeyboardTheme.ContrastRatio(independent.PadFaceText, Color.FromArgb(250, 217, 212)) >= 3.0 &&
@@ -640,6 +689,36 @@ internal static class Program
         Assert(!Near(warmBodyPixel, coolBodyPixel),
             $"Controller body must change between themes, got {warmBodyPixel} and {coolBodyPixel}.");
         Assert(Near(coolBodyPixel, cool.PadBody), $"Cool controller body pixel is {coolBodyPixel}, expected {cool.PadBody}.");
+
+        // 浅色主题真实 DrawTo：D-pad、LB、Guide、Back、LS、LT 的按下区域必须实际出现 PadPressed。
+        window.ApplyTheme(paleCfg);
+        SetField(window, "_padButtons", (ushort)0);
+        SetField(window, "_lt", (byte)0);
+        Color paleFaceIdle;
+        using (var paleIdlePad = RenderKeyboard(window, 180))
+            paleFaceIdle = paleIdlePad.GetPixel(137, 81);
+        SetField(window, "_padButtons", (ushort)(0x0001 | 0x0100 | 0x0400 | 0x0020 | 0x0040 | 0x1000));
+        SetField(window, "_lt", (byte)255);
+        using (var palePressedPad = RenderKeyboard(window, 180))
+        {
+            var regions = new (string Label, Rectangle Rect, Color Pressed)[]
+            {
+                ("D-pad", new Rectangle(40, 56, 34, 34), pale.PadPressedFor(pale.PadBody)),
+                ("LB", new Rectangle(44, 40, 26, 10), pale.PadPressedFor(pale.PadBody)),
+                ("Guide", new Rectangle(92, 58, 18, 18), pale.PadPressedFor(pale.PadBody)),
+                ("Back", new Rectangle(84, 82, 10, 6), pale.PadPressedFor(pale.Cream2)),
+                ("LS", new Rectangle(62, 104, 32, 32), pale.PadPressedFor(pale.PadStickCap)),
+                ("LT", new Rectangle(42, 30, 30, 10), pale.PadPressedFor(pale.PadTriggerTrack)),
+            };
+            foreach (var (label, rect, pressed) in regions)
+                Assert(RegionContainsColor(palePressedPad, rect, pressed),
+                    $"Pale controller pressed {label} must be drawn with its readable pressed color ({pressed}).");
+            var paleFacePressed = palePressedPad.GetPixel(137, 81);
+            Assert(!Near(paleFaceIdle, paleFacePressed),
+                $"Pale controller A button pressed state must be visible, got {paleFaceIdle} and {paleFacePressed}.");
+        }
+        SetField(window, "_padButtons", (ushort)0);
+        SetField(window, "_lt", (byte)0);
 
         // 面板暖橙 + 独立底栏蓝：手柄、普通键盘、音游、鸣潮都必须使用蓝色。
         window.ApplyTheme(customBarCfg);
@@ -800,6 +879,54 @@ internal static class Program
     {
         double delta = Math.Abs(a.GetHue() - b.GetHue());
         return Math.Min(delta, 360 - delta);
+    }
+
+    static void AssertPadPressedContrast(KeyboardTheme theme, string label)
+    {
+        Assert(KeyboardTheme.ContrastRatio(theme.PadPressed, theme.PadBody) >= 3.0,
+            $"{label}: PadPressed vs body contrast is {KeyboardTheme.ContrastRatio(theme.PadPressed, theme.PadBody):F2}, expected >= 3.0.");
+        foreach (var (name, background) in new[]
+        {
+            ("body", theme.PadBody),
+            ("trigger track", theme.PadTriggerTrack),
+            ("stick well", theme.PadStickWell),
+            ("stick cap", theme.PadStickCap),
+            ("unpressed dash", theme.Cream2),
+        })
+        {
+            var pressed = theme.PadPressedFor(background);
+            double ratio = KeyboardTheme.ContrastRatio(pressed, background);
+            Assert(ratio >= 3.0,
+                $"{label}: PadPressedFor({name}) contrast is {ratio:F2}, expected >= 3.0.");
+        }
+        Assert(KeyboardTheme.ContrastRatio(theme.PadText, theme.PadBody) >= 3.0 &&
+               KeyboardTheme.ContrastRatio(theme.PadText, theme.PadTriggerTrack) >= 3.0,
+            $"{label}: PadText must remain readable on body and trigger track.");
+        var pressedBody = theme.PadPressedFor(theme.PadBody);
+        var pressedTrack = theme.PadPressedFor(theme.PadTriggerTrack);
+        Assert(KeyboardTheme.ContrastRatio(theme.PadTextFor(pressedBody), pressedBody) >= 3.0 &&
+               KeyboardTheme.ContrastRatio(theme.PadTextFor(pressedTrack), pressedTrack) >= 3.0,
+            $"{label}: PadTextFor must remain readable on pressed body/trigger.");
+        Assert(KeyboardTheme.ContrastRatio(theme.PadTriggerFill, theme.PadTriggerTrack) >= 3.0 &&
+               KeyboardTheme.ContrastRatio(theme.PadTriggerFill, pressedTrack) >= 3.0,
+            $"{label}: trigger progress fill must contrast with both track and pressed fill.");
+        var pressedFaceA = PetWindow.BlendColor(Color.FromArgb(255, 215, 237, 208), theme.PadPressed, 0.45f);
+        Assert(KeyboardTheme.ContrastRatio(theme.PadFaceTextFor(pressedFaceA), pressedFaceA) >= 3.0,
+            $"{label}: ABXY label must stay readable on the pressed face color.");
+    }
+
+    static bool RegionContainsColor(Bitmap bitmap, Rectangle rect, Color target)
+    {
+        int left = Math.Max(0, rect.Left), top = Math.Max(0, rect.Top);
+        int right = Math.Min(bitmap.Width, rect.Right), bottom = Math.Min(bitmap.Height, rect.Bottom);
+        for (int y = top; y < bottom; y++)
+        {
+            for (int x = left; x < right; x++)
+            {
+                if (Near(bitmap.GetPixel(x, y), target)) return true;
+            }
+        }
+        return false;
     }
 
     static void CheckAccessoryTransform()
