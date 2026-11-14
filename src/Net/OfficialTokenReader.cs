@@ -148,8 +148,10 @@ public static class OfficialTokenReader
     /// <summary>
     /// 提取 token。传入 dataRoot 仅用于自动化测试（一个包含 Local State 和 Default\Network\Cookies
     /// 或直接包含 Cookies 的临时目录）；正常使用传 null。
+    /// requirePreferredRegion=true 时只接受 preferredRegion 对应的数据目录，不会静默回退到另一个区服。
     /// </summary>
-    public static ExtractionResult Extract(Action<string>? log = null, string? dataRoot = null, string? preferredRegion = null)
+    public static ExtractionResult Extract(Action<string>? log = null, string? dataRoot = null,
+        string? preferredRegion = null, bool requirePreferredRegion = false)
     {
         if (dataRoot == null)
         {
@@ -165,9 +167,23 @@ public static class OfficialTokenReader
             }
         }
 
-        string root = (!string.IsNullOrWhiteSpace(dataRoot) ? dataRoot : FindDataRoot(preferredRegion))
-            ?? throw new TokenExtractionException(
-                "没有找到官方客户端数据。请先启动并登录官方 WuwaTappo 客户端一次，然后关闭它再试。");
+        string? root = string.IsNullOrWhiteSpace(dataRoot) ? null : dataRoot;
+        if (root == null)
+        {
+            root = FindDataRoot(preferredRegion, allowFallback: !requirePreferredRegion);
+            if (root == null)
+            {
+                if (requirePreferredRegion &&
+                    string.Equals(preferredRegion, "global", StringComparison.OrdinalIgnoreCase))
+                {
+                    throw new TokenExtractionException(
+                        "没有找到国际服客户端数据（com.kuro.wuwatappo.global）。\r\n\r\n" +
+                        "请确认已安装并登录过国际服 WuwaTappo 客户端，且本工具与客户端使用同一个 Windows 用户。");
+                }
+                throw new TokenExtractionException(
+                    "没有找到官方客户端数据。请先启动并登录官方 WuwaTappo 客户端一次，然后关闭它再试。");
+            }
+        }
 
         string cookies = FindCookiesFile(root)
             ?? throw new TokenExtractionException("找到了客户端数据目录，但缺少 Cookies 数据库。请登录客户端一次后重试。");
@@ -230,23 +246,40 @@ public static class OfficialTokenReader
         return "cn";
     }
 
-    public static string? FindDataRoot(string? preferredRegion = null)
+    /// <summary>
+    /// 定位官方客户端 WebView2 数据目录。allowFallback=false 时只返回 preferredRegion 对应的
+    /// 已知目录，避免“获取国际服 Token”静默读到国服数据。localAppDataRoot 仅用于隔离测试。
+    /// </summary>
+    public static string? FindDataRoot(string? preferredRegion = null, bool allowFallback = true,
+        string? localAppDataRoot = null)
     {
         var localDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        try
+        if (!string.IsNullOrWhiteSpace(localAppDataRoot))
         {
-            string special = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            if (!string.IsNullOrWhiteSpace(special) && Directory.Exists(special))
-                localDirs.Add(special);
+            try
+            {
+                string overridden = Path.GetFullPath(localAppDataRoot);
+                if (Directory.Exists(overridden)) localDirs.Add(overridden);
+            }
+            catch { }
         }
-        catch { }
-        try
+        else
         {
-            string? env = Environment.GetEnvironmentVariable("LOCALAPPDATA");
-            if (!string.IsNullOrWhiteSpace(env) && Directory.Exists(env))
-                localDirs.Add(env);
+            try
+            {
+                string special = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                if (!string.IsNullOrWhiteSpace(special) && Directory.Exists(special))
+                    localDirs.Add(special);
+            }
+            catch { }
+            try
+            {
+                string? env = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+                if (!string.IsNullOrWhiteSpace(env) && Directory.Exists(env))
+                    localDirs.Add(env);
+            }
+            catch { }
         }
-        catch { }
 
         var candidates = new List<string>();
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -260,32 +293,37 @@ public static class OfficialTokenReader
 
         foreach (var local in localDirs)
         {
+            string globalDir = Path.Combine(local, "com.kuro.wuwatappo.global");
+            string cnDir = Path.Combine(local, "com.kuro.wuwatappo.cn");
+
             if (string.Equals(preferredRegion, "global", StringComparison.OrdinalIgnoreCase))
             {
-                AddCandidate(Path.Combine(local, "com.kuro.wuwatappo.global"));
-                AddCandidate(Path.Combine(local, "com.kuro.wuwatappo.cn"));
+                AddCandidate(globalDir);
+                if (allowFallback) AddCandidate(cnDir);
             }
             else if (string.Equals(preferredRegion, "cn", StringComparison.OrdinalIgnoreCase))
             {
-                AddCandidate(Path.Combine(local, "com.kuro.wuwatappo.cn"));
-                AddCandidate(Path.Combine(local, "com.kuro.wuwatappo.global"));
+                AddCandidate(cnDir);
+                if (allowFallback) AddCandidate(globalDir);
             }
             else
             {
-                bool hasGlobal = Directory.Exists(Path.Combine(local, "com.kuro.wuwatappo.global"));
-                bool hasCn = Directory.Exists(Path.Combine(local, "com.kuro.wuwatappo.cn"));
+                bool hasGlobal = Directory.Exists(globalDir);
+                bool hasCn = Directory.Exists(cnDir);
                 if (hasGlobal && !hasCn)
                 {
-                    AddCandidate(Path.Combine(local, "com.kuro.wuwatappo.global"));
-                    AddCandidate(Path.Combine(local, "com.kuro.wuwatappo.cn"));
+                    AddCandidate(globalDir);
+                    AddCandidate(cnDir);
                 }
                 else
                 {
-                    AddCandidate(Path.Combine(local, "com.kuro.wuwatappo.cn"));
-                    AddCandidate(Path.Combine(local, "com.kuro.wuwatappo.global"));
+                    AddCandidate(cnDir);
+                    AddCandidate(globalDir);
                 }
             }
 
+            // 兼容非标准安装目录名；严格模式只接受上面明确的区服目录。
+            if (!allowFallback) continue;
             try
             {
                 foreach (var dir in Directory.EnumerateDirectories(local))

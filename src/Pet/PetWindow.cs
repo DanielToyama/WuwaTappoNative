@@ -39,6 +39,11 @@ public sealed class PetWindow : Form
     PetFrames _frames;
     readonly LayeredSurface _surface = new();
     readonly PetComposer.FrameCache _frameCache = new();
+    /// <summary>取色器拖动时的临时底栏配色；不写入配置，保存/取消后清除。</summary>
+    (Color bar, Color text, Color accent)? _themePreview;
+    (Color bar, Color text, Color accent) _themeColors;
+    int _themeColorHash;
+    bool _themeColorsReady;
     AnimationTimer _composeTimer;
     int _bodyFrame = 1, _headFrame = 1;
     bool _dragging, _moved;
@@ -248,7 +253,9 @@ public sealed class PetWindow : Form
     {
         long leftTs = ApiClient.ReadLong(_auth.UserInfo?["left_treasure_chest"]);
         long rightTs = ApiClient.ReadLong(_auth.UserInfo?["right_treasure_chest"]);
-        var accOffset = AccessoryOffsetFor(_cfg.AccessoryAssetId);
+        var accTransform = AccessoryTransformFor(_cfg.AccessoryAssetId);
+        var theme = _themePreview.HasValue ? _themePreview.Value : ThemeBarColors();
+        var (barColor, barTextColor, barAccentColor) = theme;
         return new PetComposer.Info
         {
             Clicks = _room.AvailableClicks,
@@ -261,46 +268,158 @@ public sealed class PetWindow : Form
             ChestRightTs = rightTs,
             NowMs = now,
             Selected = _selfSelected,
-            AccOffsetX = accOffset.x,
-            AccOffsetY = accOffset.y,
+            ShowBar = !_cfg.HideMainBar,
+            AccOffsetX = accTransform.X,
+            AccOffsetY = accTransform.Y,
+            AccScalePercent = accTransform.ScalePercent,
+            AccRotationDegrees = accTransform.RotationDegrees,
             // 关闭"总是显示宝箱"时：可领取按钮常显；鼠标悬停桌宠时像表情 UI 一样露出倒计时
             ShowChestLeft = leftTs > 0 && (_cfg.AlwaysShowChest || _hovering || leftTs <= now),
             ShowChestRight = rightTs > 0 && (_cfg.AlwaysShowChest || _hovering || rightTs <= now),
             ChestButton = _chestBtnArt,
             ChestCountdown = _chestBgArt,
+            BarColor = barColor,
+            BarTextColor = barTextColor,
+            BarAccentColor = barAccentColor,
         };
+    }
+
+    (Color bar, Color text, Color accent) ThemeBarColors()
+    {
+        // BuildInfo 每帧都会取色；高级配色是 JSON 字符串，不能每帧解析。
+        int hash = HashCode.Combine(
+            _cfg.ThemeAccentColor,
+            _cfg.ThemeFontColor,
+            _cfg.ThemeAdvanced,
+            _cfg.ThemeBarFollowStandard,
+            _cfg.ThemeBarColor,
+            _cfg.ThemeBarTextFollowTheme,
+            _cfg.ThemeBarTextColor);
+        if (!_themeColorsReady || hash != _themeColorHash)
+        {
+            _themeColors = ResolveThemeBarColors(_cfg);
+            _themeColorHash = hash;
+            _themeColorsReady = true;
+        }
+        return _themeColors;
+    }
+
+    /// <summary>
+    /// 计算主桌宠底栏与联机昵称条颜色。默认跟随标准主题；用户关闭跟随后使用独立背景色/文字色。
+    /// 高级配色中的 cream / ink 也会参与底栏推导，保证面板与桌宠一致。
+    /// </summary>
+    public static (Color bar, Color text, Color accent) ResolveThemeBarColors(Settings cfg)
+    {
+        cfg ??= new Settings();
+        var themeAccent = ParseThemeColor(cfg.ThemeAccentColor, PetComposer.Border);
+        // 面板默认字体色会跟随主题色生成；底栏用同样的暗色推导，避免面板紫字、底栏棕字。
+        bool themeFontIsDefault = string.Equals(cfg.ThemeFontColor, "#8E5E43", StringComparison.OrdinalIgnoreCase);
+        string advancedInk = AdvancedThemeColor(cfg, "ink");
+        var themeFont = themeFontIsDefault
+            ? (advancedInk.Length > 0
+                ? ParseThemeColor(advancedInk, PetComposer.InkStrong)
+                : BlendColor(themeAccent, Color.FromArgb(43, 23, 16), 0.62f))
+            : ParseThemeColor(cfg.ThemeFontColor, PetComposer.InkStrong);
+        var barBase = ParseThemeColor(AdvancedThemeColor(cfg, "cream"), PetComposer.Cream);
+        var standardBar = BlendColor(barBase, themeAccent, 0.22f);
+        if (cfg.ThemeBarFollowStandard) return (standardBar, themeFont, themeAccent);
+        var bar = ParseThemeColor(cfg.ThemeBarColor, standardBar);
+        var text = cfg.ThemeBarTextFollowTheme
+            ? themeFont
+            : ParseThemeColor(cfg.ThemeBarTextColor, themeFont);
+        return (bar, text, themeAccent);
+    }
+
+    /// <summary>读取高级配色 JSON 中的某个颜色；任何格式问题都安静回退。</summary>
+    internal static string AdvancedThemeColor(Settings cfg, string key)
+    {
+        string json = cfg?.ThemeAdvanced;
+        if (string.IsNullOrWhiteSpace(json)) return "";
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object) return "";
+            if (!doc.RootElement.TryGetProperty(key, out var node)) return "";
+            if (node.ValueKind != System.Text.Json.JsonValueKind.String) return "";
+            return (node.GetString() ?? "").Trim();
+        }
+        catch { return ""; }
+    }
+
+    /// <summary>颜色转 #RRGGBB，供 BootPayload 给前端颜色选择器显示实际值。</summary>
+    public static string ThemeColorHex(Color color) => $"#{color.R:X2}{color.G:X2}{color.B:X2}";
+
+    internal static Color ParseThemeColor(string value, Color fallback)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return fallback;
+        try
+        {
+            var color = ColorTranslator.FromHtml(value.Trim());
+            return color.IsEmpty ? fallback : color;
+        }
+        catch { return fallback; }
+    }
+
+    internal static Color BlendColor(Color a, Color b, float amount)
+    {
+        amount = Math.Clamp(amount, 0, 1);
+        return Color.FromArgb(
+            (int)Math.Round(a.A + (b.A - a.A) * amount),
+            (int)Math.Round(a.R + (b.R - a.R) * amount),
+            (int)Math.Round(a.G + (b.G - a.G) * amount),
+            (int)Math.Round(a.B + (b.B - a.B) * amount));
+    }
+
+    /// <summary>取当前头饰的本地微调参数；旧 [x,y] 数据自动补默认缩放/旋转。</summary>
+    public AccessoryTransform AccessoryTransformFor(long accessoryId)
+    {
+        if (accessoryId <= 0) return AccessoryTransform.Default;
+        var offsets = _cfg.AccessoryOffsets;
+        return offsets != null && offsets.TryGetValue(accessoryId.ToString(), out var arr) && arr != null
+            ? AccessoryTransform.FromArray(arr)
+            : AccessoryTransform.Default;
     }
 
     /// <summary>取当前头饰的用户微调偏移（逻辑像素）。</summary>
     public (int x, int y) AccessoryOffsetFor(long accessoryId)
     {
-        if (accessoryId <= 0) return (0, 0);
-        if (_cfg.AccessoryOffsets.TryGetValue(accessoryId.ToString(), out var arr) &&
-            arr != null && arr.Length >= 2)
-            return (Math.Clamp(arr[0], -160, 160), Math.Clamp(arr[1], -160, 160));
-        return (0, 0);
+        var transform = AccessoryTransformFor(accessoryId);
+        return (transform.X, transform.Y);
     }
 
-    /// <summary>直接设置当前头饰偏移（滑条用），返回限制后的逻辑坐标。</summary>
-    public (int x, int y) SetAccessoryOffset(int x, int y)
+    /// <summary>设置当前头饰的完整本地 transform（滑条用），返回限制后的值。</summary>
+    public AccessoryTransform SetAccessoryTransform(int x, int y, int scalePercent, int rotationDegrees)
+        => SetAccessoryTransform(new AccessoryTransform(x, y, scalePercent, rotationDegrees));
+
+    public AccessoryTransform SetAccessoryTransform(AccessoryTransform transform)
     {
         long id = _cfg.AccessoryAssetId;
-        if (id <= 0) return (0, 0);
-        x = Math.Clamp(x, -160, 160);
-        y = Math.Clamp(y, -160, 160);
-        _cfg.AccessoryOffsets[id.ToString()] = new[] { x, y };
+        if (id <= 0) return AccessoryTransform.Default;
+        var next = transform.Clamped();
+        _cfg.AccessoryOffsets ??= new Dictionary<string, int[]>();
+        _cfg.AccessoryOffsets[id.ToString()] = next.ToArray();
         ConfigStore.Save(_cfg);
         Compose();
-        return (x, y);
+        return next;
     }
 
-    /// <summary>微调当前头饰位置；reset=true 时回到 0,0。返回调整后的逻辑坐标。</summary>
-    public (int x, int y) NudgeAccessory(int dx, int dy, bool reset = false)
+    /// <summary>只改 X/Y，保留当前缩放与旋转。</summary>
+    public (int x, int y) SetAccessoryOffset(int x, int y)
+    {
+        var current = AccessoryTransformFor(_cfg.AccessoryAssetId);
+        var next = SetAccessoryTransform(x, y, current.ScalePercent, current.RotationDegrees);
+        return (next.X, next.Y);
+    }
+
+    /// <summary>微调当前头饰位置；reset=true 时 X/Y、缩放、旋转全部回到默认值。</summary>
+    public AccessoryTransform NudgeAccessory(int dx, int dy, bool reset = false)
     {
         long id = _cfg.AccessoryAssetId;
-        if (id <= 0) return (0, 0);
-        var current = AccessoryOffsetFor(id);
-        return SetAccessoryOffset(reset ? 0 : current.x + dx, reset ? 0 : current.y + dy);
+        if (id <= 0) return AccessoryTransform.Default;
+        var current = AccessoryTransformFor(id);
+        return reset
+            ? SetAccessoryTransform(AccessoryTransform.Default)
+            : SetAccessoryTransform(current.X + dx, current.Y + dy, current.ScalePercent, current.RotationDegrees);
     }
 
     bool _hovering, _catHovering, _hoverFadeTarget;
@@ -383,11 +502,12 @@ public sealed class PetWindow : Form
             return false;
         int x = (int)Math.Round(logicalX) - PetComposer.CatX;
         int y = (int)Math.Round(logicalY) - PetComposer.CatY;
-        var acc = AccessoryOffsetFor(_cfg.AccessoryAssetId);
+        var acc = AccessoryTransformFor(_cfg.AccessoryAssetId);
         return PetComposer.HitTestCat(
             _frames, _bodyFrame, _headFrame, x, y,
-            (int)Math.Round(_frames.AccOffsetX + acc.x),
-            (int)Math.Round(_frames.AccOffsetY + acc.y));
+            (int)Math.Round(_frames.AccOffsetX + acc.X),
+            (int)Math.Round(_frames.AccOffsetY + acc.Y),
+            acc.ScalePercent, acc.RotationDegrees);
     }
 
     bool IsSelected(long id)
@@ -468,7 +588,10 @@ public sealed class PetWindow : Form
             }
             foreach (var id in _selectedCatIds)
                 if (_cats.TryGetValue(id, out var cat))
+                {
                     _cfg.MemberPositions[CatKey(id)] = new[] { cat.Left, cat.Top };
+                    _cfg.MemberCustomPositions[CatKey(id)] = true;
+                }
             Save();
             GeometryChanged?.Invoke();
             if (!_cfg.AllowOverlap) ResolveOverlaps();
@@ -692,9 +815,11 @@ public sealed class PetWindow : Form
     {
         float s = Size.Width / (float)PetComposer.WindowW;
         int x = (int)Math.Round(p.X / s), y = (int)Math.Round(p.Y / s);
-        bool kb = PetComposer.KeyboardRect.Contains(x, y);
-        bool menu = PetComposer.MenuRect.Contains(x, y);
-        bool counter = PetComposer.CounterRect.Contains(x, y) && !kb && !menu;
+        // 底栏隐藏时不保留不可见的点击热区，避免误触打开面板/切换键盘。
+        bool barVisible = !_cfg.HideMainBar;
+        bool kb = barVisible && PetComposer.KeyboardRect.Contains(x, y);
+        bool menu = barVisible && PetComposer.MenuRect.Contains(x, y);
+        bool counter = barVisible && PetComposer.CounterRect.Contains(x, y) && !kb && !menu;
         bool cat = PetComposer.CatRect.Contains(x, y);
 
         long now = _auth.ServerNowMs;
@@ -912,6 +1037,7 @@ public sealed class PetWindow : Form
 
     public void ApplySettings()
     {
+        _themePreview = null;
         if (!_cfg.HoverFade)
         {
             _hoverFadeTimer?.Stop();
@@ -932,11 +1058,41 @@ public sealed class PetWindow : Form
         }
         Size = WindowSize();
         ApplyWindowStyles();
-        Compose();
+        ApplyBarVisibility();
+        ApplyThemeToCats();
         UpdateCatScales();
         ApplyCaptureMode();
         if (!_cfg.AllowOverlap) ResolveOverlaps();
         RefreshMenu();
+    }
+
+    /// <summary>把当前底栏隐藏设置同步到所有联机角色并立即重绘主角。</summary>
+    void ApplyBarVisibility()
+    {
+        foreach (var cat in _cats.Values) cat.SetBarVisible(!_cfg.HideRemoteBars);
+        Compose();
+    }
+
+    /// <summary>
+    /// 取色器拖动时的轻量预览：只重绘主桌宠底栏和远程昵称条，不写入配置，
+    /// 也不触发布局/菜单/窗口样式刷新。保存时由 ApplySettings 清除预览并应用正式配置。
+    /// </summary>
+    public void PreviewTheme(Settings preview)
+    {
+        if (preview == null) return;
+        var theme = ResolveThemeBarColors(preview);
+        _themePreview = theme;
+        Compose();
+        ApplyThemeToCats(theme);
+    }
+
+    /// <summary>取消取色时恢复当前配置中的正式底栏配色。</summary>
+    public void ClearThemePreview()
+    {
+        if (!_themePreview.HasValue) return;
+        _themePreview = null;
+        Compose();
+        ApplyThemeToCats();
     }
 
     /// <summary>打开/关闭/调整 OBS 绿幕窗口。绿幕窗口只复制主角，不影响桌面桌宠。</summary>
@@ -1243,7 +1399,7 @@ public sealed class PetWindow : Form
     {
         var map = new Dictionary<(uint, uint), string>();
         var bound = new List<string>();
-        foreach (var pair in Hotkeys.FromSettings(_cfg.Hotkeys))
+        foreach (var pair in Hotkeys.ActiveFromSettings(_cfg.Hotkeys, _cfg.SeparateBarHotkeys))
         {
             if (!Hotkeys.TryParse(pair.Value, out uint mods, out uint vk) || vk == 0) continue;
             map[(mods, vk)] = pair.Key;
@@ -1265,7 +1421,7 @@ public sealed class PetWindow : Form
             Safe(() => HandleHotkey(action));
     }
 
-    /// <summary>F8/设置选择屏幕时的基准屏幕；未设置时使用主屏幕。</summary>
+    /// <summary>设置中的“默认屏幕”：启动/重置位置/区服切换时使用；F8 本身从当前实际屏幕开始。</summary>
     public Screen ConfiguredScreen()
     {
         var screens = Screen.AllScreens;
@@ -1285,46 +1441,96 @@ public sealed class PetWindow : Form
         return $"屏幕 {index + 1} · {bounds.Width}×{bounds.Height}{(screen.Primary ? "（主屏幕）" : "")}";
     }
 
-    /// <summary>把主桌宠移动到指定屏幕；只有一个屏幕有桌宠时整组平移，跨屏分布时保持联机成员不动。</summary>
+    /// <summary>
+    /// 切换主桌宠所在屏幕。移动策略由设置项 ScreenSwitchMode 决定：
+    /// default 只移动默认排序位置的成员，main 只移动主角，all 全组移动（两屏都有成员时互换）。
+    /// </summary>
     public void MoveToScreen(string deviceName, bool announce = false)
     {
         var screens = Screen.AllScreens;
         if (screens.Length == 0) return;
-        var screen = screens.FirstOrDefault(s =>
+        var target = screens.FirstOrDefault(s =>
             string.Equals(s.DeviceName, deviceName, StringComparison.OrdinalIgnoreCase))
             ?? screens.FirstOrDefault(s => s.Primary)
             ?? screens[0];
+        var source = Screen.FromControl(this);
 
-        _cfg.PetScreen = screen.DeviceName;
-        var wa = screen.WorkingArea;
+        _cfg.PetScreen = target.DeviceName;
+        var wa = target.WorkingArea;
         int targetX = wa.Right - Width - 40;
         int targetY = wa.Bottom - Height - 60;
-        int dx = targetX - Left;
-        int dy = targetY - Top;
-        bool groupMove = _cats.Count > 0 && !PetsOnMultipleScreens();
-
         Location = new Point(targetX, targetY);
         _cfg.PetX = Left;
         _cfg.PetY = Top;
 
-        // 所有桌宠原本都在同一屏幕时，保持相对布局整体平移；
-        // 已经分布在多个屏幕时说明是用户刻意摆放的，只移动主角，不重排其他人。
-        if (groupMove)
+        if (!string.Equals(source.DeviceName, target.DeviceName, StringComparison.OrdinalIgnoreCase))
         {
-            foreach (var pair in _cats)
+            string mode = _cfg.ScreenSwitchMode switch
             {
-                var cat = pair.Value;
-                if (!cat.Visible) continue;
-                cat.Location = new Point(cat.Left + dx, cat.Top + dy);
-                _cfg.MemberPositions[CatKey(pair.Key)] = new[] { cat.Left, cat.Top };
-            }
+                "main" => "main",
+                "all" => "all",
+                _ => "default",
+            };
+            if (mode == "all")
+                MoveAllCatsBetweenScreens(source, target);
+            else if (mode == "default")
+                MoveDefaultCatsToScreen(source, target);
         }
 
         Save();
-        GeometryChanged?.Invoke();
+        // 先通知设置面板，再做键盘布局刷新；任何后续布局异常都不应阻断设置同步。
         NotifySettingsChanged();
+        GeometryChanged?.Invoke();
         if (announce)
-            NotifyHotkey("已切换到 " + ScreenLabel(screen, Array.IndexOf(screens, screen)));
+            NotifyHotkey("已切换到 " + ScreenLabel(target, Array.IndexOf(screens, target)));
+    }
+
+    bool IsCustomCatPosition(long id)
+        => _cfg.MemberCustomPositions.TryGetValue(CatKey(id), out bool custom) && custom;
+
+    void MoveDefaultCatsToScreen(Screen source, Screen target)
+    {
+        foreach (var pair in _cats)
+        {
+            var cat = pair.Value;
+            if (!cat.Visible || IsCustomCatPosition(pair.Key)) continue;
+            var catScreen = Screen.FromRectangle(CatVisibleRect(cat));
+            if (!string.Equals(catScreen.DeviceName, source.DeviceName, StringComparison.OrdinalIgnoreCase)) continue;
+            MoveCatToScreen(pair.Key, cat, catScreen.WorkingArea, target.WorkingArea);
+        }
+    }
+
+    void MoveAllCatsBetweenScreens(Screen source, Screen target)
+    {
+        foreach (var pair in _cats)
+        {
+            var cat = pair.Value;
+            if (!cat.Visible) continue;
+            var catScreen = Screen.FromRectangle(CatVisibleRect(cat));
+            Screen dest;
+            if (string.Equals(catScreen.DeviceName, source.DeviceName, StringComparison.OrdinalIgnoreCase))
+                dest = target;
+            else if (string.Equals(catScreen.DeviceName, target.DeviceName, StringComparison.OrdinalIgnoreCase))
+                dest = source;
+            else
+                continue;
+            MoveCatToScreen(pair.Key, cat, catScreen.WorkingArea, dest.WorkingArea);
+        }
+    }
+
+    void MoveCatToScreen(long id, RemoteCatWindow cat, Rectangle from, Rectangle to)
+    {
+        var visible = CatVisibleRect(cat);
+        float s = RemoteScaleFactor;
+        int head = (int)Math.Round(RemoteCatWindow.Headroom * s);
+        float nx = (visible.Left + visible.Width / 2f - from.Left) / Math.Max(1, from.Width);
+        float ny = (visible.Top + visible.Height / 2f - from.Top) / Math.Max(1, from.Height);
+        int left = to.Left + (int)Math.Round(nx * to.Width) - visible.Width / 2;
+        int top = to.Top + (int)Math.Round(ny * to.Height) - visible.Height / 2;
+        left = Math.Clamp(left, to.Left, Math.Max(to.Left, to.Right - visible.Width));
+        top = Math.Clamp(top, to.Top, Math.Max(to.Top, to.Bottom - visible.Height));
+        cat.Location = new Point(left, top - head);
+        _cfg.MemberPositions[CatKey(id)] = new[] { cat.Left, cat.Top };
     }
 
     bool PetsOnMultipleScreens()
@@ -1367,8 +1573,9 @@ public sealed class PetWindow : Form
         {
             var screens = Screen.AllScreens;
             if (screens.Length < 2) return;
-            var current = ConfiguredScreen();
-            int idx = Array.IndexOf(screens, current);
+            // F8 的语义是“从当前实际所在屏幕切到下一块”，不是从设置里的默认屏幕开始。
+            var current = Screen.FromControl(this);
+            int idx = Array.FindIndex(screens, s => string.Equals(s.DeviceName, current.DeviceName, StringComparison.OrdinalIgnoreCase));
             if (idx < 0) idx = 0;
             var next = screens[(idx + 1) % screens.Length];
             MoveToScreen(next.DeviceName, true);
@@ -1380,6 +1587,23 @@ public sealed class PetWindow : Form
             foreach (var c in _cats.Values) c.Visible = !_hiddenByHotkey;
             if (!_hiddenByHotkey) Compose();
             PetVisibilityChanged?.Invoke(!_hiddenByHotkey);
+        }
+        else if (action == "barToggle")
+        {
+            // 两边都已经隐藏时一起恢复，否则一起隐藏。
+            bool show = _cfg.HideMainBar && _cfg.HideRemoteBars;
+            SetBarsHidden(!show, !show);
+            NotifyHotkey(show ? "已显示主角与远程角色底栏" : "已隐藏主角与远程角色底栏");
+        }
+        else if (action == "barToggleMain")
+        {
+            SetBarsHidden(!_cfg.HideMainBar, _cfg.HideRemoteBars);
+            NotifyHotkey(_cfg.HideMainBar ? "已隐藏主角底栏" : "已显示主角底栏");
+        }
+        else if (action == "barToggleRemote")
+        {
+            SetBarsHidden(_cfg.HideMainBar, !_cfg.HideRemoteBars);
+            NotifyHotkey(_cfg.HideRemoteBars ? "已隐藏远程角色底栏" : "已显示远程角色底栏");
         }
         else if (action.StartsWith("emote", StringComparison.Ordinal) && int.TryParse(action[5..], out int slot))
         {
@@ -1438,6 +1662,16 @@ public sealed class PetWindow : Form
             NotifyHotkey(_cfg.AutoClickEnabled ? "已开启自动敲击" : "已关闭自动敲击");
             NotifySettingsChanged();
         }
+    }
+
+    /// <summary>快捷键切换底栏可见性：写配置、立即重绘/更新远程角色，并同步设置页。</summary>
+    void SetBarsHidden(bool hideMain, bool hideRemote)
+    {
+        _cfg.HideMainBar = hideMain;
+        _cfg.HideRemoteBars = hideRemote;
+        Save();
+        ApplyBarVisibility();
+        NotifySettingsChanged();
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -1664,6 +1898,9 @@ public sealed class PetWindow : Form
                 existing.SetScale(RemoteScaleFactor);
                 existing.SetWindowOptions(EffectiveRemoteOpacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
                 existing.SetRemoteStyle(EffectiveRemoteScale, EffectiveRemoteOpacity, _cfg.RemoteNameScale);
+                existing.SetBarVisible(!_cfg.HideRemoteBars);
+                var theme = ThemeBarColors();
+                existing.SetTheme(theme.bar, theme.text);
                 existing.RefreshMember();
             }
             else
@@ -1672,6 +1909,9 @@ public sealed class PetWindow : Form
                 cat.SetScale(RemoteScaleFactor);
                 cat.SetWindowOptions(EffectiveRemoteOpacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
                 cat.SetRemoteStyle(EffectiveRemoteScale, EffectiveRemoteOpacity, _cfg.RemoteNameScale);
+                cat.SetBarVisible(!_cfg.HideRemoteBars);
+                var theme = ThemeBarColors();
+                cat.SetTheme(theme.bar, theme.text);
                 cat.RemoteScaleRequested += ApplyRemoteScale;
                 cat.RemoteOpacityRequested += ApplyRemoteOpacity;
                 cat.HideRequested += OnCatHideRequested;
@@ -1682,6 +1922,7 @@ public sealed class PetWindow : Form
                 cat.Moved += p =>
                 {
                     _cfg.MemberPositions[CatKey(id)] = new[] { p.X, p.Y };
+                    _cfg.MemberCustomPositions[CatKey(id)] = true;
                     Save();
                     if (!_cfg.AllowOverlap) ResolveOverlaps(id);
                 };
@@ -1694,6 +1935,13 @@ public sealed class PetWindow : Form
     }
 
     string CatKey(long id) => id.ToString();
+
+    void ApplyThemeToCats((Color bar, Color text, Color accent)? preview = null)
+    {
+        var theme = preview.HasValue ? preview.Value : ThemeBarColors();
+        foreach (var cat in _cats.Values)
+            cat.SetTheme(theme.bar, theme.text);
+    }
 
     Point? StoredCatPoint(long id)
     {
@@ -1762,19 +2010,31 @@ public sealed class PetWindow : Form
     Point PlaceNewCat(long id)
     {
         var stored = StoredCatPoint(id);
+        // 默认位置成员如果还保存着旧屏幕的坐标，换屏后按当前“显示屏幕”重新落位；
+        // 手动拖过的成员继续保留原位置。
+        if (stored.HasValue && !IsCustomCatPosition(id))
+        {
+            var screen = Screen.FromPoint(new Point(
+                stored.Value.X + RemoteCatWindow.W / 2,
+                stored.Value.Y + RemoteCatWindow.Headroom + RemoteCatWindow.CatH / 2));
+            if (!string.Equals(screen.DeviceName, ConfiguredScreen().DeviceName, StringComparison.OrdinalIgnoreCase))
+                stored = null;
+        }
         if (stored.HasValue && !HasSignificantOverlap(CatVisibleRectAt(stored.Value), VisibleCatRects()))
             return stored.Value;
 
         var point = DefaultCatPoint();
         // 保存自动安排的位置；下次回房时优先恢复，若与后来的人冲突再重新安排。
         _cfg.MemberPositions[CatKey(id)] = new[] { point.X, point.Y };
+        _cfg.MemberCustomPositions.Remove(CatKey(id));
         Save();
         return point;
     }
 
     /// <summary>
-    /// 新成员默认从当前屏幕右下角开始摆放：横向时贴着工作区底边从右往左，排满后向上换行；
-    /// 纵向时贴着工作区右边，第一列从右下往上，排满后向左换列并从顶部往下。
+    /// 新成员默认从“显示屏幕”设置的屏幕右下角开始摆放：横向时贴着工作区底边从右往左，
+    /// 排满后向上换行；纵向时贴着工作区右边，第一列从右下往上，排满后向左换列并从顶部往下。
+    /// 不能跟随主桌宠当前位置，否则用户把主桌宠拖到别的屏幕后，新成员会出现在错误屏幕。
     /// 碰撞按桌宠实际可见区域判断，透明的气泡净空不占位置；本机桌宠也视为已占位。
     /// </summary>
     Point DefaultCatPoint()
@@ -1787,7 +2047,7 @@ public sealed class PetWindow : Form
         int gap = Math.Max(4, (int)Math.Round(8 * s));
         int stepX = Math.Max(1, w + gap);
         int stepY = Math.Max(1, catH + gap);
-        var wa = Screen.FromControl(this).WorkingArea;
+        var wa = ConfiguredScreen().WorkingArea;
 
         var taken = VisibleCatRects();
 
@@ -1854,6 +2114,7 @@ public sealed class PetWindow : Form
 
     public void ResetCatOrder(Screen targetScreen)
     {
+        _cfg.MemberCustomPositions.Clear();
         var wa = (targetScreen ?? Screen.FromControl(this)).WorkingArea;
         float s = RemoteScaleFactor;
         float ms = Width / (float)PetComposer.WindowW;
@@ -2069,6 +2330,7 @@ public sealed class PetWindow : Form
             c.SetScale(s);
             c.SetWindowOptions(EffectiveRemoteOpacity, _cfg.HoverFade, _cfg.ClickThrough, _cfg.Topmost, _cfg.HoverFadeOpacity);
             c.SetRemoteStyle(EffectiveRemoteScale, EffectiveRemoteOpacity, _cfg.RemoteNameScale);
+            c.SetBarVisible(!_cfg.HideRemoteBars);
             // 缩放后窗口从左上角变大，贴边排列的成员会被顶出屏幕；按可见猫体修正回工作区。
             if (c.Width != oldWidth) ClampCatToScreen(pair.Key, c);
         }

@@ -62,6 +62,54 @@ public sealed class CompatibilityKillSwitch
     [JsonPropertyName("reason")] public string Reason { get; set; } = "";
 }
 
+/// <summary>
+/// 统一联网门禁：killSwitch、status=unsafe/maintenance 永远拒绝；官方强制更新默认拒绝，
+/// 但允许用户对当前官方版本显式确认“自担风险继续联网”。
+/// UI 与原生层使用同一套判断，避免“横幅显示不安全但操作仍然成功”。
+/// </summary>
+public static class CompatibilityGate
+{
+    public static string BlockedReason(CompatibilityInfo info, Settings cfg = null)
+    {
+        if (info == null) return "";
+        var kill = info.KillSwitch;
+        if (kill != null && kill.ForceOffline)
+        {
+            string reason = string.IsNullOrWhiteSpace(kill.Reason) ? "维护者要求暂停联网" : kill.Reason.Trim();
+            return $"安全模式已启用（{reason}），已暂停联网操作。";
+        }
+        string status = (info.Status ?? "").Trim().ToLowerInvariant();
+        if (status == "unsafe")
+            return "当前版本状态为不安全，已暂停联网操作。" + Detail(info.Message);
+        if (status == "maintenance")
+            return "官方服务维护中，已暂停联网操作。" + Detail(info.Message);
+        if (string.Equals(info.OfficialCheck?.State, "forced", StringComparison.OrdinalIgnoreCase))
+        {
+            string officialVersion = (info.OfficialCheck?.OfficialVersion ?? "").Trim();
+            bool accepted = cfg != null
+                && officialVersion.Length > 0
+                && string.Equals((cfg.ForcedOnlineAcceptedVersion ?? "").Trim(), officialVersion, StringComparison.OrdinalIgnoreCase);
+            if (!accepted)
+                return "官方客户端已强制更新，当前 Native 尚未验证，已暂停联网操作。" + Detail(info.OfficialCheck?.Message);
+        }
+        return "";
+    }
+
+    public static bool IsBlocked(CompatibilityInfo info, Settings cfg, out string reason)
+    {
+        reason = BlockedReason(info, cfg);
+        return !string.IsNullOrEmpty(reason);
+    }
+
+    public static bool IsBlocked(CompatibilityInfo info, out string reason) => IsBlocked(info, null, out reason);
+
+    static string Detail(string message)
+    {
+        message = (message ?? "").Trim();
+        return message.Length == 0 ? "" : " " + message;
+    }
+}
+
 /// <summary>读取 GitHub Pages 上的 compatibility.json；失败时返回上次成功结果或不阻塞。</summary>
 public static class CompatibilityChecker
 {

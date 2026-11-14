@@ -23,9 +23,14 @@ public sealed class App : ApplicationContext
     public RoomManager Room { get; }
     public PetWindow Pet { get; }
     public KeyboardWindow Keyboard { get; }
+    /// <summary>主题预设与轮换状态；独立 JSON 持久化，轮换定时器跟随 App 生命周期。</summary>
+    public ThemePresetManager ThemePresets { get; }
     public PanelWindow Panel { get; private set; }
     /// <summary>GitHub Pages 上发布的版本兼容状态；读取失败时为 null。</summary>
     public CompatibilityInfo Compatibility { get; private set; }
+    /// <summary>统一联网门禁的当前原因；空字符串表示允许联网。</summary>
+    public string OnlineBlockedReason => CompatibilityGate.BlockedReason(Compatibility, Cfg);
+
     /// <summary>只读公告服务；只在设置页渲染，不打扰其他页面。</summary>
     public AnnouncementService Announcements { get; }
     System.Threading.Timer _autoChestTimer;
@@ -51,19 +56,34 @@ public sealed class App : ApplicationContext
         Cfg = ConfigStore.Load();
         // 先迁移/加载独立状态文件，再保存 config.json 以移除旧的状态字段。
         StateStore.Load(Cfg);
+        // 旧版主题图片放在 Root\theme；新版统一放到 cache\theme，先搬目录再迁移 data URL。
+        ThemeBackgroundStore.MigrateLegacyDirectory();
+        // 旧版把背景图 data URL 直接存进 config；先落成文件并把配置改成文件名索引。
+        ThemeBackgroundStore.MigrateLegacy(Cfg);
         ConfigStore.Save(Cfg);
+        ThemePresets = new ThemePresetManager(Cfg);
+        ThemePresets.CleanupOrphans();
         Announcements = new AnnouncementService(Cfg);
         // 配置与注册表对齐：用户手动删了 Run 项、或换过安装目录，都在启动时修正。
         Cfg.LaunchAtLogin = AutoStart.Sync(Cfg.LaunchAtLogin, Cfg.RunAsAdmin);
         AnimationTimer.FrameRate = Cfg.AnimationFps;
         Auth = new AuthService(Cfg);
         _clickUserId = Auth.UserId;
-        Room = new RoomManager(Auth, Cfg);
+        Room = new RoomManager(Auth, Cfg, () => OnlineBlockedReason);
         // 辅助功能：可用点击低于 1000 时自动补 10000；定时检查而不是依赖某个点击事件。
         _autoBoostTimer = new System.Threading.Timer(_ => TryAutoBoostClicks(), null, 1000, 1000);
         Pet = new PetWindow(Cfg, Auth, Catalog, Store, Room);
         Keyboard = new KeyboardWindow();
+        Keyboard.ApplyTheme(Cfg);
         Pet.KeyboardUI = Keyboard;
+        // 预设轮换由 App 持有定时器：面板关闭/设置页重渲染都不会把它丢掉。
+        ThemePresets.Applied += _ =>
+        {
+            // 预设应用/自动轮换走同一条 UI 线程链路，键盘三种模式与桌宠同时换色。
+            try { Keyboard.ApplyTheme(Cfg); } catch { }
+            try { Pet.BeginInvoke(new Action(() => Pet.ApplySettings())); } catch { }
+            try { Panel?.PushBoot(); } catch { }
+        };
 
         Pet.OpenPanelRequested += OpenPanel;
         Pet.OpenMainPanelRequested += OpenMainPanel;
@@ -120,10 +140,11 @@ public sealed class App : ApplicationContext
         Keyboard.PadButtonDown += () => Pet.BeginInvoke(new Action(Pet.GamepadTap));
         Keyboard.PadButtonUp += () => Pet.BeginInvoke(new Action(Pet.GamepadRelease));
         Keyboard.PadButtonPressed += label => Pet.BeginInvoke(new Action(() => Pet.PushGamepadBubble(label)));
-        Pet.FormClosed += (s, e) => ExitThread();
+        Pet.FormClosed += (s, e) => { ThemePresets.Dispose(); ExitThread(); };
 
         Pet.Show();
         Pet.ApplyCaptureMode();
+        ThemePresets.Start();
         if (!Cfg.AllowOverlap) Pet.ResolveOverlaps();
         ApplyKeyboardMode();
         Keyboard.ModeRequested += mode =>
@@ -213,7 +234,9 @@ public sealed class App : ApplicationContext
         // 官方版本由客户端直接读取官方清单；即使 compatibility.json 暂时不可用，
         // 也能提示“官方已更新但 Native 尚未验证/已被官方强制更新”。
         var official = await OfficialVersionChecker.FetchAsync(Cfg.ServerRegion, force);
-        var officialCheck = OfficialVersionChecker.Evaluate(official);
+        // 维护者可在 compatibility.json 的 protocol.testedOfficial 中提升验证基线；
+        // 远端基线只允许上调，低于本地编译基线时忽略。
+        var officialCheck = OfficialVersionChecker.Evaluate(official, info?.Protocol?.TestedOfficial);
         if (info == null)
         {
             info = new CompatibilityInfo
@@ -225,8 +248,67 @@ public sealed class App : ApplicationContext
         }
         info.OfficialCheck = officialCheck;
         Compatibility = info;
+
+        // 授权只对“当次官方版本 + forced 状态”有效：
+        // 官方版本变化、变为 verified（基线已更新）或非强制更新时自动清除，避免旧授权残留。
+        string officialVersion = (officialCheck.OfficialVersion ?? "").Trim();
+        if (!string.IsNullOrEmpty(Cfg.ForcedOnlineAcceptedVersion)
+            && officialVersion.Length > 0
+            && !string.Equals(officialCheck.State, "unavailable", StringComparison.OrdinalIgnoreCase)
+            && (!string.Equals(officialCheck.State, "forced", StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(Cfg.ForcedOnlineAcceptedVersion.Trim(), officialVersion, StringComparison.OrdinalIgnoreCase)))
+        {
+            Cfg.ForcedOnlineAcceptedVersion = "";
+            ConfigStore.Save(Cfg);
+            Log.Write("官方版本状态变化，已清除强制更新联网授权");
+        }
+
         Log.Write($"版本状态：{info.Status} {info.Message}；官方客户端：{officialCheck.State} {officialCheck.OfficialVersion}");
         try { Panel?.Push("compatibility", info); } catch { }
+    }
+
+    /// <summary>
+    /// 用户确认在官方强制更新后仍按旧协议联网。只接受当前官方版本，
+    /// 官方下一次更新会使旧确认自动失效并重新提示。
+    /// </summary>
+    public async Task AcceptForcedOnlineAsync(string version)
+    {
+        var official = Compatibility?.OfficialCheck;
+        if (official == null || !string.Equals(official.State, "forced", StringComparison.OrdinalIgnoreCase))
+            throw new ApiException(-1, "当前不是官方强制更新状态，无需开启该选项。");
+        string current = (official.OfficialVersion ?? "").Trim();
+        if (current.Length == 0 || !string.Equals(current, (version ?? "").Trim(), StringComparison.OrdinalIgnoreCase))
+            throw new ApiException(-1, "官方版本状态已变化，请刷新版本状态后重试。");
+
+        // 维护者标记 unsafe/maintenance 或 killSwitch 属于硬阻断，不能被“风险自负”绕过。
+        string hardBlock = CompatibilityGate.BlockedReason(new CompatibilityInfo
+        {
+            Status = Compatibility.Status,
+            Message = Compatibility.Message,
+            KillSwitch = Compatibility.KillSwitch,
+            OfficialCheck = new OfficialCheckStatus { State = "verified" },
+        }, Cfg);
+        if (!string.IsNullOrEmpty(hardBlock))
+            throw new ApiException(-1, "当前存在不可绕过的联网限制：" + hardBlock);
+
+        Cfg.ForcedOnlineAcceptedVersion = current;
+        ConfigStore.Save(Cfg);
+        Log.Write("用户选择在官方强制更新后继续联网：" + current);
+
+        // 如果此前因门禁断开了大厅/房间，让后台重连恢复正常；不主动切换当前房间。
+        try { await Room.EnsureLobbyAsync(); }
+        catch (Exception ex) { Log.Write("强制更新后恢复联网失败：" + ex.Message); }
+        try { Panel?.PushBoot(); } catch { }
+    }
+
+    /// <summary>撤销“强制更新后继续联网”的确认；下一次联网操作会重新被门禁拒绝。</summary>
+    public void ClearForcedOnline()
+    {
+        if (string.IsNullOrEmpty(Cfg.ForcedOnlineAcceptedVersion)) return;
+        Cfg.ForcedOnlineAcceptedVersion = "";
+        ConfigStore.Save(Cfg);
+        Log.Write("用户恢复官方强制更新后的联网限制");
+        try { Panel?.PushBoot(); } catch { }
     }
 
     /// <summary>拉取公告并把未读队列推给面板；请求失败时保留上次结果。</summary>
@@ -556,6 +638,8 @@ public sealed class App : ApplicationContext
 
     async Task<System.Text.Json.Nodes.JsonNode> OpenChestAsync(string place, bool auto, ApiClient session)
     {
+        string blocked = OnlineBlockedReason;
+        if (!string.IsNullOrEmpty(blocked)) throw new ApiException(-1, blocked);
         if (Interlocked.Exchange(ref _chestBusy, 1) == 1) throw new ApiException(-1, "正在领取宝箱，请稍候");
         try
         {
@@ -597,6 +681,8 @@ public sealed class App : ApplicationContext
             Log.Write("开宝箱成功 " + place + " asset=" + id + " type=" + type + " consume=" + consume);
             if (id > 0)
             {
+                // 面板关闭时 chest 事件会被丢弃；先由原生层记录，面板下次启动再补进「最近获得」。
+                RecentChestStore.Add(id, (Cfg.ServerRegion == "global" ? "global" : "cn") + ":" + (Auth.Cuid ?? ""));
                 if (string.IsNullOrEmpty(type)) type = GuessAssetType(id);
                 Pet.BeginInvoke(new Action(() => Pet.ShowPrize(type, id)));
             }
@@ -841,6 +927,9 @@ public sealed class App : ApplicationContext
             ownerRoomNo = ownerRoomMatches ? Cfg.OwnerRoomNo : "",
             selfIsOwner = Room.SelfIsOwner || ownerRoomMatches,
             connected = Room.IsConnected,
+            ready = Room.RoomReady,
+            lastError = Room.LastError,
+            lastErrorAt = Room.LastErrorAtMs,
             serviceUnavailable = Room.ServiceUnavailable,
             members,
             hiddenAll = Cfg.HideOtherPets,

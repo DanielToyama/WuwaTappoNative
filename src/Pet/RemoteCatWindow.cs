@@ -36,12 +36,15 @@ public sealed class RemoteCatWindow : Form
     string _lastNickname;
     readonly LayeredSurface _surface = new();
     Bitmap _baseFrame;
-    (Size Size, Image Head, Image Body, Image Accessory, double X, double Y, float Scale, double NameScale, string Nickname, bool Selected) _baseFrameKey;
+    (Size Size, Image Head, Image Body, Image Accessory, double X, double Y, float Scale, double NameScale, bool BarVisible, string Nickname, bool Selected, Color PillColor, Color PillTextColor) _baseFrameKey;
     float _scale = 1f;
     bool _dragging;
     Point _dragCursor, _dragOrigin;
     bool _movedDuringDrag;
     bool _selected;
+    bool _barVisible = true;
+    Color _pillColor = PetComposer.Cream;
+    Color _pillTextColor = PetComposer.InkStrong;
 
     public event Action<Point> Moved;
     public event Action<RemoteCatWindow> DragStarted;
@@ -60,6 +63,16 @@ public sealed class RemoteCatWindow : Form
         _selected = selected;
         if (IsHandleCreated && !IsDisposed) Compose();
     }
+
+    /// <summary>隐藏昵称条和手部压条；角色本体、选中框和表情气泡不受影响。</summary>
+    public void SetBarVisible(bool visible)
+    {
+        if (_barVisible == visible) return;
+        _barVisible = visible;
+        if (IsHandleCreated && !IsDisposed) Compose();
+    }
+
+    public bool BarVisible => _barVisible;
 
     public RemoteCatWindow(RoomMember member, PetImageLoader loader, Catalog catalog, AssetStore store)
     {
@@ -288,6 +301,15 @@ public sealed class RemoteCatWindow : Form
         Compose();
     }
 
+    /// <summary>应用面板主题的昵称条颜色；颜色变化时立即重绘。</summary>
+    public void SetTheme(Color pillColor, Color textColor)
+    {
+        if (_pillColor == pillColor && _pillTextColor == textColor) return;
+        _pillColor = pillColor;
+        _pillTextColor = textColor;
+        if (IsHandleCreated && !IsDisposed) Compose();
+    }
+
     public void RefreshMember()
     {
         Reload();
@@ -417,7 +439,8 @@ public sealed class RemoteCatWindow : Form
             _ => _frames.Body1
         };
         var key = (surface.Size, _frames?.Head1, selectedBody, _frames?.Accessory,
-            _frames?.AccOffsetX ?? 0, _frames?.AccOffsetY ?? 0, _scale, _remoteNameScale, _member.Nickname, _selected);
+            _frames?.AccOffsetX ?? 0, _frames?.AccOffsetY ?? 0, _scale, _remoteNameScale, _barVisible,
+            _member.Nickname, _selected, _pillColor, _pillTextColor);
         if (ready && (_baseFrame == null || _baseFrameKey != key))
         {
             if (_baseFrame == null || _baseFrame.Size != surface.Size)
@@ -447,28 +470,31 @@ public sealed class RemoteCatWindow : Form
                 if (_selected)
                     PetComposer.DrawSelection(g, new RectangleF(0, top, cat, cat), s);
 
-                float nameFontPx = 13.5f * s * (float)_remoteNameScale;
-                float pillH = Math.Max(32f * s, nameFontPx * 1.35f);
-                var pill = new RectangleF(10 * s, (Headroom + 179) * s - (pillH - 32 * s) / 2f, 180 * s, pillH);
-                using (var path = PetComposer.Rounded(pill, 16 * s))
-                using (var brush = new SolidBrush(PetComposer.Cream))
-                    g.FillPath(brush, path);
-                using (var font = new Font("Microsoft YaHei UI", nameFontPx, FontStyle.Bold, GraphicsUnit.Pixel))
-                using (var brush = new SolidBrush(PetComposer.InkStrong))
-                using (var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter })
-                    g.DrawString(string.IsNullOrEmpty(_member.Nickname) ? "漂泊者" : _member.Nickname, font, brush, pill, fmt);
-
-                // 手/手臂要压住昵称条；角色头部和身体其余部分仍在 UI 后面。
-                if (body != null)
+                if (_barVisible)
                 {
-                    var state = g.Save();
-                    try
+                    float nameFontPx = 13.5f * s * (float)_remoteNameScale;
+                    float pillH = Math.Max(32f * s, nameFontPx * 1.35f);
+                    var pill = new RectangleF(10 * s, (Headroom + 179) * s - (pillH - 32 * s) / 2f, 180 * s, pillH);
+                    using (var path = PetComposer.Rounded(pill, 16 * s))
+                    using (var brush = new SolidBrush(_pillColor))
+                        g.FillPath(brush, path);
+                    using (var font = new Font("Microsoft YaHei UI", nameFontPx, FontStyle.Bold, GraphicsUnit.Pixel))
+                    using (var brush = new SolidBrush(_pillTextColor))
+                    using (var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center, Trimming = StringTrimming.EllipsisCharacter })
+                        g.DrawString(string.IsNullOrEmpty(_member.Nickname) ? "漂泊者" : _member.Nickname, font, brush, pill, fmt);
+
+                    // 手/手臂要压住昵称条；角色头部和身体其余部分仍在 UI 后面。
+                    if (body != null)
                     {
-                        using var clip = PetComposer.Rounded(pill, 16 * s);
-                        g.SetClip(clip, CombineMode.Intersect);
-                        g.DrawImage(body, 0, top, cat, cat);
+                        var state = g.Save();
+                        try
+                        {
+                            using var clip = PetComposer.Rounded(pill, 16 * s);
+                            g.SetClip(clip, CombineMode.Intersect);
+                            g.DrawImage(body, 0, top, cat, cat);
+                        }
+                        finally { g.Restore(state); }
                     }
-                    finally { g.Restore(state); }
                 }
 
                 _baseFrameKey = key;

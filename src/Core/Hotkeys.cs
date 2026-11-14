@@ -19,6 +19,10 @@ public static class Hotkeys
         ("game", "游戏模式（鼠标穿透）", "F7"),
         ("monitor", "切换屏幕", "F8"),
         ("visibility", "显示／隐藏桌宠", "F9"),
+        // 底栏开关默认不占用任何键位；单/双模式由 SeparateBarHotkeys 决定显示和注册哪一个。
+        ("barToggle", "隐藏／显示底栏（主角+远程）", ""),
+        ("barToggleMain", "隐藏／显示主角底栏", ""),
+        ("barToggleRemote", "隐藏／显示远程角色底栏", ""),
         ("reload", "刷新界面", "F5"),
         ("emote1", "发送表情 · 槽位 1", "Ctrl+Alt+1"),
         ("emote2", "发送表情 · 槽位 2", "Ctrl+Alt+2"),
@@ -40,6 +44,59 @@ public static class Hotkeys
 
     public static string DefaultFor(string id)
         => Actions.FirstOrDefault(a => a.Id == id).Default ?? "";
+
+    /// <summary>
+    /// 当前实际启用的动作。底栏是一键还是两键只影响注册/冲突检查；
+    /// 另一模式的绑定仍完整保留在配置里，切回时继续生效。
+    /// </summary>
+    public static IEnumerable<(string Id, string Label, string Default)> ActiveActions(bool separateBarHotkeys)
+    {
+        foreach (var action in Actions)
+        {
+            if (action.Id == "barToggle" && separateBarHotkeys) continue;
+            if ((action.Id == "barToggleMain" || action.Id == "barToggleRemote") && !separateBarHotkeys) continue;
+            yield return action;
+        }
+    }
+
+    /// <summary>只取出当前模式要注册的动作绑定。</summary>
+    public static Dictionary<string, string> ActiveFromSettings(Dictionary<string, string> saved, bool separateBarHotkeys)
+    {
+        var all = FromSettings(saved);
+        var active = new Dictionary<string, string>();
+        foreach (var action in ActiveActions(separateBarHotkeys))
+            active[action.Id] = all.TryGetValue(action.Id, out var value) ? value : "";
+        return active;
+    }
+
+    /// <summary>
+    /// 设置页只提交当前模式可见的行；保存时与已有绑定合并，
+    /// 绝不能把另一模式被隐藏的绑定当成空值覆盖。
+    /// </summary>
+    public static Dictionary<string, string> Merge(Dictionary<string, string> current, Dictionary<string, string> incoming)
+    {
+        var merged = new Dictionary<string, string>();
+        if (current != null)
+            foreach (var pair in current) merged[pair.Key] = pair.Value ?? "";
+        if (incoming != null)
+            foreach (var pair in incoming) merged[pair.Key] = pair.Value ?? "";
+        return merged;
+    }
+
+    /// <summary>只检查当前实际启用的动作；隐藏模式的相同绑定不算冲突。</summary>
+    public static string FindConflict(IReadOnlyDictionary<string, string> values, bool separateBarHotkeys)
+    {
+        if (values == null) return null;
+        var used = new Dictionary<string, string>();
+        foreach (var (id, label, _) in ActiveActions(separateBarHotkeys))
+        {
+            if (!values.TryGetValue(id, out string value) || string.IsNullOrEmpty(value)) continue;
+            if (used.TryGetValue(value, out string other))
+                return $"{label} 与 {other} 冲突：{value}";
+            used[value] = label;
+        }
+        return null;
+    }
 
     /// <summary>规范化按键描述；格式非法时返回空串。</summary>
     public static string Normalize(string raw)

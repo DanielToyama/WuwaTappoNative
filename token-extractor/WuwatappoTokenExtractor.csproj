@@ -11,13 +11,13 @@
     <ApplicationIcon>..\assets\app.ico</ApplicationIcon>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <SatelliteResourceLanguages>zh-Hans</SatelliteResourceLanguages>
-    <Version>1.0.0</Version>
-    <AssemblyVersion>1.0.0.0</AssemblyVersion>
-    <FileVersion>1.0.0.0</FileVersion>
-    <InformationalVersion>1.0.0</InformationalVersion>
+    <Version>1.1.2</Version>
+    <AssemblyVersion>1.1.2.0</AssemblyVersion>
+    <FileVersion>1.1.2.0</FileVersion>
+    <InformationalVersion>1.1.2</InformationalVersion>
     <Product>Wuwatappo Token Extractor</Product>
     <Company>Wuwatappo Native</Company>
-    <Description>从本机官方 WuwaTappo 客户端提取 kuro_infoToken</Description>
+    <Description>从本机官方国服/国际服客户端或 Wuwatappo Native 配置读取登录 token</Description>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">

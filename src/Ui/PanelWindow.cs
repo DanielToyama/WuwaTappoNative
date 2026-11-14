@@ -28,6 +28,18 @@ public sealed class PanelWindow : Form
     WebView2 _web;
     bool _ready;
     bool _fitting;
+    bool _maximized;
+    Rectangle _restoreBounds;
+    bool _resizing;
+    string _resizeDir = "";
+    Point _resizeStartCursor;
+    Rectangle _resizeStartBounds;
+    /// <summary>
+    /// Win11 使用 DWM 原生圆角（平滑抗锯齿）；旧系统才回退到 GDI Region。
+    /// Region 是二值像素遮罩，和 WebView2 的 DirectComposition 圆角无法对齐，是四周锯齿/断开的根因。
+    /// </summary>
+    bool _dwmCorners = OperatingSystem.IsWindowsVersionAtLeast(10, 0, 22000);
+    readonly System.Windows.Forms.Timer _resizeSaveTimer;
     bool _detached;
     string _pendingPage;
     ReleaseInfo _updateInfo;
@@ -44,6 +56,15 @@ public sealed class PanelWindow : Form
     public PanelWindow(App app)
     {
         _app = app;
+        // 高级合成按“面板会话”处理：每次重新打开面板都重置为锁定/关闭，
+        // 必须重新输入隐藏指令并再次确认警告。
+        if (app.Cfg.AnyItemSynthesisUnlocked || app.Cfg.AnyItemSynthesisEnabled)
+        {
+            app.Cfg.AnyItemSynthesisUnlocked = false;
+            app.Cfg.AnyItemSynthesisEnabled = false;
+            ConfigStore.Save(app.Cfg);
+        }
+        _maximized = app.Cfg.PanelMaximized;
         Text = "Wuwatappo";
         // 不设 Icon 时任务栏/Alt+Tab 会显示 WinForms 默认图标。
         Icon = AppIcon.Panel;
@@ -55,6 +76,12 @@ public sealed class PanelWindow : Form
         BackColor = Color.FromArgb(251, 237, 213);
         ShowInTaskbar = true;
         DoubleBuffered = true;
+        _resizeSaveTimer = new System.Windows.Forms.Timer { Interval = 350 };
+        _resizeSaveTimer.Tick += (s, e) =>
+        {
+            _resizeSaveTimer.Stop();
+            SavePanelSize();
+        };
         BuildWebView();
 
         app.Room.StateChanged += OnRoomStateChanged;
@@ -63,8 +90,36 @@ public sealed class PanelWindow : Form
         app.Room.MemberUpdated += OnMemberListChanged;
         app.Room.MemberRemoved += OnMemberListChanged;
         app.Room.RosterChanged += QueuePushRoom;
+        // 拒绝/强制断开/断线以前只进托盘；面板房间页也要立即显示持久错误和重试入口。
+        app.Room.JoinRejected += OnRoomJoinRejected;
+        app.Room.ForcedDisconnect += OnRoomForcedDisconnect;
+        app.Room.SocketClosed += OnRoomSocketClosed;
         app.Auth.Changed += OnAuthChanged;
     }
+
+    void OnRoomJoinRejected(string message) => Safe(() =>
+    {
+        Push("room.error", new { kind = "rejected", message });
+        Push("room", _app.RoomState());
+    });
+
+    void OnRoomForcedDisconnect(int code) => Safe(() =>
+    {
+        string message = code == 90002 ? "账号已在其他设备登录，房间已断开" : $"房间已关闭（{code}）";
+        Push("room.error", new { kind = "forced", message });
+        Push("room", _app.RoomState());
+    });
+
+    void OnRoomSocketClosed(string reason) => Safe(() =>
+    {
+        // 大厅/未加入房间的普通断线不打扰房间页；只有实际房间或已有错误时才提示。
+        if (_app.Room.IsLeavingIntentionally) return;
+        if (_app.Room.State != "joined" && string.IsNullOrEmpty(_app.Room.LastError)) return;
+        string message = _app.Room.LastError;
+        if (string.IsNullOrWhiteSpace(message)) message = "连接断开：" + (string.IsNullOrWhiteSpace(reason) ? "网络异常" : reason);
+        Push("room.error", new { kind = "socket", message });
+        Push("room", _app.RoomState());
+    });
 
     void OnRoomStateChanged() => SafePushRoom();
     void OnMemberListChanged(long _) => QueuePushRoom();
@@ -76,19 +131,41 @@ public sealed class PanelWindow : Form
         if (_detached) return;
         _detached = true;
         _ready = false;
+        try { _resizeSaveTimer?.Stop(); _resizeSaveTimer?.Dispose(); } catch { }
         try { _app.Room.StateChanged -= OnRoomStateChanged; } catch { }
         try { _app.Room.MemberUpdated -= OnMemberListChanged; } catch { }
         try { _app.Room.MemberRemoved -= OnMemberListChanged; } catch { }
         try { _app.Room.RosterChanged -= QueuePushRoom; } catch { }
+        try { _app.Room.JoinRejected -= OnRoomJoinRejected; } catch { }
+        try { _app.Room.ForcedDisconnect -= OnRoomForcedDisconnect; } catch { }
+        try { _app.Room.SocketClosed -= OnRoomSocketClosed; } catch { }
         try { _app.Auth.Changed -= OnAuthChanged; } catch { }
+        // 面板关闭时丢弃未保存的取色预览，避免桌宠和键盘停在临时配色。
+        try { _app.Pet.ClearThemePreview(); } catch { }
+        try { _app.Keyboard.ClearThemePreview(); } catch { }
         try { _web?.Dispose(); } catch { }
         _web = null;
     }
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        SavePanelSize();
         base.OnFormClosed(e);
         Detach();
+    }
+
+    /// <summary>把当前普通状态尺寸换算成 DIP 后写入 state.json，供下次打开面板恢复。</summary>
+    void SavePanelSize()
+    {
+        if (_maximized || !IsHandleCreated || WindowState != FormWindowState.Normal) return;
+        if (Width <= 0 || Height <= 0) return;
+        float scale = Math.Max(1, DeviceDpi) / 96f;
+        int width = Math.Max(1, (int)Math.Round(Width / scale));
+        int height = Math.Max(1, (int)Math.Round(Height / scale));
+        if (width == _app.Cfg.PanelWidth && height == _app.Cfg.PanelHeight) return;
+        _app.Cfg.PanelWidth = width;
+        _app.Cfg.PanelHeight = height;
+        ConfigStore.Save(_app.Cfg);
     }
 
     protected override void Dispose(bool disposing)
@@ -105,6 +182,14 @@ public sealed class PanelWindow : Form
     void FitToWorkingArea(Screen screen = null, int? dpi = null, bool center = true)
     {
         if (!IsHandleCreated || _fitting) return;
+        if (_maximized)
+        {
+            // 最大化期间屏幕分辨率/DPI 变化时继续铺满工作区。
+            var maxArea = (screen ?? Screen.FromControl(this)).WorkingArea;
+            if (Bounds != maxArea) Bounds = maxArea;
+            ApplyRegion();
+            return;
+        }
         _fitting = true;
         try
         {
@@ -115,11 +200,16 @@ public sealed class PanelWindow : Form
             int margin = Math.Max(8, (int)Math.Round(24 * scale));
             int availW = Math.Max(1, wa.Width - margin * 2);
             int availH = Math.Max(1, wa.Height - margin * 2);
-            int targetW = Math.Min((int)Math.Round(1120 * scale), availW);
-            int targetH = Math.Min((int)Math.Round(780 * scale), availH);
+            int designW = _app?.Cfg?.PanelWidth > 0 ? _app.Cfg.PanelWidth : 1120;
+            int designH = _app?.Cfg?.PanelHeight > 0 ? _app.Cfg.PanelHeight : 780;
+            int targetW = Math.Min((int)Math.Round(designW * scale), availW);
+            int targetH = Math.Min((int)Math.Round(designH * scale), availH);
             // 保留一个能正常操作的下限，但不得超出当前屏幕。
-            targetW = Math.Max(targetW, Math.Min(availW, (int)Math.Round(640 * scale)));
-            targetH = Math.Max(targetH, Math.Min(availH, (int)Math.Round(480 * scale)));
+            int minW = Math.Min(availW, (int)Math.Round(640 * scale));
+            int minH = Math.Min(availH, (int)Math.Round(480 * scale));
+            MinimumSize = new Size(minW, minH);
+            targetW = Math.Max(targetW, minW);
+            targetH = Math.Max(targetH, minH);
             targetW = Math.Min(targetW, availW);
             targetH = Math.Min(targetH, availH);
 
@@ -142,6 +232,34 @@ public sealed class PanelWindow : Form
             ApplyRegion();
         }
         finally { _fitting = false; }
+    }
+
+    /// <summary>
+    /// 面板最大化/还原。这里不使用 FormWindowState.Maximized，因为无边框窗口的
+    /// 最大化会覆盖任务栏区域；直接铺满当前屏幕工作区，并保留还原前的窗口位置。
+    /// </summary>
+    void ToggleMaximize()
+    {
+        if (!IsHandleCreated) return;
+        if (_maximized)
+        {
+            _maximized = false;
+            if (_restoreBounds.Width > 0 && _restoreBounds.Height > 0)
+                Bounds = _restoreBounds;
+            else
+                FitToWorkingArea(center: true);
+        }
+        else
+        {
+            SavePanelSize();
+            _restoreBounds = Bounds;
+            _maximized = true;
+            Bounds = Screen.FromControl(this).WorkingArea;
+        }
+        ApplyRegion();
+        // 最大化状态写入 state.json，下次打开面板保持相同的窗口形态。
+        _app.Cfg.PanelMaximized = _maximized;
+        ConfigStore.Save(_app.Cfg);
     }
 
     /// <summary>
@@ -199,10 +317,12 @@ public sealed class PanelWindow : Form
     }
 
     void SafePushRoom() => Safe(() => Push("room", _app.RoomState()));
-    void SafePushAuth() => Safe(() => { _app.PushAuth(); Push("boot", BootPayload()); });
+    /// <summary>认证变化只推 auth 字段，避免前端同时收到 auth+boot 后整页重建两次。</summary>
+    void SafePushAuth() => Safe(() => _app.PushAuth());
+    void SafePushBoot() => Safe(() => Push("boot", BootPayload()));
 
     /// <summary>让面板重新拉取 boot（设置/可见性等被快捷键改变时用）。</summary>
-    public void PushBoot() => SafePushAuth();
+    public void PushBoot() => SafePushBoot();
 
     void Safe(Action a)
     {
@@ -317,6 +437,8 @@ public sealed class PanelWindow : Form
             core.Settings.IsStatusBarEnabled = false;
             core.Settings.AreDefaultContextMenusEnabled = false;
             core.SetVirtualHostNameToFolderMapping("wuwatappo.local", Paths.WwwRoot, CoreWebView2HostResourceAccessKind.Allow);
+            // 主题背景图单独映射到用户数据目录，BootPayload 只发小体积 URL，不把图片塞进消息。
+            core.SetVirtualHostNameToFolderMapping("wuwatappo.theme", Paths.ThemeDir, CoreWebView2HostResourceAccessKind.Allow);
             core.WebMessageReceived += (s, e) => _ = HandleMessageAsync(e.WebMessageAsJson);
             // 页面里的 http(s) 链接一律交给系统浏览器，避免面板内跳走丢不掉。
             core.NavigationStarting += (s, e) =>
@@ -335,6 +457,10 @@ public sealed class PanelWindow : Form
                 _ready = e.IsSuccess;
                 if (_ready)
                 {
+                    if (!_dwmCorners)
+                    {
+                        try { core.ExecuteScriptAsync("document.documentElement.classList.remove('dwm-rounded')"); } catch { }
+                    }
                     Push("boot", BootPayload());
                     if (!string.IsNullOrEmpty(_pendingPage))
                     {
@@ -347,6 +473,7 @@ public sealed class PanelWindow : Form
             // 带版本号查询串，避免升级后 WebView2 仍使用旧 index.html/app.js 缓存。
             string panelVersion = typeof(PanelWindow).Assembly.GetName().Version?.ToString(3) ?? "0";
             string url = "https://wuwatappo.local/index.html?v=" + Uri.EscapeDataString(panelVersion);
+            if (_dwmCorners) url += "&dwm=1";
             if (Array.IndexOf(Environment.GetCommandLineArgs(), "--demo") >= 0) url += "&demo=1";
             string page = ArgValue("--panel-page");
             string hash = "";
@@ -374,8 +501,14 @@ public sealed class PanelWindow : Form
         catch (Exception ex) { Log.Write("打开外部链接失败 " + uri + " " + ex.Message); }
     }
 
-    object BootPayload() => new
+    string RecentChestScope => (_app.Cfg.ServerRegion == "global" ? "global" : "cn") + ":" + (_app.Auth.Cuid ?? "");
+
+    object BootPayload()
     {
+        var barTheme = PetWindow.ResolveThemeBarColors(_app.Cfg);
+        var accTransform = _app.Pet.AccessoryTransformFor(_app.Cfg.AccessoryAssetId);
+        return new
+        {
         auth = new
         {
             loggedIn = _app.Auth.IsLoggedIn,
@@ -395,6 +528,8 @@ public sealed class PanelWindow : Form
         update = _updateInfo,
         compatibility = _app.Compatibility,
         announcements = _app.Announcements.Visible,
+        // 面板关闭时自动领取的宝箱奖励；前端合并到「最近获得」后 ack。
+        pendingRecentChestIds = RecentChestStore.Pending(RecentChestScope),
         screens = Screen.AllScreens.Select((screen, index) => new
         {
             deviceName = screen.DeviceName,
@@ -419,12 +554,31 @@ public sealed class PanelWindow : Form
             keyboardMode = _app.Cfg.KeyboardMode,
             showMappingControls = _app.Cfg.ShowMappingControls,
             hideOtherPets = _app.Cfg.HideOtherPets,
+            hideMainBar = _app.Cfg.HideMainBar,
+            hideRemoteBars = _app.Cfg.HideRemoteBars,
+            separateBarHotkeys = _app.Cfg.SeparateBarHotkeys,
             rhythmMode = _app.Cfg.RhythmMode,
             rhythmKeyCount = _app.Cfg.RhythmKeyCount,
             rhythmKeys = _app.Cfg.RhythmKeys,
             allowOverlap = _app.Cfg.AllowOverlap,
             catLayout = _app.Cfg.CatLayout,
             petScreen = _app.Cfg.PetScreen,
+            screenSwitchMode = _app.Cfg.ScreenSwitchMode,
+            themeAccent = _app.Cfg.ThemeAccentColor,
+            themeFont = _app.Cfg.ThemeFontColor,
+            themeAdvanced = _app.Cfg.ThemeAdvanced,
+            // 底栏独立配色：存储值 + 实际生效值，前端颜色选择器直接显示实际颜色。
+            themeBarFollowStandard = _app.Cfg.ThemeBarFollowStandard,
+            themeBarColor = _app.Cfg.ThemeBarColor,
+            themeBarTextFollowTheme = _app.Cfg.ThemeBarTextFollowTheme,
+            themeBarTextColor = _app.Cfg.ThemeBarTextColor,
+            themeBarEffectiveColor = PetWindow.ThemeColorHex(barTheme.bar),
+            themeBarEffectiveTextColor = PetWindow.ThemeColorHex(barTheme.text),
+            // 只发文件名解析出的小 URL；1MB+ 的 data URL 不再进入 boot。
+            themeBackgroundImage = ThemeBackgroundStore.DisplayUrl(_app.Cfg.ThemeBackgroundImage),
+            themeBackgroundImageSet = ThemeBackgroundStore.HasImage(_app.Cfg.ThemeBackgroundImage),
+            themeBackgroundOpacity = _app.Cfg.ThemeBackgroundOpacity,
+            themeBackgroundBlur = _app.Cfg.ThemeBackgroundBlur,
             synthCheckMode = _app.Cfg.SynthCheckMode,
             anyItemSynthesisUnlocked = _app.Cfg.AnyItemSynthesisUnlocked,
             anyItemSynthesisEnabled = _app.Cfg.AnyItemSynthesisEnabled,
@@ -455,6 +609,7 @@ public sealed class PanelWindow : Form
             roomNo = _app.Cfg.RoomNo,
             lastRoom = _app.Cfg.LastRoom,
             serverRegion = _app.Cfg.ServerRegion,
+            forcedOnlineAcceptedVersion = _app.Cfg.ForcedOnlineAcceptedVersion,
             updateDownloadSource = _app.Cfg.UpdateDownloadSource,
             updateUseProxy = _app.Cfg.UpdateUseProxy,
             updateHttpProxy = _app.Cfg.UpdateHttpProxy,
@@ -465,11 +620,15 @@ public sealed class PanelWindow : Form
             characterAssetId = _app.Cfg.CharacterAssetId,
             characterRoleId = _app.Catalog.Find("character_skin", _app.Cfg.CharacterAssetId)?.GameRoleId ?? 0,
             accessoryAssetId = _app.Cfg.AccessoryAssetId,
-            accessoryOffsetX = _app.Pet.AccessoryOffsetFor(_app.Cfg.AccessoryAssetId).x,
-            accessoryOffsetY = _app.Pet.AccessoryOffsetFor(_app.Cfg.AccessoryAssetId).y,
+            accessoryOffsetX = accTransform.X,
+            accessoryOffsetY = accTransform.Y,
+            accessoryScalePercent = accTransform.ScalePercent,
+            accessoryRotationDegrees = accTransform.RotationDegrees,
             // 预设预览需要任意头饰的本地微调，而不只是当前佩戴的这一件。
             accessoryOffsets = _app.Cfg.AccessoryOffsets,
             emoteAssetIds = _app.Cfg.EmoteAssetIds,
+            cloudCharacterAssetId = _app.Cfg.CloudCharacterAssetId,
+            cloudAccessoryAssetId = _app.Cfg.CloudAccessoryAssetId,
             cloudEmoteAssetIds = _app.Cfg.CloudEmoteAssetIds,
         },
         catalog = new
@@ -480,8 +639,13 @@ public sealed class PanelWindow : Form
             emotes = _app.Catalog.Count("emote"),
         },
         locks = AssetLockStore.All(),
+        // Boot 与 save/rename 共用同一个映射，避免再次出现 PascalCase / camelCase 分叉。
+        themePresets = MapThemePresets(_app.ThemePresets.Presets),
+        themeRotation = MapThemeRotation(_app.ThemePresets.Rotation),
+        panelMaximized = _maximized,
         version = typeof(PanelWindow).Assembly.GetName().Version?.ToString(3) ?? "0.0.1",
     };
+    }
 
     // ---------------- Bridge ----------------
 
@@ -510,6 +674,18 @@ public sealed class PanelWindow : Form
         }
     }
 
+    static bool IsNetworkGuardedCommand(string cmd, JsonObject data)
+    {
+        return cmd switch
+        {
+            "synthesize" or "redeem" or "appearance.sync" or "presets.create" or "presets.delete"
+                or "favorite" or "emote.send" => true,
+            // 只有显式上传云端的表情槽位会改服务器；仅本地槽位在安全模式下仍可用。
+            "appearance.setSlot" => ApiClient.ReadBool(data?["upload"]),
+            _ => false,
+        };
+    }
+
     void Reply(int id, bool ok, object data, string error)
     {
         if (!_ready || _web?.CoreWebView2 == null) return;
@@ -520,18 +696,82 @@ public sealed class PanelWindow : Form
         catch { }
     }
 
+    /// <summary>构造只用于桌宠底栏实时预览的临时设置副本，不写入配置。</summary>
+    static Settings ThemePreviewSettings(Settings cfg, JsonObject data)
+    {
+        var preview = new Settings
+        {
+            ThemeAccentColor = cfg.ThemeAccentColor,
+            ThemeFontColor = cfg.ThemeFontColor,
+            ThemeAdvanced = cfg.ThemeAdvanced,
+            ThemeBarFollowStandard = cfg.ThemeBarFollowStandard,
+            ThemeBarColor = cfg.ThemeBarColor,
+            ThemeBarTextFollowTheme = cfg.ThemeBarTextFollowTheme,
+            ThemeBarTextColor = cfg.ThemeBarTextColor,
+        };
+        if (data.ContainsKey("themeAccent"))
+            preview.ThemeAccentColor = ConfigStore.NormalizeThemeColor(ApiClient.ReadString(data["themeAccent"]), "#E7B77C");
+        if (data.ContainsKey("themeFont"))
+            preview.ThemeFontColor = ConfigStore.NormalizeThemeColor(ApiClient.ReadString(data["themeFont"]), "#8E5E43");
+        if (data.ContainsKey("themeAdvanced"))
+            preview.ThemeAdvanced = ApiClient.ReadString(data["themeAdvanced"]) ?? "";
+        if (data.ContainsKey("themeBarFollowStandard"))
+            preview.ThemeBarFollowStandard = ApiClient.ReadBool(data["themeBarFollowStandard"]);
+        if (data.ContainsKey("themeBarColor"))
+            preview.ThemeBarColor = ConfigStore.NormalizeOptionalThemeColor(ApiClient.ReadString(data["themeBarColor"]));
+        if (data.ContainsKey("themeBarTextFollowTheme"))
+            preview.ThemeBarTextFollowTheme = ApiClient.ReadBool(data["themeBarTextFollowTheme"]);
+        if (data.ContainsKey("themeBarTextColor"))
+            preview.ThemeBarTextColor = ConfigStore.NormalizeOptionalThemeColor(ApiClient.ReadString(data["themeBarTextColor"]));
+        return preview;
+    }
+
     async Task<object> DispatchAsync(string cmd, JsonObject data)
     {
         var auth = _app.Auth;
         var cfg = _app.Cfg;
+        // 统一兼容性门禁：killSwitch/unsafe 时所有会改动服务器状态的命令直接失败，
+        // 不再出现“状态横幅说不安全、操作却照样成功”的不一致。
+        if (IsNetworkGuardedCommand(cmd, data))
+        {
+            string blocked = _app.OnlineBlockedReason;
+            if (!string.IsNullOrEmpty(blocked)) throw new ApiException(-1, "联网操作已暂停：" + blocked);
+        }
         switch (cmd)
         {
             case "win.drag":
+                if (_maximized) return true;
                 ReleaseCapture();
                 SendMessage(Handle, 0xA1, 2, 0);
                 return true;
             case "win.min":
                 WindowState = FormWindowState.Minimized;
+                return true;
+            case "win.max":
+                ToggleMaximize();
+                return new { maximized = _maximized };
+            case "win.resizeStart":
+            {
+                if (_maximized || _resizing) return false;
+                string dir = ApiClient.ReadString(data["dir"]);
+                if (dir is not ("left" or "right" or "top" or "bottom"
+                    or "topleft" or "topright" or "bottomleft" or "bottomright")) return false;
+                _resizeDir = dir;
+                _resizing = true;
+                _resizeStartCursor = System.Windows.Forms.Cursor.Position;
+                _resizeStartBounds = Bounds;
+                Capture = true;
+                Cursor = dir switch
+                {
+                    "topleft" or "bottomright" => Cursors.SizeNWSE,
+                    "topright" or "bottomleft" => Cursors.SizeNESW,
+                    "left" or "right" => Cursors.SizeWE,
+                    _ => Cursors.SizeNS,
+                };
+                return true;
+            }
+            case "win.resizeEnd":
+                EndResize();
                 return true;
             case "win.close":
                 // 不在 WebView2 的消息处理栈里直接 Dispose，先排到下一轮消息循环。
@@ -715,6 +955,13 @@ public sealed class PanelWindow : Form
 
             case "bag.list":
                 return await LoadBagAsync();
+
+            case "recent.ack":
+            {
+                if (data["ids"] is JsonArray ids)
+                    RecentChestStore.Ack(ids.Select(x => ApiClient.ReadLong(x)), RecentChestScope);
+                return true;
+            }
 
             case "catalog.list":
                 return CatalogList(ApiClient.ReadString(data["type"]));
@@ -927,16 +1174,13 @@ public sealed class PanelWindow : Form
                     foreach (var kv in obj)
                         next[kv.Key] = ApiClient.ReadString(kv.Value);
                 }
-                var normalized = Hotkeys.FromSettings(next);
-                var used = new Dictionary<string, string>();
-                foreach (var (id, label, _) in Hotkeys.Actions)
-                {
-                    string value = normalized.GetValueOrDefault(id, "");
-                    if (string.IsNullOrEmpty(value)) continue;
-                    if (used.TryGetValue(value, out var other))
-                        return new { ok = false, error = $"{label} 与 {other} 冲突：{value}" };
-                    used[value] = label;
-                }
+                // 设置页只提交当前模式可见的行；先与已有绑定合并，
+                // 保证切换单/双底栏快捷键模式时另一模式的绑定不会被空值覆盖。
+                var merged = Hotkeys.Merge(_app.Cfg.Hotkeys, next);
+                var normalized = Hotkeys.FromSettings(merged);
+                // 冲突检查只看当前实际启用的动作，隐藏模式的重复绑定不报错。
+                string conflict = Hotkeys.FindConflict(normalized, _app.Cfg.SeparateBarHotkeys);
+                if (conflict != null) return new { ok = false, error = conflict };
                 _app.Cfg.Hotkeys = normalized;
                 ConfigStore.Save(_app.Cfg);
                 Log.Write("快捷键已保存 " + string.Join(" ", normalized.Select(kv => kv.Key + "=" + kv.Value)));
@@ -952,10 +1196,120 @@ public sealed class PanelWindow : Form
                 return new { locked, items = AssetLockStore.All() };
             }
 
+            case "theme.preview":
+            {
+                var preview = ThemePreviewSettings(cfg, data);
+                _app.Pet.BeginInvoke(new Action(() =>
+                {
+                    _app.Pet.PreviewTheme(preview);
+                    _app.Keyboard.PreviewTheme(preview);
+                }));
+                return true;
+            }
+
+            case "theme.preview.clear":
+                _app.Pet.BeginInvoke(new Action(() =>
+                {
+                    _app.Pet.ClearThemePreview();
+                    _app.Keyboard.ClearThemePreview();
+                }));
+                return true;
+
+            case "theme.image.begin":
+                return new { uploadId = ThemeBackgroundStore.BeginUpload(ApiClient.ReadString(data["mime"])) };
+
+            case "theme.image.chunk":
+                return new
+                {
+                    received = ThemeBackgroundStore.AppendUpload(
+                        ApiClient.ReadString(data["uploadId"]),
+                        ApiClient.ReadString(data["data"])),
+                };
+
+            case "theme.image.commit":
+            {
+                string oldName = cfg.ThemeBackgroundImage;
+                string name = ThemeBackgroundStore.CommitUpload(ApiClient.ReadString(data["uploadId"]));
+                cfg.ThemeBackgroundImage = name;
+                ConfigStore.Save(cfg);
+                _app.ThemePresets.ClearCurrentPreset();
+                _app.ThemePresets.CleanupImage(oldName);
+                return new { name, url = ThemeBackgroundStore.DisplayUrl(name) };
+            }
+
+            case "theme.image.cancel":
+                ThemeBackgroundStore.CancelUpload(ApiClient.ReadString(data["uploadId"]));
+                return new { ok = true };
+
+            case "theme.image.clear":
+            {
+                string oldName = cfg.ThemeBackgroundImage;
+                cfg.ThemeBackgroundImage = "";
+                ConfigStore.Save(cfg);
+                _app.ThemePresets.ClearCurrentPreset();
+                _app.ThemePresets.CleanupImage(oldName);
+                _app.ThemePresets.CleanupOrphans();
+                return new { ok = true };
+            }
+
+            case "theme.image.get":
+            {
+                // 兜底：如果启动迁移没有跑到（例如运行中手动替换了 config），这里再尝试一次。
+                if (ThemeBackgroundStore.MigrateLegacy(cfg)) ConfigStore.Save(cfg);
+                string url = ThemeBackgroundStore.DisplayUrl(cfg.ThemeBackgroundImage);
+                return new { url, isSet = url.Length > 0 };
+            }
+
+            case "theme.presets.save":
+            {
+                var preset = _app.ThemePresets.SaveCurrent(
+                    ApiClient.ReadString(data["name"]),
+                    ApiClient.ReadString(data["id"]));
+                return new { preset = MapThemePreset(preset) };
+            }
+
+            case "theme.presets.apply":
+            {
+                _app.ThemePresets.Apply(ApiClient.ReadString(data["id"]));
+                return new { ok = true };
+            }
+
+            case "theme.presets.delete":
+            {
+                bool removed = _app.ThemePresets.Delete(ApiClient.ReadString(data["id"]));
+                return new { ok = removed };
+            }
+
+            case "theme.presets.rename":
+            {
+                var preset = _app.ThemePresets.Rename(
+                    ApiClient.ReadString(data["id"]),
+                    ApiClient.ReadString(data["name"]));
+                return new { preset = MapThemePreset(preset) };
+            }
+
+            case "theme.presets.move":
+            {
+                string id = ApiClient.ReadString(data["id"]);
+                int direction = (int)ApiClient.ReadLong(data["direction"]);
+                bool moved = _app.ThemePresets.Move(id, direction);
+                return new { ok = moved, id, direction };
+            }
+
+            case "theme.rotation.set":
+            {
+                var rotation = _app.ThemePresets.SetRotation(
+                    ApiClient.ReadBool(data["enabled"]),
+                    (int)ApiClient.ReadLong(data["intervalMinutes"]));
+                return new { rotation = new { enabled = rotation.Enabled, intervalMinutes = rotation.IntervalMinutes } };
+            }
+
             case "settings.set":
             case "settings.update":
             {
                 bool hideOthersChanged = false;
+                bool barHotkeyModeChanged = false;
+                bool themeChanged = false;
                 foreach (var kv in data)
                 {
                     switch (kv.Key)
@@ -1005,6 +1359,12 @@ public sealed class PanelWindow : Form
                             cfg.HideOtherPets = ApiClient.ReadBool(kv.Value);
                             hideOthersChanged = true;
                             break;
+                        case "hideMainBar": cfg.HideMainBar = ApiClient.ReadBool(kv.Value); break;
+                        case "hideRemoteBars": cfg.HideRemoteBars = ApiClient.ReadBool(kv.Value); break;
+                        case "separateBarHotkeys":
+                            cfg.SeparateBarHotkeys = ApiClient.ReadBool(kv.Value);
+                            barHotkeyModeChanged = true;
+                            break;
                         case "allowOverlap": cfg.AllowOverlap = ApiClient.ReadBool(kv.Value); break;
                         case "remoteFollowMain": cfg.RemoteFollowMainScale = ApiClient.ReadBool(kv.Value); break;
                         case "remoteScale":
@@ -1030,6 +1390,62 @@ public sealed class PanelWindow : Form
                             break;
                         case "petScreen":
                             cfg.PetScreen = ApiClient.ReadString(kv.Value);
+                            break;
+                        case "screenSwitchMode":
+                            cfg.ScreenSwitchMode = ApiClient.ReadString(kv.Value) switch
+                            {
+                                "main" => "main",
+                                "all" => "all",
+                                _ => "default",
+                            };
+                            break;
+                        case "themeAccent":
+                            cfg.ThemeAccentColor = ConfigStore.NormalizeThemeColor(ApiClient.ReadString(kv.Value), "#E7B77C");
+                            break;
+                        case "themeFont":
+                            cfg.ThemeFontColor = ConfigStore.NormalizeThemeColor(ApiClient.ReadString(kv.Value), "#8E5E43");
+                            break;
+                        case "themeAdvanced":
+                            cfg.ThemeAdvanced = ApiClient.ReadString(kv.Value) ?? "";
+                            break;
+                        case "themeBarFollowStandard":
+                            cfg.ThemeBarFollowStandard = ApiClient.ReadBool(kv.Value);
+                            break;
+                        case "themeBarColor":
+                            cfg.ThemeBarColor = ConfigStore.NormalizeOptionalThemeColor(ApiClient.ReadString(kv.Value));
+                            break;
+                        case "themeBarTextFollowTheme":
+                            cfg.ThemeBarTextFollowTheme = ApiClient.ReadBool(kv.Value);
+                            break;
+                        case "themeBarTextColor":
+                            cfg.ThemeBarTextColor = ConfigStore.NormalizeOptionalThemeColor(ApiClient.ReadString(kv.Value));
+                            break;
+                        case "themeBackgroundImage":
+                        {
+                            // 兼容旧前端/旧命令：能走到这里的 data URL 通常小于 WebView2 消息上限。
+                            string value = ApiClient.ReadString(kv.Value) ?? "";
+                            string oldName = cfg.ThemeBackgroundImage;
+                            if (value.Length == 0)
+                            {
+                                cfg.ThemeBackgroundImage = "";
+                            }
+                            else if (value.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase))
+                            {
+                                cfg.ThemeBackgroundImage = ThemeBackgroundStore.SaveDataUrl(value);
+                            }
+                            else
+                            {
+                                cfg.ThemeBackgroundImage = Path.GetFileName(value);
+                            }
+                            if (!string.Equals(oldName, cfg.ThemeBackgroundImage, StringComparison.OrdinalIgnoreCase))
+                                _app.ThemePresets.CleanupImage(oldName);
+                            break;
+                        }
+                        case "themeBackgroundOpacity":
+                            cfg.ThemeBackgroundOpacity = Math.Clamp(ApiClient.ReadLong(kv.Value) / 100.0, 0, 1);
+                            break;
+                        case "themeBackgroundBlur":
+                            cfg.ThemeBackgroundBlur = Math.Clamp(ApiClient.ReadLong(kv.Value), 0, 24);
                             break;
                         case "synthCheckMode":
                         {
@@ -1126,6 +1542,13 @@ public sealed class PanelWindow : Form
                         }
                     }
                 }
+                themeChanged = data.ContainsKey("themeAccent") || data.ContainsKey("themeFont")
+                    || data.ContainsKey("themeAdvanced") || data.ContainsKey("themeBarFollowStandard")
+                    || data.ContainsKey("themeBarColor") || data.ContainsKey("themeBarTextFollowTheme")
+                    || data.ContainsKey("themeBarTextColor") || data.ContainsKey("themeBackgroundImage")
+                    || data.ContainsKey("themeBackgroundOpacity") || data.ContainsKey("themeBackgroundBlur");
+                // 手动改主题后清掉“当前预设”标记，避免 UI 仍显示旧预设为当前。
+                if (themeChanged) _app.ThemePresets.ClearCurrentPreset();
                 cfg.Opacity = Math.Clamp(cfg.Opacity, 0.2, 1.0);
                 cfg.Scale = Math.Clamp(cfg.Scale, 0.25, 2.0);
                 cfg.CaptureWidth = Math.Clamp(cfg.CaptureWidth, 160, 1600);
@@ -1134,8 +1557,12 @@ public sealed class PanelWindow : Form
                 _app.ApplyAutoSettings();
                 _app.Pet.BeginInvoke(new Action(() =>
                 {
+                    // 主题相关设置变化时先刷新键盘调色板，隐藏状态下也会保存，下次显示直接生效。
+                    if (themeChanged) _app.Keyboard.ApplyTheme(cfg);
                     _app.Pet.ApplySettings();
                     _app.Pet.ApplyCaptureMode();
+                    // 单/双底栏快捷键模式变化后立即换用对应的注册集合。
+                    if (barHotkeyModeChanged) _app.Pet.RebindHotkeys();
                     if (data.ContainsKey("petScreen")) _app.Pet.MoveToScreen(cfg.PetScreen);
                     if (!cfg.AllowOverlap) _app.Pet.ResolveOverlaps();
                     // “隐藏其他成员”开关必须立刻重建/移除联机桌宠，不能等下一次房间事件。
@@ -1294,6 +1721,14 @@ public sealed class PanelWindow : Form
                 }
             }
 
+            case "compatibility.acceptForcedOnline":
+                await _app.AcceptForcedOnlineAsync(ApiClient.ReadString(data["version"]));
+                return BootPayload();
+
+            case "compatibility.clearForcedOnline":
+                _app.ClearForcedOnline();
+                return BootPayload();
+
             case "compatibility.check":
                 await _app.RefreshCompatibilityAsync(true);
                 return _app.Compatibility;
@@ -1311,15 +1746,38 @@ public sealed class PanelWindow : Form
 
             case "appearance.offset":
             {
-                int dx = (int)ApiClient.ReadLong(data["dx"]);
-                int dy = (int)ApiClient.ReadLong(data["dy"]);
+                // 滑条传绝对 x/y/scale/rotation；方向按钮传相对 dx/dy；reset 一次复位全部参数。
                 bool reset = ApiClient.ReadBool(data["reset"]);
-                // 滑条传绝对 x/y；方向按钮仍传相对 dx/dy。
-                var p = data.ContainsKey("x") || data.ContainsKey("y")
-                    ? _app.Pet.SetAccessoryOffset((int)ApiClient.ReadLong(data["x"]), (int)ApiClient.ReadLong(data["y"]))
-                    : _app.Pet.NudgeAccessory(dx, dy, reset);
+                AccessoryTransform p;
+                if (reset)
+                {
+                    p = _app.Pet.SetAccessoryTransform(AccessoryTransform.Default);
+                }
+                else if (data.ContainsKey("x") || data.ContainsKey("y") || data.ContainsKey("scale") || data.ContainsKey("rotation"))
+                {
+                    var current = _app.Pet.AccessoryTransformFor(_app.Cfg.AccessoryAssetId);
+                    int x = data.ContainsKey("x") ? (int)ApiClient.ReadLong(data["x"]) : current.X;
+                    int y = data.ContainsKey("y") ? (int)ApiClient.ReadLong(data["y"]) : current.Y;
+                    int scale = data.ContainsKey("scale") ? (int)ApiClient.ReadLong(data["scale"]) : current.ScalePercent;
+                    int rotation = data.ContainsKey("rotation") ? (int)ApiClient.ReadLong(data["rotation"]) : current.RotationDegrees;
+                    p = _app.Pet.SetAccessoryTransform(x, y, scale, rotation);
+                }
+                else
+                {
+                    int dx = (int)ApiClient.ReadLong(data["dx"]);
+                    int dy = (int)ApiClient.ReadLong(data["dy"]);
+                    p = _app.Pet.NudgeAccessory(dx, dy);
+                }
                 var boot = BootPayload();
-                return new { x = p.x, y = p.y, accessoryId = _app.Cfg.AccessoryAssetId, boot };
+                return new
+                {
+                    x = p.X,
+                    y = p.Y,
+                    scale = p.ScalePercent,
+                    rotation = p.RotationDegrees,
+                    accessoryId = _app.Cfg.AccessoryAssetId,
+                    boot,
+                };
             }
 
             case "open.log":
@@ -1576,6 +2034,41 @@ public sealed class PanelWindow : Form
         }).ToArray();
     }
 
+    /// <summary>主题预设的前端 DTO。所有字段必须保持 camelCase，Boot 与命令返回共用。</summary>
+    internal static object[] MapThemePresets(IEnumerable<ThemePreset> presets)
+    {
+        return (presets ?? Array.Empty<ThemePreset>())
+            .Where(p => p != null)
+            .Select(MapThemePreset)
+            .ToArray();
+    }
+
+    internal static object MapThemePreset(ThemePreset preset) => new
+    {
+        id = preset.Id,
+        name = preset.Name,
+        accentColor = preset.AccentColor,
+        fontColor = preset.FontColor,
+        advanced = preset.Advanced,
+        barFollowStandard = preset.BarFollowStandard,
+        barColor = preset.BarColor,
+        barTextFollowTheme = preset.BarTextFollowTheme,
+        barTextColor = preset.BarTextColor,
+        backgroundImage = ThemeBackgroundStore.DisplayUrl(preset.BackgroundImage),
+        backgroundImageSet = ThemeBackgroundStore.HasImage(preset.BackgroundImage),
+        backgroundOpacity = preset.BackgroundOpacity,
+        backgroundBlur = preset.BackgroundBlur,
+        createdAtMs = preset.CreatedAtMs,
+    };
+
+    internal static object MapThemeRotation(ThemeRotationState rotation) => new
+    {
+        enabled = rotation != null && rotation.Enabled,
+        intervalMinutes = rotation?.IntervalMinutes ?? 30,
+        currentPresetId = rotation?.CurrentPresetId ?? "",
+        lastAppliedMs = rotation?.LastAppliedUtcMs ?? 0,
+    };
+
     async Task<(long character, long accessory, bool characterBlocked, bool accessoryBlocked)> ResolveCloudAppearanceAsync()
     {
         var cfg = _app.Cfg;
@@ -1703,11 +2196,32 @@ public sealed class PanelWindow : Form
 
     protected override void WndProc(ref Message m)
     {
+        // Win11 DWM 圆角需要 WS_THICKFRAME；该样式会给窗口加一圈非客户区边框。
+        // 返回 0 让客户区继续铺满整窗，边框由网页 CSS 绘制。
+        if (m.Msg == 0x0083 && m.WParam != IntPtr.Zero) // WM_NCCALCSIZE
+        {
+            m.Result = IntPtr.Zero;
+            return;
+        }
         if (m.Msg == 0x007E) // WM_DISPLAYCHANGE：分辨率/缩放布局改变后重新夹紧
         {
             try { BeginInvoke(new Action(() => FitToWorkingArea(Screen.FromControl(this), DeviceDpi, center: false))); } catch { }
         }
         base.WndProc(ref m);
+    }
+
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            if (_dwmCorners)
+            {
+                // DWM 只对带 WS_THICKFRAME 的顶层窗口应用 Win11 圆角。
+                cp.Style |= 0x00040000; // WS_THICKFRAME
+            }
+            return cp;
+        }
     }
 
     protected override void OnShown(EventArgs e)
@@ -1720,13 +2234,134 @@ public sealed class PanelWindow : Form
     {
         base.OnResize(e);
         ApplyRegion();
+        if (!_fitting && !_maximized && !_resizing && WindowState == FormWindowState.Normal)
+        {
+            _resizeSaveTimer?.Stop();
+            _resizeSaveTimer?.Start();
+        }
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (!_resizing) return;
+        var b = _resizeStartBounds;
+        var cur = System.Windows.Forms.Cursor.Position;
+        int dx = cur.X - _resizeStartCursor.X;
+        int dy = cur.Y - _resizeStartCursor.Y;
+        int minW = Math.Max(1, MinimumSize.Width);
+        int minH = Math.Max(1, MinimumSize.Height);
+        int left = b.Left, top = b.Top, width = b.Width, height = b.Height;
+
+        if (_resizeDir.Contains("left"))
+        {
+            left = b.Left + dx;
+            width = b.Right - left;
+            if (width < minW) { left = b.Right - minW; width = minW; }
+        }
+        else if (_resizeDir.Contains("right"))
+        {
+            width = b.Width + dx;
+            if (width < minW) width = minW;
+        }
+        if (_resizeDir.Contains("top"))
+        {
+            top = b.Top + dy;
+            height = b.Bottom - top;
+            if (height < minH) { top = b.Bottom - minH; height = minH; }
+        }
+        else if (_resizeDir.Contains("bottom"))
+        {
+            height = b.Height + dy;
+            if (height < minH) height = minH;
+        }
+
+        var wa = Screen.FromPoint(cur).WorkingArea;
+        if (left < wa.Left) { width -= wa.Left - left; left = wa.Left; }
+        if (top < wa.Top) { height -= wa.Top - top; top = wa.Top; }
+        if (left + width > wa.Right) width = wa.Right - left;
+        if (top + height > wa.Bottom) height = wa.Bottom - top;
+        width = Math.Max(width, minW);
+        height = Math.Max(height, minH);
+        Bounds = new Rectangle(left, top, width, height);
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (_resizing && e.Button == MouseButtons.Left) EndResize();
+    }
+
+    protected override void OnMouseCaptureChanged(EventArgs e)
+    {
+        base.OnMouseCaptureChanged(e);
+        if (_resizing && !Capture) EndResize();
+    }
+
+    void EndResize()
+    {
+        if (!_resizing) return;
+        _resizing = false;
+        _resizeDir = "";
+        Capture = false;
+        Cursor = Cursors.Default;
+        _resizeSaveTimer?.Stop();
+        SavePanelSize();
     }
 
     void ApplyRegion()
     {
         if (Width <= 0 || Height <= 0) return;
-        using var path = PetComposer.Rounded(new RectangleF(0, 0, Width, Height), 18);
-        Region = new Region(path);
+        if (_maximized)
+        {
+            if (_dwmCorners && TrySetDwmCornerPreference(DwmCornerDoNotRound))
+            {
+                SetWindowRegion(null);
+                return;
+            }
+            SetWindowRegion(new Region(new Rectangle(0, 0, Width, Height)));
+            return;
+        }
+        if (_dwmCorners)
+        {
+            if (TrySetDwmCornerPreference(DwmCornerRound))
+            {
+                // Win11：交给 DWM 做抗锯齿圆角，和网页 CSS 的 8px 外圆角一致。
+                SetWindowRegion(null);
+                return;
+            }
+            _dwmCorners = false;
+            try { _web?.CoreWebView2?.ExecuteScriptAsync("document.documentElement.classList.remove('dwm-rounded')"); } catch { }
+            Log.Write("DWM 圆角不可用，回退到 Region 裁剪");
+        }
+        // Win10 回退：Region 是像素级二值遮罩，只能尽量和 CSS 外圆角对齐。
+        float radius = 18f * Math.Max(1, DeviceDpi) / 96f;
+        using var path = PetComposer.Rounded(new RectangleF(0, 0, Width, Height), radius);
+        SetWindowRegion(new Region(path));
+    }
+
+    void SetWindowRegion(Region region)
+    {
+        var previous = Region;
+        Region = region;
+        previous?.Dispose();
+    }
+
+    const int DwmCornerRound = 2;
+    const int DwmCornerDoNotRound = 1;
+
+    bool TrySetDwmCornerPreference(int preference)
+    {
+        try
+        {
+            int value = preference;
+            int hr = DwmSetWindowAttribute(Handle, DwmWindowCornerPreference, ref value, sizeof(int));
+            // 去掉 DWM 默认的 1px 边框；圆角与描边都由网页负责。
+            int noBorder = unchecked((int)0xFFFFFFFE);
+            DwmSetWindowAttribute(Handle, DwmWindowBorderColor, ref noBorder, sizeof(int));
+            return hr == 0;
+        }
+        catch { return false; }
     }
 
     [DllImport("user32.dll")] static extern bool ReleaseCapture();
@@ -1737,4 +2372,7 @@ public sealed class PanelWindow : Form
     [DllImport("user32.dll")] static extern bool BringWindowToTop(IntPtr hWnd);
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] static extern IntPtr SetFocus(IntPtr hWnd);
+    const int DwmWindowCornerPreference = 33;
+    const int DwmWindowBorderColor = 34;
+    [DllImport("dwmapi.dll")] static extern int DwmSetWindowAttribute(IntPtr hWnd, int attribute, ref int value, int size);
 }

@@ -200,7 +200,8 @@ public sealed class CaptureWindow : Form
         {
             int kbW = Math.Max(1, (int)Math.Round(keyboard.CaptureWidth * scale));
             int kbH = Math.Max(1, (int)Math.Round(keyboardH * scale));
-            int kx = x + (contentW - kbW) / 2;
+            // 与桌宠底部数字显示板对齐，而不是按整个桌宠窗口居中。
+            int kx = KeyboardWindow.AlignedLeftForPet(x, contentW, kbW);
             int ky = petDest.Bottom + Math.Max(1, (int)Math.Round(4 * scale));
             keyboard.DrawTo(g, new Rectangle(kx, ky, kbW, kbH));
         }

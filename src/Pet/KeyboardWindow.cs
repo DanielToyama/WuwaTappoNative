@@ -13,7 +13,7 @@ namespace WuwatappoNative.Pet;
 /// <summary>
 /// 桌面键盘 / 手柄反馈。布局对齐 Helper：
 /// 200px 宽奶油木板；26 键为 15×19 键帽；鸣潮专属 1/2/3 + Q/E/R + 空格 + 鼠标；
-/// 手柄为 200×160 面板（十字键/面键/肩键/摇杆/扳机），使用 XInput 轮询。
+/// 手柄为 200×174 面板（仅手柄本体，不再套占位的奶油底板），使用 XInput 轮询。
 /// </summary>
 public sealed class KeyboardWindow : Form
 {
@@ -24,7 +24,7 @@ public sealed class KeyboardWindow : Form
     const int LettersH = ToolbarH + 121;
     const int WuwaH = ToolbarH + 116;
     const int RhythmH = ToolbarH + 86;
-    const int PadH = ToolbarH + 182;
+    const int PadH = ToolbarH + 156;
     const float KeyW = 15, KeyH = 19, Gap = 3;
 
     readonly Dictionary<string, RectangleF> _keys = new();
@@ -41,6 +41,11 @@ public sealed class KeyboardWindow : Form
     float _scale = 1f;
     bool _painted;
     readonly LayeredSurface _surface = new();
+    // 主题调色板只在 ApplyTheme/PreviewTheme 时解析一次；隐藏/未建句柄时也保留状态，显示时直接使用。
+    // 所有模式共用同一套：底栏跟随标准时用面板主题，关闭跟随时用独立底栏配色。
+    KeyboardTheme _theme;
+    KeyboardTheme _themePreview;
+    KeyboardTheme ActiveTheme => _themePreview ?? _theme;
 
     // 手柄状态
     ushort _padButtons;
@@ -51,8 +56,9 @@ public sealed class KeyboardWindow : Form
     uint _padPacket;
     int _padUserIndex = -1;
     System.Windows.Forms.Timer _padReleaseTimer;
-    readonly Dictionary<string, long> _padBubbleAt = new();
-    long _lastPadDownAt;
+    bool _padReleasePending;
+    readonly PadInputTracker _padInput = new();
+    readonly List<string> _padTriggerLabels = new();
 
     public Mode CurrentMode => _mode;
     public event Action<Mode> ModeRequested;
@@ -83,6 +89,7 @@ public sealed class KeyboardWindow : Form
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
         Size = new Size(W, LettersH);
+        _theme = KeyboardTheme.Resolve(new Settings());
         BuildLayout(Mode.Letters);
         _poll = new System.Windows.Forms.Timer { Interval = 16 };
         _poll.Tick += (s, e) => Poll();
@@ -105,10 +112,10 @@ public sealed class KeyboardWindow : Form
         _keys.Clear();
         _buttons.Clear();
         _rhythmLanes.Clear();
-        _buttons["26键"] = new RectangleF(4, 2, 44, 18);
-        _buttons[_rhythmEnabled ? "音游模式" : "鸣潮专属"] = new RectangleF(52, 2, 64, 18);
-        _buttons["手柄"] = new RectangleF(120, 2, 40, 18);
-        _buttons["×"] = new RectangleF(W - 24, 2, 20, 18);
+        _buttons["26键"] = new RectangleF(2, 2, 44, 18);
+        _buttons[_rhythmEnabled ? "音游模式" : "鸣潮专属"] = new RectangleF(50, 2, 64, 18);
+        _buttons["手柄"] = new RectangleF(118, 2, 40, 18);
+        _buttons["×"] = new RectangleF(W - 22, 2, 20, 18);
 
         if (mode == Mode.Letters)
         {
@@ -148,7 +155,7 @@ public sealed class KeyboardWindow : Form
         }
         else if (mode == Mode.Rhythm)
         {
-            // 4K/5K/6K 音游指示器：沿用项目的奶油键帽和暖橙高亮。
+            // 4K/5K/6K 音游指示器：键帽、高亮和轨道文字统一取当前主题调色板。
             int count = Math.Clamp(_rhythmKeys.Length, 4, 6);
             float gap = 4, kh = 42;
             float kw = Math.Min(42f, (W - 12 - (count - 1) * gap) / count);
@@ -210,6 +217,41 @@ public sealed class KeyboardWindow : Form
         Render();
     }
 
+    /// <summary>
+    /// 应用正式主题配置。窗口隐藏或句柄尚未创建时也保存调色板，
+    /// 下次 SetMode/Show 时会直接用新配色绘制。
+    /// </summary>
+    public void ApplyTheme(Settings cfg)
+    {
+        if (cfg == null) return;
+        _theme = KeyboardTheme.Resolve(cfg);
+        _themePreview = null;
+        RefreshTheme();
+    }
+
+    /// <summary>取色器拖动时的临时预览；不写配置，取消后由 ClearThemePreview 恢复。</summary>
+    public void PreviewTheme(Settings cfg)
+    {
+        if (cfg == null) return;
+        _themePreview = KeyboardTheme.Resolve(cfg);
+        RefreshTheme();
+    }
+
+    /// <summary>取消取色预览，恢复最近一次 ApplyTheme 的正式配色。</summary>
+    public void ClearThemePreview()
+    {
+        if (_themePreview == null) return;
+        _themePreview = null;
+        RefreshTheme();
+    }
+
+    void RefreshTheme()
+    {
+        if (IsDisposed) return;
+        if (IsHandleCreated) Render();
+        else VisualChanged?.Invoke();
+    }
+
     /// <summary>键盘需要上移多少像素才能塞进屏幕（用于优先上移角色）。</summary>
     public int ComputeLift(Rectangle petBounds, double scale)
     {
@@ -223,6 +265,19 @@ public sealed class KeyboardWindow : Form
         return Math.Min(overflow, Math.Max(0, availableAbove));
     }
 
+    /// <summary>
+    /// 让 200px 逻辑宽的键盘/手柄窗口与桌宠底部信息条（数字显示板）水平对齐，
+    /// 而不是按整个 272px 窗口居中。桌面窗口和 OBS 采集拼接共用这套几何。
+    /// </summary>
+    public static int AlignedLeftForPet(int petLeft, int petWidth, int keyboardWidth)
+    {
+        if (petWidth <= 0) return petLeft;
+        float scale = petWidth / (float)PetComposer.WindowW;
+        int infoLeft = (int)Math.Round(PetComposer.CounterX * scale);
+        int infoRight = (int)Math.Round((PetComposer.ToolbarX + PetComposer.ToolbarW) * scale);
+        return petLeft + infoLeft + (infoRight - infoLeft - keyboardWidth) / 2;
+    }
+
     public void FollowPet(Point petLocation, Size petSize, double scale)
     {
         if (_mode == Mode.Hidden || petSize.Width <= 0) return;
@@ -233,7 +288,7 @@ public sealed class KeyboardWindow : Form
         bool resized = Size != target;
         if (resized) Size = target;
         var screen = Screen.FromPoint(new Point(petLocation.X + petSize.Width / 2, petLocation.Y)).WorkingArea;
-        int x = petLocation.X + (petSize.Width - Width) / 2;
+        int x = AlignedLeftForPet(petLocation.X, petSize.Width, Width);
         int y = petLocation.Y + petSize.Height + (int)(4 * s);
         // 始终在角色下方；放不下就贴住屏幕底边（弹回），不再自动放到上方
         if (y + Height > screen.Bottom) y = screen.Bottom - Height;
@@ -317,6 +372,8 @@ public sealed class KeyboardWindow : Form
     void PollPad(bool render)
     {
         if (_padUnavailable) return;
+        _padInput.BeginPoll();
+        _padTriggerLabels.Clear();
         try
         {
             var state = new XINPUT_STATE();
@@ -337,6 +394,7 @@ public sealed class KeyboardWindow : Form
                     // 换了槽位/重新连接：旧状态作废，第一帧只同步，不伪造按键边沿。
                     _padConnected = false;
                     _padButtons = 0; _lt = _rt = 0; _lx = _ly = _rx = _ry = 0;
+                    ResetPadInputState();
                     break;
                 }
             }
@@ -347,6 +405,7 @@ public sealed class KeyboardWindow : Form
                     _padConnected = false;
                     _padKeystrokesReady = false;
                     _padButtons = 0; _lt = _rt = 0; _lx = _ly = _rx = _ry = 0;
+                    ResetPadInputState();
                     if (render) Render();
                 }
                 return;
@@ -375,42 +434,91 @@ public sealed class KeyboardWindow : Form
                 _ry = g.sThumbRY;
 
                 // 刚连接时只同步状态，不算一次按键；只有真正的按下边沿才触发计数。
-                // 同时按多个键时，每个新按下的键都算一次（与键盘一致）。
-                if (wasConnected)
+                // 同时按多个键时，每个新按下的键都算一次气泡，但手势只计一次。
+                if (!wasConnected)
                 {
-                    ushort newlyPressed = (ushort)(_padButtons & ~prev);
-                    if (newlyPressed != 0)
-                    {
-                        _lastPadDownAt = Environment.TickCount64;
-                        PadButtonDown?.Invoke();
-                    }
-                    else if (prev != 0 && _padButtons == 0) PadButtonUp?.Invoke();
-
-                    foreach (var (flag, label) in PadButtonLabels)
-                    {
-                        if ((newlyPressed & flag) != 0) RaisePadButtonPressed(label);
-                    }
-                    if (_lt > 4 && prevLt <= 4) RaisePadButtonPressed("LT");
-                    if (_rt > 4 && prevRt <= 4) RaisePadButtonPressed("RT");
+                    SyncPadInputState();
+                }
+                else
+                {
+                    ApplyPadButtonStateEdges(prev, _padButtons);
+                    if (_lt > 4 && prevLt <= 4) _padTriggerLabels.Add("LT");
+                    if (_rt > 4 && prevRt <= 4) _padTriggerLabels.Add("RT");
                 }
                 if (render) Render();
             }
 
             // XInput 的 keystroke 队列保留两次轮询之间发生的按键事件。
             // 16ms 状态采样会漏掉极短的点按；队列可以把这些按键补回来。
+            // 两条路径共享 PadInputTracker，同一次物理按下不会被重复计数。
             if (_padKeystrokesReady) PollPadKeystrokes();
             else _padKeystrokesReady = true;
+            FlushPadInput();
         }
         catch (Exception ex)
         {
             // 系统没有 xinput1_4.dll 时不必每 33ms 抛一次异常。
             if (ex is DllNotFoundException || ex is EntryPointNotFoundException) _padUnavailable = true;
-            if (!_padConnected) return;
+            if (!_padConnected)
+            {
+                ResetPadInputState();
+                return;
+            }
             _padConnected = false;
             _padKeystrokesReady = false;
             _padButtons = 0; _lt = _rt = 0; _lx = _ly = _rx = _ry = 0;
+            ResetPadInputState();
             if (render) Render();
         }
+    }
+
+    /// <summary>连接/换槽位后的首帧：把当前按住的键同步进去，不产生按下边沿。</summary>
+    void SyncPadInputState()
+    {
+        var labels = new List<string>();
+        foreach (var (flag, label) in PadButtonLabels)
+            if ((_padButtons & flag) != 0) labels.Add(label);
+        _padInput.SyncDown(labels);
+    }
+
+    void ApplyPadButtonStateEdges(ushort prev, ushort current)
+    {
+        foreach (var (flag, label) in PadButtonLabels)
+        {
+            bool nowDown = (current & flag) != 0;
+            bool wasDown = (prev & flag) != 0;
+            if (nowDown == wasDown) continue;
+            _padInput.ObserveStateButton(label, nowDown);
+        }
+    }
+
+    /// <summary>把本轮轮询里由状态边沿或 keystroke 队列发现的新按下统一成一次事件。</summary>
+    void FlushPadInput()
+    {
+        if (_padInput.PressedAny)
+        {
+            PadButtonDown?.Invoke();
+            foreach (string label in _padInput.PressedLabels) RaisePadButtonPressed(label);
+        }
+        if (_padTriggerLabels.Count > 0)
+        {
+            foreach (string label in _padTriggerLabels) RaisePadButtonPressed(label);
+            _padTriggerLabels.Clear();
+        }
+        if (_padInput.ReleasedAll)
+        {
+            _padReleasePending = false;
+            _padReleaseTimer?.Stop();
+            PadButtonUp?.Invoke();
+        }
+    }
+
+    void ResetPadInputState()
+    {
+        _padInput.Reset();
+        _padTriggerLabels.Clear();
+        _padReleasePending = false;
+        _padReleaseTimer?.Stop();
     }
 
     void PollPadKeystrokes()
@@ -423,15 +531,18 @@ public sealed class KeyboardWindow : Form
                 var keystroke = new XINPUT_KEYSTROKE();
                 // XUSER_INDEX_ANY：任意槽位的手柄按键都收，不再只认 0 号手柄。
                 if (XInputGetKeystroke(XUSER_INDEX_ANY, 0, out keystroke) != 0) break;
-                if ((keystroke.Flags & XINPUT_KEYSTROKE_KEYDOWN) == 0) continue;
-                string label = PadLabelForVk(keystroke.VirtualKey);
-                if (label != null) RaisePadButtonPressed(label);
-                long now = Environment.TickCount64;
-                if (label != null && now - _lastPadDownAt >= 25)
+                string label = PadInputLogic.LabelForVirtualKey(keystroke.VirtualKey);
+                if (label == null) continue;
+
+                // 长按产生的 KEYDOWN | REPEAT 必须丢弃，否则会周期性触发新的按键。
+                if (PadInputLogic.IsFreshKeyDown(keystroke.Flags))
                 {
-                    _lastPadDownAt = now;
-                    PadButtonDown?.Invoke();
-                    SchedulePadRelease();
+                    // 只有队列补发的、状态轮询还没计过的按下才需要补释放。
+                    if (_padInput.ObserveKeystrokeDown(label)) SchedulePadRelease();
+                }
+                else if (PadInputLogic.IsKeyUp(keystroke.Flags))
+                {
+                    _padInput.ObserveKeystrokeUp(label);
                 }
             }
         }
@@ -444,6 +555,7 @@ public sealed class KeyboardWindow : Form
     /// <summary>
     /// 队列补发的极快点按可能只有 KEYDOWN，状态轮询永远看不到按下，
     /// 因此补一个短释放定时器，避免主角一直保持“手按下”的姿势。
+    /// 定时器只在物理状态确实没有按键/扳机时收尾，长按不会提前触发 PadButtonUp。
     /// </summary>
     void SchedulePadRelease()
     {
@@ -453,61 +565,47 @@ public sealed class KeyboardWindow : Form
             _padReleaseTimer.Tick += (s, e) =>
             {
                 _padReleaseTimer.Stop();
-                if (_padButtons == 0 && _lt <= 4 && _rt <= 4) PadButtonUp?.Invoke();
+                bool pending = _padReleasePending;
+                _padReleasePending = false;
+                if (!pending) return;
+                // 物理上还有按键/扳机时不能提前释放；长按的后续轮询会把这里清掉。
+                if (_padButtons != 0 || _lt > 4 || _rt > 4) return;
+                // 清掉没有被状态轮询确认过的队列按下；仍被按住（或状态未同步）的键不受影响。
+                _padInput.ReleaseUnconfirmed();
+                if (!_padInput.AnyActive) PadButtonUp?.Invoke();
             };
         }
         _padReleaseTimer.Stop();
+        _padReleasePending = true;
         _padReleaseTimer.Start();
     }
 
     void RaisePadButtonPressed(string label)
     {
         if (string.IsNullOrEmpty(label)) return;
-        long now = Environment.TickCount64;
-        if (_padBubbleAt.TryGetValue(label, out long last) && now - last < 25) return;
-        _padBubbleAt[label] = now;
         PadButtonPressed?.Invoke(label);
     }
-
-    static string PadLabelForVk(ushort vk) => vk switch
-    {
-        0x5800 => "A",
-        0x5801 => "B",
-        0x5802 => "X",
-        0x5803 => "Y",
-        0x5804 => "RB",
-        0x5805 => "LB",
-        0x5806 => "LT",
-        0x5807 => "RT",
-        0x5810 => "↑",
-        0x5811 => "↓",
-        0x5812 => "←",
-        0x5813 => "→",
-        0x5814 => "Start",
-        0x5815 => "Back",
-        0x5816 => "LS",
-        0x5817 => "RS",
-        _ => null,
-    };
 
     void Render()
     {
         if (!IsHandleCreated) return;
         int w = Math.Max(1, Width), h = Math.Max(1, Height);
         var surface = _surface.Begin(w, h);
+        var theme = ActiveTheme;
         using (var g = Graphics.FromImage(surface))
         {
             g.Clear(Color.Transparent);
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
             float s = Width / (float)W;
-            DrawToolbar(g, s);
-            DrawPlate(g, s, LogicalHeight);
-            if (_mode == Mode.Controller) DrawPad(g, s);
+            DrawToolbar(g, s, theme);
+            // 手柄模式只显示手柄本体，不再画占面积很大的奶油底板。
+            if (_mode != Mode.Controller) DrawPlate(g, s, LogicalHeight, theme);
+            if (_mode == Mode.Controller) DrawPad(g, s, theme);
             else
             {
-                foreach (var pair in _keys) DrawKey(g, s, pair.Key, pair.Value, IsLit(pair.Key));
-                DrawRhythmLaneNumbers(g, s);
+                foreach (var pair in _keys) DrawKey(g, s, pair.Key, pair.Value, IsLit(pair.Key), theme);
+                DrawRhythmLaneNumbers(g, s, theme);
             }
         }
         _surface.Apply(this);
@@ -522,26 +620,27 @@ public sealed class KeyboardWindow : Form
         var state = g.Save();
         try
         {
+            var theme = ActiveTheme;
             g.TranslateTransform(dest.X, dest.Y);
             float s = dest.Width / (float)W;
             g.SmoothingMode = SmoothingMode.AntiAlias;
             g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
-            DrawToolbar(g, s);
-            DrawPlate(g, s, LogicalHeight);
-            if (_mode == Mode.Controller) DrawPad(g, s);
+            DrawToolbar(g, s, theme);
+            if (_mode != Mode.Controller) DrawPlate(g, s, LogicalHeight, theme);
+            if (_mode == Mode.Controller) DrawPad(g, s, theme);
             else
             {
-                foreach (var pair in _keys) DrawKey(g, s, pair.Key, pair.Value, IsLit(pair.Key));
-                DrawRhythmLaneNumbers(g, s);
+                foreach (var pair in _keys) DrawKey(g, s, pair.Key, pair.Value, IsLit(pair.Key), theme);
+                DrawRhythmLaneNumbers(g, s, theme);
             }
         }
         finally { g.Restore(state); }
     }
 
-    void DrawToolbar(Graphics g, float s)
+    void DrawToolbar(Graphics g, float s, KeyboardTheme theme)
     {
         using var font = new Font("Microsoft YaHei UI", 10f * s, FontStyle.Bold, GraphicsUnit.Pixel);
-        using var text = new SolidBrush(PetComposer.InkStrong);
+        using var text = new SolidBrush(theme.ToolbarText);
         foreach (var pair in _buttons)
         {
             var r = new RectangleF(pair.Value.X * s, pair.Value.Y * s, pair.Value.Width * s, pair.Value.Height * s);
@@ -550,8 +649,8 @@ public sealed class KeyboardWindow : Form
                 || (pair.Key == "音游模式" && _mode == Mode.Rhythm)
                 || (pair.Key == "手柄" && _mode == Mode.Controller);
             using (var path = PetComposer.Rounded(r, 9 * s))
-            using (var brush = new SolidBrush(active ? Color.FromArgb(254, 210, 145) : Color.FromArgb(255, 243, 221)))
-            using (var pen = new Pen(Color.FromArgb(220, 231, 183, 124), 1f * s))
+            using (var brush = new SolidBrush(active ? theme.ToolbarActive : theme.ToolbarBackground))
+            using (var pen = new Pen(theme.ToolbarBorder, 1f * s))
             {
                 g.FillPath(brush, path);
                 g.DrawPath(pen, path);
@@ -561,29 +660,29 @@ public sealed class KeyboardWindow : Form
         }
     }
 
-    void DrawPlate(Graphics g, float s, int logicalHeight)
+    void DrawPlate(Graphics g, float s, int logicalHeight, KeyboardTheme theme)
     {
         var plate = new RectangleF(2 * s, 22 * s, (W - 4) * s, logicalHeight * s - 24 * s);
         using (var shadow = PetComposer.Rounded(new RectangleF(plate.X, plate.Y + 3 * s, plate.Width, plate.Height), 16 * s))
-        using (var brush = new SolidBrush(Color.FromArgb(160, 234, 211, 183)))
+        using (var brush = new SolidBrush(theme.PlateShadow))
             g.FillPath(brush, shadow);
         using (var path = PetComposer.Rounded(plate, 16 * s))
-        using (var brush = new LinearGradientBrush(plate, Color.FromArgb(255, 255, 248, 233), Color.FromArgb(255, 255, 220, 170), 160f))
+        using (var brush = new LinearGradientBrush(plate, theme.PlateTop, theme.PlateBottom, 160f))
             g.FillPath(brush, path);
         using (var path = PetComposer.Rounded(plate, 16 * s))
-        using (var pen = new Pen(Color.FromArgb(255, 184, 135, 100), 2f * s))
+        using (var pen = new Pen(theme.PlateBorder, 2f * s))
             g.DrawPath(pen, path);
         using (var edge = PetComposer.Rounded(new RectangleF(plate.X + 2 * s, plate.Bottom - 5 * s, plate.Width - 4 * s, 5 * s), 3 * s))
-        using (var brush = new SolidBrush(Color.FromArgb(255, 184, 135, 100)))
+        using (var brush = new SolidBrush(theme.PlateEdge))
             g.FillPath(brush, edge);
         using (var foot = PetComposer.Rounded(new RectangleF(17 * s, (22 - 5) * s, 14 * s, 5 * s), 2 * s))
-        using (var brush = new SolidBrush(Color.FromArgb(255, 231, 183, 124)))
+        using (var brush = new SolidBrush(theme.PlateFoot))
             g.FillPath(brush, foot);
-        using (var led = new SolidBrush(Color.FromArgb(255, 200, 220, 196)))
+        using (var led = new SolidBrush(theme.Led))
             g.FillEllipse(led, plate.Right - 17 * s, plate.Bottom - 15 * s, 7 * s, 7 * s);
     }
 
-    void DrawKey(Graphics g, float s, string key, RectangleF logical, bool down)
+    void DrawKey(Graphics g, float s, string key, RectangleF logical, bool down, KeyboardTheme theme)
     {
         float dy = down ? 2 * s : 0;
         var r = new RectangleF(logical.X * s, logical.Y * s + dy, logical.Width * s, logical.Height * s);
@@ -592,14 +691,14 @@ public sealed class KeyboardWindow : Form
         float radius = (rhythm ? 9 : wuwa ? 8 : (key.StartsWith("MOUSE") || key == "SPACE") ? 6 : 5) * s;
         var shadow = new RectangleF(r.X, r.Y + (down ? 0 : 2 * s), r.Width, r.Height);
         using (var path = PetComposer.Rounded(shadow, radius))
-        using (var brush = new SolidBrush(Color.FromArgb(255, 190, 152, 121)))
+        using (var brush = new SolidBrush(theme.KeyShadow))
             g.FillPath(brush, path);
         using (var path = PetComposer.Rounded(r, radius))
-        using (var brush = new SolidBrush(down ? Color.FromArgb(255, 255, 201, 119) : Color.FromArgb(255, 255, 250, 240)))
+        using (var brush = new SolidBrush(down ? theme.KeyPressed : theme.KeyTop))
             g.FillPath(brush, path);
         if (down)
         {
-            using var glow = new Pen(Color.FromArgb(180, 255, 227, 145), 2f * s);
+            using var glow = new Pen(theme.KeyGlow, 2f * s);
             using var path = PetComposer.Rounded(r, radius);
             g.DrawPath(glow, path);
         }
@@ -609,7 +708,7 @@ public sealed class KeyboardWindow : Form
             : wuwa ? 14f : (key.StartsWith("MOUSE") || key == "SPACE") ? 9f : 9f;
         fs *= s;
         using var font = new Font("Microsoft YaHei UI", fs, FontStyle.Bold, GraphicsUnit.Pixel);
-        using var text = new SolidBrush(down ? Color.FromArgb(255, 110, 69, 45) : PetComposer.Ink);
+        using var text = new SolidBrush(down ? theme.KeyTextPressed : theme.KeyText);
         using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
         if (rhythm && key == RhythmKeys.Space)
         {
@@ -627,11 +726,11 @@ public sealed class KeyboardWindow : Form
         }
     }
 
-    void DrawRhythmLaneNumbers(Graphics g, float s)
+    void DrawRhythmLaneNumbers(Graphics g, float s, KeyboardTheme theme)
     {
         if (_mode != Mode.Rhythm) return;
         using var font = new Font("Microsoft YaHei UI", 8f * s, FontStyle.Bold, GraphicsUnit.Pixel);
-        using var text = new SolidBrush(Color.FromArgb(155, PetComposer.Ink));
+        using var text = new SolidBrush(theme.LaneNumber);
         using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
         for (int i = 0; i < _rhythmLanes.Count; i++)
         {
@@ -645,129 +744,245 @@ public sealed class KeyboardWindow : Form
 
     bool PadPressed(ushort flag) => (_padButtons & flag) != 0;
 
-    void DrawPad(Graphics g, float s)
+    void DrawPad(Graphics g, float s, KeyboardTheme theme)
     {
-        float top = (ToolbarH + 8) * s;
-        var board = new RectangleF(4 * s, top, 192 * s, 150 * s);
+        float top = (ToolbarH + 2) * s;
+        var board = new RectangleF(4 * s, top, 192 * s, 146 * s);
         if (!_padConnected)
         {
             using var font = new Font("Microsoft YaHei UI", 11f * s, FontStyle.Bold, GraphicsUnit.Pixel);
-            using var brush = new SolidBrush(Color.FromArgb(200, PetComposer.Ink));
+            using var brush = new SolidBrush(theme.PadText);
             using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
             g.DrawString("未连接手柄（XInput）", font, brush, board, fmt);
             return;
         }
 
-        // 手柄轮廓
-        using (var body = new GraphicsPath())
+        // 手柄本体：参考图的扁平线稿轮廓（双肩、握把、底部中央内凹），只画本体。
+        // 整体下移 8px，给顶部 LT/RT 深度条留出空间。
+        float bodyOffsetY = 8 * s;
+        var state = g.Save();
+        try
         {
-            var r = new RectangleF(board.X + 16 * s, board.Y + 34 * s, board.Width - 32 * s, 72 * s);
-            body.AddArc(r.X, r.Y, 28 * s, 28 * s, 180, 90);
-            body.AddArc(r.Right - 28 * s, r.Y, 28 * s, 28 * s, 270, 90);
-            body.AddBezier(r.Right, r.Y + 40 * s, r.Right + 4 * s, r.Bottom + 20 * s, r.Right - 26 * s, r.Bottom + 26 * s, r.Right - 34 * s, r.Bottom - 2 * s);
-            body.AddArc(board.X + board.Width / 2 - 14 * s, r.Bottom - 6 * s, 28 * s, 22 * s, 0, 180);
-            body.AddBezier(r.X + 34 * s, r.Bottom - 2 * s, r.X + 26 * s, r.Bottom + 26 * s, r.X - 4 * s, r.Bottom + 20 * s, r.X, r.Y + 40 * s);
-            body.CloseFigure();
-            using (var brush = new LinearGradientBrush(board, Color.FromArgb(255, 255, 250, 238), Color.FromArgb(255, 244, 225, 200), 90f))
+            g.TranslateTransform(board.X, board.Y + bodyOffsetY);
+            g.ScaleTransform(s, s);
+            using var body = BuildPadBodyPath();
+            using (var brush = new SolidBrush(theme.PadBody))
                 g.FillPath(brush, body);
-            using (var pen = new Pen(Color.FromArgb(255, 184, 135, 100), 1.6f * s))
+            using (var pen = new Pen(theme.PadOutline, 2.0f))
                 g.DrawPath(pen, body);
         }
+        finally { g.Restore(state); }
 
-        // 扳机
-        DrawTrigger(g, s, board.X + 28 * s, board.Y + 6 * s, 64 * s, "LT", _lt);
-        DrawTrigger(g, s, board.Right - 92 * s, board.Y + 6 * s, 64 * s, "RT", _rt);
+        // 顶部扳机深度条与肩键：使用设计器导出的坐标。
+        DrawPadTrigger(g, s, board.X + 38 * s, board.Y + 4 * s, 30 * s, "LT", _lt, theme);
+        DrawPadTrigger(g, s, board.X + 124 * s, board.Y + 4 * s, 30 * s, "RT", _rt, theme);
+        DrawPadBumper(g, s, board.X + 40 * s, board.Y + 14 * s, 26 * s, "LB", PadPressed(0x0100), theme);
+        DrawPadBumper(g, s, board.X + 126 * s, board.Y + 14 * s, 26 * s, "RB", PadPressed(0x0200), theme);
 
-        // 肩键
-        DrawPadKey(g, s, board.X + 32 * s, board.Y + 24 * s, 44 * s, 13 * s, "LB", PadPressed(0x0100), 6 * s);
-        DrawPadKey(g, s, board.Right - 76 * s, board.Y + 24 * s, 44 * s, 13 * s, "RB", PadPressed(0x0200), 6 * s);
+        // 参考图布局：十字键左上、Guide 上方中间、面键右上、双摇杆下方中间。
+        DrawDpad(g, s, board.X + 53 * s, board.Y + 47 * s,
+            PadPressed(0x0001), PadPressed(0x0002), PadPressed(0x0004), PadPressed(0x0008), theme);
 
-        // 十字键
-        float dx = board.X + 42 * s, dy = board.Y + 55 * s, ds = 10.5f * s;
-        DrawPadKey(g, s, dx, dy - ds * 1.5f, ds * 1.7f, ds * 1.5f, "▲", PadPressed(0x0001), 3 * s);
-        DrawPadKey(g, s, dx, dy + ds * 1.5f, ds * 1.7f, ds * 1.5f, "▼", PadPressed(0x0002), 3 * s);
-        DrawPadKey(g, s, dx - ds * 1.5f, dy, ds * 1.5f, ds * 1.7f, "◀", PadPressed(0x0004), 3 * s);
-        DrawPadKey(g, s, dx + ds * 1.5f, dy, ds * 1.5f, ds * 1.7f, "▶", PadPressed(0x0008), 3 * s);
+        var guide = new RectangleF(board.X + 88 * s, board.Y + 32 * s, 18 * s, 18 * s);
+        using (var brush = new SolidBrush(PadPressed(0x0400) ? theme.PadPressed : theme.PadBody))
+            g.FillEllipse(brush, guide);
+        using (var pen = new Pen(theme.PadOutline, 1.8f * s))
+            g.DrawEllipse(pen, guide);
+        using (var pen = new Pen(PetWindow.BlendColor(theme.PadOutline, theme.PadBody, 0.35f), 1.2f * s))
+            g.DrawEllipse(pen, guide.X + 5 * s, guide.Y + 5 * s, guide.Width - 10 * s, guide.Height - 10 * s);
 
-        // 面键
-        float fx = board.Right - 58 * s, fy = board.Y + 66 * s;
-        DrawFace(g, s, fx, fy - 16 * s, "Y", PadPressed(0x8000), Color.FromArgb(255, 255, 241, 197), Color.FromArgb(255, 165, 138, 65));
-        DrawFace(g, s, fx - 16 * s, fy, "X", PadPressed(0x4000), Color.FromArgb(255, 234, 242, 236), Color.FromArgb(255, 99, 135, 148));
-        DrawFace(g, s, fx + 16 * s, fy, "B", PadPressed(0x2000), Color.FromArgb(255, 255, 237, 228), Color.FromArgb(255, 183, 117, 102));
-        DrawFace(g, s, fx, fy + 16 * s, "A", PadPressed(0x1000), Color.FromArgb(255, 239, 244, 219), Color.FromArgb(255, 100, 131, 90));
+        float fx = board.X + 139 * s, fy = board.Y + 49 * s;
+        DrawFace(g, s, fx, fy - 11.5f * s, "Y", PadPressed(0x8000), Color.FromArgb(255, 252, 226, 156), theme);
+        DrawFace(g, s, fx - 11.5f * s, fy, "X", PadPressed(0x4000), Color.FromArgb(255, 214, 233, 248), theme);
+        DrawFace(g, s, fx + 11.5f * s, fy, "B", PadPressed(0x2000), Color.FromArgb(255, 250, 217, 212), theme);
+        DrawFace(g, s, fx, fy + 11.5f * s, "A", PadPressed(0x1000), Color.FromArgb(255, 215, 237, 208), theme);
 
-        // 摇杆
-        DrawStick(g, s, board.X + 66 * s, board.Y + 104 * s, _lx, _ly, PadPressed(0x0040), "LS");
-        DrawStick(g, s, board.Right - 66 * s, board.Y + 104 * s, _rx, _ry, PadPressed(0x0080), "RS");
+        // 两个短横：Menu / View，使用设计器导出的坐标。
+        DrawPadDash(g, s, board.X + 80 * s, board.Y + 56 * s, 10 * s, 6 * s, PadPressed(0x0020), theme);
+        DrawPadDash(g, s, board.X + 104 * s, board.Y + 56 * s, 10 * s, 6 * s, PadPressed(0x0010), theme);
 
-        // 中间功能键
-        DrawPadKey(g, s, board.X + 78 * s, board.Y + 48 * s, 18 * s, 11 * s, "≡", PadPressed(0x0010), 4 * s);
-        DrawPadKey(g, s, board.X + 102 * s, board.Y + 48 * s, 18 * s, 11 * s, "−", PadPressed(0x0020), 4 * s);
-        DrawPadKey(g, s, board.X + 90 * s, board.Y + 66 * s, 16 * s, 12 * s, "⏺", PadPressed(0x0400), 4 * s);
-
-        using (var font = new Font("Microsoft YaHei UI", 8f * s, FontStyle.Regular, GraphicsUnit.Pixel))
-        using (var brush = new SolidBrush(Color.FromArgb(170, PetComposer.Ink)))
-        using (var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Far })
-            g.DrawString("XInput 手柄", font, brush, new RectangleF(board.X, board.Bottom - 2 * s, board.Width, 10 * s), fmt);
+        // 双摇杆。
+        DrawStick(g, s, board.X + 74 * s, board.Y + 94 * s, _lx, _ly, PadPressed(0x0040), "LS", theme);
+        DrawStick(g, s, board.X + 118 * s, board.Y + 94 * s, _rx, _ry, PadPressed(0x0080), "RS", theme);
     }
 
-    void DrawTrigger(Graphics g, float s, float x, float y, float w, string label, byte value)
+    /// <summary>hy4 按参考图给出的 192×146 逻辑坐标闭合轮廓（P0|C1|C2|P3，顺序绘制）。</summary>
+    static GraphicsPath BuildPadBodyPath()
     {
-        var box = new RectangleF(x, y, w, 14 * s);
-        using (var path = PetComposer.Rounded(box, 6 * s))
-        using (var brush = new SolidBrush(value > 10 ? Color.FromArgb(255, 255, 209, 142) : Color.FromArgb(255, 245, 230, 202)))
-        using (var pen = new Pen(Color.FromArgb(255, 191, 155, 116), 1f * s))
-        { g.FillPath(brush, path); g.DrawPath(pen, path); }
-        var bar = new RectangleF(box.X + 4 * s, box.Bottom - 5 * s, (box.Width - 8 * s) * (value / 255f), 2.5f * s);
-        using (var brush = new SolidBrush(Color.FromArgb(255, 199, 210, 172)))
-            g.FillRectangle(brush, bar);
-        using var font = new Font("Microsoft YaHei UI", 8f * s, FontStyle.Bold, GraphicsUnit.Pixel);
-        using var text = new SolidBrush(PetComposer.InkStrong);
-        using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
-        g.DrawString(label + " " + (int)(value / 255f * 100) + "%", font, text, new RectangleF(box.X, box.Y, box.Width, box.Height - 4 * s), fmt);
+        var path = new GraphicsPath();
+        path.StartFigure();
+        path.AddBezier(78.5f, 20.6f, 88f, 20.6f, 104f, 20.6f, 113.5f, 20.6f);
+        path.AddBezier(113.5f, 20.6f, 120f, 20.6f, 130f, 6f, 137.7f, 6f);
+        path.AddBezier(137.7f, 6f, 146f, 6f, 155f, 13f, 159f, 24f);
+        path.AddBezier(159f, 24f, 165f, 40f, 173f, 58f, 179f, 78f);
+        path.AddBezier(179f, 78f, 183f, 92f, 187f, 102f, 188f, 112f);
+        path.AddBezier(188f, 112f, 190f, 119f, 190f, 121f, 189.5f, 126f);
+        path.AddBezier(189.5f, 126f, 189.5f, 135f, 183f, 141f, 174f, 141f);
+        path.AddBezier(174f, 141f, 166f, 141f, 159f, 135f, 154f, 128f);
+        path.AddBezier(154f, 128f, 146f, 121f, 138f, 116f, 130f, 112f);
+        path.AddBezier(130f, 112f, 118f, 108f, 104f, 103f, 96f, 103f);
+        path.AddBezier(96f, 103f, 88f, 103f, 74f, 108f, 62f, 112f);
+        path.AddBezier(62f, 112f, 54f, 116f, 46f, 121f, 38f, 128f);
+        path.AddBezier(38f, 128f, 33f, 135f, 26f, 141f, 18f, 141f);
+        path.AddBezier(18f, 141f, 9f, 141f, 2.5f, 135f, 2.5f, 126f);
+        path.AddBezier(2.5f, 126f, 2f, 121f, 2f, 119f, 4f, 112f);
+        path.AddBezier(4f, 112f, 5f, 102f, 9f, 92f, 13f, 78f);
+        path.AddBezier(13f, 78f, 19f, 58f, 27f, 40f, 33f, 24f);
+        path.AddBezier(33f, 24f, 37f, 13f, 46f, 6f, 55.7f, 6f);
+        path.AddBezier(55.7f, 6f, 64f, 6f, 72f, 20.6f, 78.5f, 20.6f);
+        path.CloseFigure();
+        return path;
     }
 
-    void DrawFace(Graphics g, float s, float cx, float cy, string label, bool down, Color fill, Color ink)
+    void DrawDpad(Graphics g, float s, float cx, float cy, bool up, bool down, bool left, bool right, KeyboardTheme theme)
     {
-        float r = 11 * s;
-        var rect = new RectangleF(cx - r, cy - r, r * 2, r * 2);
-        using (var brush = new SolidBrush(down ? Color.FromArgb(255, 255, 199, 120) : fill))
-            g.FillEllipse(brush, rect);
-        using (var pen = new Pen(down ? Color.FromArgb(255, 162, 106, 66) : Color.FromArgb(255, 184, 148, 113), 1.2f * s))
-            g.DrawEllipse(pen, rect);
-        using var font = new Font("Microsoft YaHei UI", 9f * s, FontStyle.Bold, GraphicsUnit.Pixel);
-        using var text = new SolidBrush(ink);
+        float t = 12 * s;
+        float arm = 17 * s;
+        using var cross = BuildDpadPath(cx, cy, arm, t);
+        using (var brush = new SolidBrush(theme.PadBody))
+            g.FillPath(brush, cross);
+        using (var pen = new Pen(theme.PadOutline, 1.8f * s) { LineJoin = LineJoin.Round })
+            g.DrawPath(pen, cross);
+        if (!up && !down && !left && !right) return;
+
+        var state = g.Save();
+        try
+        {
+            g.SetClip(cross);
+            using var press = new SolidBrush(theme.PadPressed);
+            if (up) g.FillRectangle(press, cx - t / 2, cy - arm, t, arm);
+            if (down) g.FillRectangle(press, cx - t / 2, cy, t, arm);
+            if (left) g.FillRectangle(press, cx - arm, cy - t / 2, arm, t);
+            if (right) g.FillRectangle(press, cx, cy - t / 2, arm, t);
+        }
+        finally { g.Restore(state); }
+    }
+
+    static GraphicsPath BuildDpadPath(float cx, float cy, float arm, float t)
+    {
+        float h = t / 2;
+        var path = new GraphicsPath();
+        path.AddPolygon(new[]
+        {
+            new PointF(cx - h, cy - arm), new PointF(cx + h, cy - arm),
+            new PointF(cx + h, cy - h), new PointF(cx + arm, cy - h),
+            new PointF(cx + arm, cy + h), new PointF(cx + h, cy + h),
+            new PointF(cx + h, cy + arm), new PointF(cx - h, cy + arm),
+            new PointF(cx - h, cy + h), new PointF(cx - arm, cy + h),
+            new PointF(cx - arm, cy - h), new PointF(cx - h, cy - h),
+        });
+        path.CloseFigure();
+        return path;
+    }
+
+    void DrawPadDash(Graphics g, float s, float x, float y, float w, float h, bool down, KeyboardTheme theme)
+    {
+        var rect = new RectangleF(x, y, w, h);
+        using (var path = PetComposer.Rounded(rect, Math.Min(h, 3.5f * s)))
+        using (var brush = new SolidBrush(down ? theme.PadPressed : theme.Cream2))
+        using (var pen = new Pen(theme.PadOutline, 1.1f * s))
+        {
+            g.FillPath(brush, path);
+            g.DrawPath(pen, path);
+        }
+    }
+
+    void DrawPadBumper(Graphics g, float s, float x, float y, float w, string label, bool down, KeyboardTheme theme)
+    {
+        var rect = new RectangleF(x, y, w, 10 * s);
+        using (var path = PetComposer.Rounded(rect, 5 * s))
+        using (var brush = new SolidBrush(down ? theme.PadPressed : theme.PadBody))
+        using (var pen = new Pen(theme.PadOutline, 1.2f * s))
+        {
+            g.FillPath(brush, path);
+            g.DrawPath(pen, path);
+        }
+        using var font = new Font("Microsoft YaHei UI", 5.8f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+        using var text = new SolidBrush(theme.PadText);
         using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
         g.DrawString(label, font, text, rect, fmt);
     }
 
-    void DrawStick(Graphics g, float s, float cx, float cy, short ax, short ay, bool down, string label)
+    void DrawPadTrigger(Graphics g, float s, float x, float y, float w, string label, byte value, KeyboardTheme theme)
     {
-        float r = 17 * s;
-        using (var brush = new SolidBrush(Color.FromArgb(255, 227, 203, 165)))
-            g.FillEllipse(brush, cx - r, cy - r, r * 2, r * 2);
-        using (var pen = new Pen(Color.FromArgb(255, 177, 139, 104), 1.2f * s))
-            g.DrawEllipse(pen, cx - r, cy - r, r * 2, r * 2);
-        float ox = ax / 32767f * 6 * s, oy = -ay / 32767f * 6 * s;
-        using (var brush = new SolidBrush(down ? Color.FromArgb(255, 255, 199, 120) : Color.FromArgb(255, 237, 220, 193)))
-            g.FillEllipse(brush, cx - r * 0.55f + ox, cy - r * 0.55f + oy, r * 1.1f, r * 1.1f);
-        using var font = new Font("Microsoft YaHei UI", 7f * s, FontStyle.Regular, GraphicsUnit.Pixel);
-        using var text = new SolidBrush(Color.FromArgb(200, 133, 104, 76));
-        using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Far };
-        g.DrawString(label, font, text, new RectangleF(cx - r, cy + r - 8 * s, r * 2, 8 * s), fmt);
+        var rect = new RectangleF(x, y, w, 9.5f * s);
+        using (var path = PetComposer.Rounded(rect, 4.75f * s))
+        using (var brush = new SolidBrush(value > 10 ? theme.PadPressed : theme.PadTriggerTrack))
+        using (var pen = new Pen(theme.PadOutline, 1.1f * s))
+        {
+            g.FillPath(brush, path);
+            g.DrawPath(pen, path);
+        }
+        var bar = new RectangleF(rect.X + 4 * s, rect.Bottom - 2.8f * s, (rect.Width - 8 * s) * (value / 255f), 1.6f * s);
+        using (var brush = new SolidBrush(theme.PadTriggerFill))
+            g.FillRectangle(brush, bar);
+        using var font = new Font("Microsoft YaHei UI", 5.8f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+        using var text = new SolidBrush(theme.PadText);
+        using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+        g.DrawString(label + " " + (int)(value / 255f * 100) + "%", font, text, new RectangleF(rect.X, rect.Y, rect.Width, rect.Height - 1.5f * s), fmt);
     }
 
-    void DrawPadKey(Graphics g, float s, float x, float y, float w, float h, string label, bool down, float radius)
+    void DrawTrigger(Graphics g, float s, float x, float y, float w, string label, byte value, KeyboardTheme theme)
+    {
+        var box = new RectangleF(x, y, w, 14 * s);
+        using (var path = PetComposer.Rounded(box, 6 * s))
+        using (var brush = new SolidBrush(value > 10 ? theme.PadPressed : theme.PadTriggerTrack))
+        using (var pen = new Pen(theme.PadOutline, 1.1f * s))
+        { g.FillPath(brush, path); g.DrawPath(pen, path); }
+        var bar = new RectangleF(box.X + 4 * s, box.Bottom - 5 * s, (box.Width - 8 * s) * (value / 255f), 2.5f * s);
+        using (var brush = new SolidBrush(theme.PadTriggerFill))
+            g.FillRectangle(brush, bar);
+        using var font = new Font("Microsoft YaHei UI", 8f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+        using var text = new SolidBrush(theme.PadText);
+        using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+        g.DrawString(label + " " + (int)(value / 255f * 100) + "%", font, text, new RectangleF(box.X, box.Y, box.Width, box.Height - 4 * s), fmt);
+    }
+
+    void DrawFace(Graphics g, float s, float cx, float cy, string label, bool down, Color fill, KeyboardTheme theme)
+    {
+        float r = 9.5f * s;
+        var rect = new RectangleF(cx - r, cy - r, r * 2, r * 2);
+        // ABXY 保留功能辨识色，但按下态仍向主题高亮色靠拢，外框和文字使用主题色。
+        Color face = down ? PetWindow.BlendColor(fill, theme.PadPressed, 0.45f) : fill;
+        using (var brush = new SolidBrush(face))
+            g.FillEllipse(brush, rect);
+        using (var pen = new Pen(theme.PadFaceOutline, 1.3f * s))
+            g.DrawEllipse(pen, rect);
+        using var font = new Font("Microsoft YaHei UI", 9.5f * s, FontStyle.Bold, GraphicsUnit.Pixel);
+        using var text = new SolidBrush(theme.PadFaceText);
+        using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
+        g.DrawString(label, font, text, rect, fmt);
+    }
+
+    void DrawStick(Graphics g, float s, float cx, float cy, short ax, short ay, bool down, string label, KeyboardTheme theme)
+    {
+        float r = 15.5f * s;
+        var well = new RectangleF(cx - r, cy - r, r * 2, r * 2);
+        using (var brush = new SolidBrush(down ? theme.PadPressed : theme.PadStickWell))
+            g.FillEllipse(brush, well);
+        using (var pen = new Pen(theme.PadOutline, 1.8f * s))
+            g.DrawEllipse(pen, well);
+
+        float capR = r * 0.62f;
+        float ox = ax / 32767f * 4 * s, oy = -ay / 32767f * 4 * s;
+        var cap = new RectangleF(cx - capR + ox, cy - capR + oy, capR * 2, capR * 2);
+        using (var brush = new SolidBrush(down ? theme.PadPressed : theme.PadStickCap))
+            g.FillEllipse(brush, cap);
+        using (var pen = new Pen(theme.PadOutline, 1.5f * s))
+            g.DrawEllipse(pen, cap);
+    }
+
+    void DrawPadKey(Graphics g, float s, float x, float y, float w, float h, string label, bool down, float radius, KeyboardTheme theme)
     {
         var r = new RectangleF(x, y, w, h);
         using (var path = PetComposer.Rounded(r, radius))
-        using (var brush = new SolidBrush(down ? Color.FromArgb(255, 255, 199, 120) : Color.FromArgb(255, 246, 234, 210)))
+        using (var brush = new SolidBrush(down ? theme.PadPressed : theme.Cream2))
             g.FillPath(brush, path);
         using (var path = PetComposer.Rounded(r, radius))
-        using (var pen = new Pen(Color.FromArgb(255, 176, 140, 106), 1f * s))
+        using (var pen = new Pen(theme.Border, 1f * s))
             g.DrawPath(pen, path);
         using var font = new Font("Microsoft YaHei UI", 7.5f * s, FontStyle.Bold, GraphicsUnit.Pixel);
-        using var text = new SolidBrush(PetComposer.InkStrong);
+        using var text = new SolidBrush(theme.PadText);
         using var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center };
         g.DrawString(label, font, text, r, fmt);
     }
@@ -825,7 +1040,6 @@ public sealed class KeyboardWindow : Form
     [DllImport("xinput1_4.dll")] static extern uint XInputGetState(uint dwUserIndex, ref XINPUT_STATE pState);
     [DllImport("xinput1_4.dll")] static extern uint XInputGetKeystroke(uint dwUserIndex, uint dwReserved, out XINPUT_KEYSTROKE pKeystroke);
 
-    const ushort XINPUT_KEYSTROKE_KEYDOWN = 0x0001;
     const uint XUSER_INDEX_ANY = 0xFF;
 
     [StructLayout(LayoutKind.Sequential)]

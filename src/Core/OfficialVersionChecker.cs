@@ -39,11 +39,11 @@ public sealed class OfficialCheckStatus
 /// <summary>
 /// 直接读取官方版本清单，不依赖 GitHub Actions 或 compatibility.json。
 /// 官方清单里的 force_manual_download / min_ota_client_version 可以判断强制更新；
-/// 和本地编译的测试基线比较，才能发现“官方更新了但 Native 还没跟上”的版本。
+/// 和“本地编译基线 / 维护者发布的最新验证基线”比较，才能发现官方更新了但 Native 还没跟上。
 /// </summary>
 public static class OfficialVersionChecker
 {
-    /// <summary>发布 Native 时已经实际验证过的官方客户端版本；发版时更新此常量。</summary>
+    /// <summary>发布 Native 时已经实际验证过的官方客户端版本；作为最低兜底基线。</summary>
     public const string TestedOfficialVersion = "1.0.4";
 
     const string CnHost = "https://mc-wuwatappo.kurogames-global.com";
@@ -123,12 +123,22 @@ public static class OfficialVersionChecker
         }
     }
 
-    /// <summary>把官方版本清单转换成客户端可展示的状态。</summary>
-    public static OfficialCheckStatus Evaluate(OfficialVersionInfo info)
+    /// <summary>
+    /// 把官方版本清单转换成客户端可展示的状态。
+    /// remoteTestedVersion 来自 compatibility.json 的 protocol.testedOfficial：
+    /// 维护者验证新官方版本后，只需更新远端基线即可让旧客户端恢复正常，不必等 Native 再发版；
+    /// 远端基线低于本地编译基线时忽略，避免状态倒退。
+    /// </summary>
+    public static OfficialCheckStatus Evaluate(OfficialVersionInfo info, string remoteTestedVersion = null)
     {
+        string testedVersion = TestedOfficialVersion;
+        string remote = (remoteTestedVersion ?? "").Trim();
+        if (remote.Length > 0 && CompareVersions(remote, testedVersion) > 0)
+            testedVersion = remote;
+
         var status = new OfficialCheckStatus
         {
-            TestedVersion = TestedOfficialVersion,
+            TestedVersion = testedVersion,
             OfficialVersion = info?.Version ?? "",
             ForceManualDownload = info?.ForceManualDownload ?? false,
             MinOtaClientVersion = info?.MinOtaClientVersion ?? "",
@@ -145,10 +155,10 @@ public static class OfficialVersionChecker
             return status;
         }
 
-        int compare = CompareVersions(info.Version, TestedOfficialVersion);
+        int compare = CompareVersions(info.Version, testedVersion);
         bool forced = info.ForceManualDownload ||
             (!string.IsNullOrWhiteSpace(info.MinOtaClientVersion) &&
-             CompareVersions(info.MinOtaClientVersion, TestedOfficialVersion) > 0);
+             CompareVersions(info.MinOtaClientVersion, testedVersion) > 0);
 
         if (compare > 0)
         {

@@ -26,6 +26,7 @@
   const state = {
     boot: null,
     page: 'bag',
+    renderedIdentity: '',
     bag: null,
     bagTab: 'recent',
     bagSeries: '',
@@ -36,6 +37,7 @@
     bagSelected: null,
     bagNewIds: [],
     bagRecentIds: [],
+    bagActionUntil: 0,
     disclaimerOpen: false,
     uacPromptOpen: false,
     update: null,
@@ -44,6 +46,7 @@
     compatibility: null,
     announcements: [],
     settingsOpenGroups: new Set(),
+    settingsSearch: '',
     loginMode: 'uid',
     favors: new Set(),
     catalog: {},
@@ -52,11 +55,15 @@
     atlasSeries: '',
     atlasRole: '',
     atlasRarity: '',
+    atlasSearch: '',
+    atlasLimit: 0,
     atlasHidden: new Set(),
     atlasAllCount: 0,
     atlasOwnedOnly: false,
     atlasEmoteSendMode: false,
     atlasSelected: null,
+    roomError: null,
+    themePresetPreviewId: '',
     synthMode: 'up',
     synthType: 'character_skin',
     synthRarity: 'all',
@@ -163,6 +170,9 @@
   const PARAMS = new URLSearchParams(location.search);
   const PREVIEW = PARAMS.get('preview');
   const DEMO = PARAMS.has('demo') || !!PREVIEW;
+  // 真实面板在 Win11 上使用 DWM 原生圆角，外圆角半径要和 DWM 的 8px 对齐；
+  // 预览页没有该参数，保持原来的 18px 外观。
+  if (PARAMS.has('dwm')) document.documentElement.classList.add('dwm-rounded');
 
   function isLogged() { return DEMO || !!(state.boot && state.boot.auth && state.boot.auth.loggedIn); }
 
@@ -185,8 +195,13 @@
     try {
       const r = await tryCall('locks.toggle', { type, id });
       syncLocks(r?.items || []);
-      if (state.page === 'bag') renderBagList();
-      else if (state.page === 'atlas') renderAtlas();
+      if (state.page === 'bag') {
+        const host = document.getElementById('bagGroups');
+        const scroll = host?.scrollTop || 0;
+        renderBagList();
+        if (host) host.scrollTop = scroll;
+      }
+      else if (state.page === 'atlas') renderAtlas(true);
       else if (state.page === 'synth') renderSynth(true);
     } catch { }
   }
@@ -201,7 +216,7 @@
   function showAdvancedSynthWarning() {
     modal(`<div class="about">
       <div class="about-title">高级合成警告</div>
-      <div class="about-note about-note--warn"><p>此功能允许你使用所有库存物品进行合成，请务必看清后使用， 这将会损失你已解锁的图鉴！！！！</p></div>
+      <div class="about-note about-note--warn"><p>此功能允许你使用所有库存物品进行合成，请务必看清后使用， 这将会损失你已解锁的图鉴！！！！每次重新打开操作面板后都会自动关闭，需要重新输入隐藏指令。</p></div>
       <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px">
         <button class="btn ghost" id="synthUnlockCancel">取消</button>
         <button class="btn danger" id="synthUnlockOk">我已知晓并解锁</button>
@@ -223,15 +238,27 @@
     });
   }
 
+  /** 每次从关闭切到开启都重新警告；关闭本身不警告。 */
+  function confirmAdvancedSynthEnable(onConfirm) {
+    const cancel = () => { closeModal(); renderSynth(); };
+    modal(`<div class="about">
+      <div class="about-title">高级合成警告</div>
+      <div class="about-note about-note--warn"><p>开启后，任意物品合成会消耗你已解锁的图鉴，可能造成不可恢复的损失。每次实际合成前仍会再确认一次。</p></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px">
+        <button class="btn ghost" id="synthEnableCancel">取消</button>
+        <button class="btn danger" id="synthEnableOk">仍要开启</button>
+      </div>
+    </div>`, host => {
+      host.onclick = e => { if (e.target === host) cancel(); };
+      host.querySelector('#synthEnableCancel').onclick = cancel;
+      host.querySelector('#synthEnableOk').onclick = () => { closeModal(); onConfirm(); };
+    });
+  }
+
   async function showSynthPanel() {
     if (state.page !== 'synth') return;
-    if (!state.synthUnlocked) {
-      showAdvancedSynthWarning();
-      return;
-    }
-    state.synthPanelVisible = true;
-    await renderSynth();
-    document.querySelector('.synth-advanced-panel')?.scrollIntoView({ block: 'nearest' });
+    // 保留旧的“意外设计”：每次输入隐藏指令都重新弹出首次警告，而不是直接打开面板。
+    showAdvancedSynthWarning();
   }
 
   document.addEventListener('keydown', e => {
@@ -254,8 +281,788 @@
   /* ---------------- 初始化 ---------------- */
   const HASH_PARAMS = new URLSearchParams(location.hash.replace(/^#/, ''));
 
+  function applyPanelMaximized(on) {
+    const maximized = !!on;
+    document.body.classList.toggle('panel-maximized', maximized);
+    const btn = document.getElementById('maxBtn');
+    if (btn) {
+      const label = maximized ? '还原' : '最大化';
+      btn.title = label;
+      btn.setAttribute('aria-label', label);
+    }
+  }
+
+  function normalizeHexColor(value, fallback) {
+    return /^#[0-9a-f]{6}$/i.test(String(value || '')) ? String(value).toLowerCase() : fallback;
+  }
+
+  function hexToRgb(value) {
+    const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(value);
+    return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : [0, 0, 0];
+  }
+
+  function rgbToHsv(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+    let h = 0;
+    if (d > 0) {
+      if (max === r) h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+      else if (max === g) h = ((b - r) / d + 2) / 6;
+      else h = ((r - g) / d + 4) / 6;
+    }
+    return [h * 360, max === 0 ? 0 : d / max, max];
+  }
+
+  function hsvToHex(h, s, v) {
+    h = ((Number(h) % 360) + 360) % 360;
+    s = Math.max(0, Math.min(1, Number(s) || 0));
+    v = Math.max(0, Math.min(1, Number(v) || 0));
+    const c = v * s, x = c * (1 - Math.abs((h / 60) % 2 - 1)), m = v - c;
+    const rgb = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x]
+      : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+    return '#' + rgb.map(n => Math.round((n + m) * 255).toString(16).padStart(2, '0')).join('');
+  }
+
+  function rgbToHsl(r, g, b) {
+    r /= 255; g /= 255; b /= 255;
+    const max = Math.max(r, g, b), min = Math.min(r, g, b);
+    const l = (max + min) / 2;
+    let h = 0, s = 0;
+    if (max !== min) {
+      const d = max - min;
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+      if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+      else if (max === g) h = (b - r) / d + 2;
+      else h = (r - g) / d + 4;
+      h /= 6;
+    }
+    return [h, s, l];
+  }
+
+  function hslToHex(h, s, l) {
+    h = ((h % 1) + 1) % 1;
+    s = Math.max(0, Math.min(1, s));
+    l = Math.max(0, Math.min(1, l));
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    const hue2rgb = t => {
+      t = ((t % 1) + 1) % 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    };
+    return '#' + [hue2rgb(h + 1 / 3), hue2rgb(h), hue2rgb(h - 1 / 3)]
+      .map(v => Math.round(v * 255).toString(16).padStart(2, '0')).join('');
+  }
+
+  function mixHex(a, b, amount) {
+    const x = hexToRgb(normalizeHexColor(a, '#e7b77c'));
+    const y = hexToRgb(normalizeHexColor(b, '#ffffff'));
+    const t = Math.max(0, Math.min(1, Number(amount) || 0));
+    return '#' + x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, '0')).join('');
+  }
+
+  /** 只影响桌宠底栏/远程昵称条的字段；拖动取色时以低频率发给原生层预览。 */
+  const PET_THEME_PREVIEW_KEYS = new Set([
+    'themeAccent', 'themeFont', 'themeBarFollowStandard',
+    'themeBarColor', 'themeBarTextFollowTheme', 'themeBarTextColor', 'themeAdvanced',
+  ]);
+  let petThemePreviewPending = null;
+  let petThemePreviewTimer = 0;
+  function previewPetTheme(patch) {
+    if (!patch || !window.chrome?.webview) return;
+    const keys = Object.keys(patch).filter(key => PET_THEME_PREVIEW_KEYS.has(key));
+    if (!keys.length) return;
+    petThemePreviewPending = { ...(petThemePreviewPending || {}), ...patch };
+    if (petThemePreviewTimer) return;
+    petThemePreviewTimer = setTimeout(() => {
+      petThemePreviewTimer = 0;
+      const payload = petThemePreviewPending || {};
+      petThemePreviewPending = null;
+      call('theme.preview', payload).catch(() => { });
+    }, 40);
+  }
+  function clearPetThemePreview() {
+    petThemePreviewPending = null;
+    if (petThemePreviewTimer) {
+      clearTimeout(petThemePreviewTimer);
+      petThemePreviewTimer = 0;
+    }
+    if (!window.chrome?.webview) return;
+    call('theme.preview.clear').catch(() => { });
+  }
+  /** 自绘颜色选择器：饱和度/明度渐变区 + 色相滑条 + RGB/HEX + 快捷色板。 */
+  function openColorPicker(initial, onApply, onPreview, onCancel) {
+    let value = normalizeHexColor(initial, '#e7b77c');
+    const [initialH, initialS, initialV] = rgbToHsv(...hexToRgb(value));
+    const hsv = [initialH, initialS, initialV];
+    const presets = [
+      '#e7b77c', '#d99a5c', '#c25b4e', '#d67084', '#9669c8', '#6096d2',
+      '#6eaa78', '#5ab7c2', '#454c73', '#f5e4cc', '#fff8e9', '#ffffff',
+      '#000000', '#8e5e43', '#342d36', '#f0eef4', '#e8e7ef', '#c6cadc',
+      '#ffd9c9', '#fed291', '#123456', '#1f5fa8', '#c0392b', '#27ae60',
+    ];
+    const recentKey = 'wuwa.colorPicker.recent.v1';
+    let recent = [];
+    try { recent = JSON.parse(localStorage.getItem(recentKey) || '[]') || []; } catch { recent = []; }
+    recent = recent.filter(c => /^#[0-9a-f]{6}$/i.test(String(c))).slice(0, 8);
+    const recentHtml = recent.length
+      ? `<div class="color-recent-label">最近使用</div><div class="color-presets color-recent">${recent.map(c => `<button type="button" class="color-preset" data-cp-color="${c}" style="background:${c}" title="${c}"></button>`).join('')}</div>`
+      : '';
+    modal(`<div class="color-picker-dialog">
+      <div class="color-picker-title">选择颜色</div>
+      <div class="color-sv" id="cpSV" title="拖动选择饱和度和明度"><span class="color-sv-cursor" id="cpCursor"></span></div>
+      <label class="color-hue-row"><span>色相</span><input type="range" id="cpHue" min="0" max="360" step="1" /><output id="cpHueV"></output></label>
+      <div class="color-picker-preview-row">
+        <span class="color-picker-preview" id="cpPreview"></span>
+        <input class="input color-hex-input" id="cpHex" maxlength="7" value="${value}" />
+      </div>
+      <div class="color-presets">${presets.map(c => `<button type="button" class="color-preset" data-cp-color="${c}" style="background:${c}" title="${c}"></button>`).join('')}</div>
+      ${recentHtml}
+      <div class="color-rgb-grid">
+        <label class="color-slider-row"><span>R</span><input type="range" id="cpR" min="0" max="255" step="1" /><output id="cpRV"></output></label>
+        <label class="color-slider-row"><span>G</span><input type="range" id="cpG" min="0" max="255" step="1" /><output id="cpGV"></output></label>
+        <label class="color-slider-row"><span>B</span><input type="range" id="cpB" min="0" max="255" step="1" /><output id="cpBV"></output></label>
+      </div>
+      <div class="color-picker-actions">
+        <button class="btn ghost" id="cpCancel">取消</button>
+        <button class="btn" id="cpOk">确定</button>
+      </div>
+    </div>`, host => {
+      // 点击遮罩关闭时也必须走取消回调，否则桌宠可能停在临时预览色上。
+      host.onclick = e => {
+        if (e.target !== host) return;
+        if (onCancel) onCancel();
+        closeModal();
+      };
+      const sv = host.querySelector('#cpSV');
+      const cursor = host.querySelector('#cpCursor');
+      const hue = host.querySelector('#cpHue');
+      const sync = (notify = true) => {
+        const [r, g, b] = hexToRgb(value);
+        const preview = host.querySelector('#cpPreview');
+        const hex = host.querySelector('#cpHex');
+        if (preview) preview.style.background = value;
+        if (hex && hex !== document.activeElement) hex.value = value;
+        if (sv) {
+          sv.style.background = `linear-gradient(to top, #000, transparent), linear-gradient(to right, #fff, transparent), hsl(${hsv[0]} 100% 50%)`;
+          if (cursor) {
+            cursor.style.left = `${(hsv[1] * 100).toFixed(2)}%`;
+            cursor.style.top = `${((1 - hsv[2]) * 100).toFixed(2)}%`;
+          }
+        }
+        if (hue && hue !== document.activeElement) hue.value = String(hsv[0]);
+        const hueOut = host.querySelector('#cpHueV');
+        if (hueOut) hueOut.textContent = `${Math.round(hsv[0])}°`;
+        for (const [id, val, label] of [['cpR', r, 'cpRV'], ['cpG', g, 'cpGV'], ['cpB', b, 'cpBV']]) {
+          const input = host.querySelector('#' + id);
+          const out = host.querySelector('#' + label);
+          if (input && input !== document.activeElement) input.value = String(val);
+          if (out) out.textContent = String(val);
+        }
+        if (notify && onPreview) onPreview(value);
+      };
+      const setValue = (next, notify = true) => {
+        value = normalizeHexColor(next, value);
+        const nextHsv = rgbToHsv(...hexToRgb(value));
+        hsv[0] = nextHsv[0]; hsv[1] = nextHsv[1]; hsv[2] = nextHsv[2];
+        sync(notify);
+      };
+      const setHsv = (h, s, v, notify = true) => {
+        hsv[0] = ((Number(h) % 360) + 360) % 360;
+        hsv[1] = Math.max(0, Math.min(1, Number(s)));
+        hsv[2] = Math.max(0, Math.min(1, Number(v)));
+        value = hsvToHex(hsv[0], hsv[1], hsv[2]);
+        sync(notify);
+      };
+      const pickSv = e => {
+        const rect = sv.getBoundingClientRect();
+        const x = Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, rect.width)));
+        const y = Math.max(0, Math.min(1, (e.clientY - rect.top) / Math.max(1, rect.height)));
+        setHsv(hsv[0], x, 1 - y);
+      };
+      sv.onpointerdown = e => {
+        try { sv.setPointerCapture(e.pointerId); } catch { }
+        pickSv(e);
+      };
+      sv.onpointermove = e => { if (e.buttons & 1) pickSv(e); };
+      hue.oninput = e => setHsv(Number(e.target.value), hsv[1], hsv[2]);
+      host.querySelectorAll('[data-cp-color]').forEach(btn => btn.onclick = () => setValue(btn.dataset.cpColor));
+      host.querySelector('#cpR').oninput = e => { const [, g, b] = hexToRgb(value); setValue('#' + [e.target.value, g, b].map(v => Math.max(0, Math.min(255, Math.round(Number(v) || 0))).toString(16).padStart(2, '0')).join('')); };
+      host.querySelector('#cpG').oninput = e => { const [r, , b] = hexToRgb(value); setValue('#' + [r, e.target.value, b].map(v => Math.max(0, Math.min(255, Math.round(Number(v) || 0))).toString(16).padStart(2, '0')).join('')); };
+      host.querySelector('#cpB').oninput = e => { const [r, g] = hexToRgb(value); setValue('#' + [r, g, e.target.value].map(v => Math.max(0, Math.min(255, Math.round(Number(v) || 0))).toString(16).padStart(2, '0')).join('')); };
+      host.querySelector('#cpHex').onchange = e => setValue(e.target.value);
+      host.querySelector('#cpCancel').onclick = () => { if (onCancel) onCancel(); closeModal(); };
+      host.querySelector('#cpOk').onclick = () => {
+        try {
+          const next = JSON.parse(localStorage.getItem(recentKey) || '[]');
+          const list = [value, ...(Array.isArray(next) ? next : []).filter(c => String(c).toLowerCase() !== value)];
+          localStorage.setItem(recentKey, JSON.stringify([...new Set(list)].slice(0, 8)));
+        } catch { }
+        onApply(value); closeModal();
+      };
+      sync(false);
+    });
+  }
+
+  function bindColorTriggers(root = document) {
+    root.querySelectorAll('[data-color-for]').forEach(btn => {
+      const input = document.getElementById(btn.dataset.colorFor);
+      if (!input) return;
+      const sync = () => { btn.style.background = normalizeHexColor(input.value, '#e7b77c'); };
+      sync();
+      input.addEventListener('input', sync);
+      const original = input.value;
+      const preview = next => {
+        input.value = next;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        sync();
+      };
+      const apply = next => {
+        input.value = next;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        sync();
+      };
+      const cancel = () => {
+        input.value = original;
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        sync();
+        if (String(input.id || '').startsWith('theme')) clearPetThemePreview();
+      };
+      btn.onclick = () => openColorPicker(input.value, apply, preview, cancel);
+    });
+  }
+
+
+  const THEME_BG_STORAGE_KEY = 'wuwa.theme.background.v1';
+  const THEME_BG_SOURCE_KEY = 'wuwa.theme.background.source.v1';
+  const THEME_AUTO_PALETTE_KEY = 'wuwa.theme.autoImagePalette.v1';
+  const THEME_BG_MAX_BYTES = 20 * 1024 * 1024;
+  const THEME_BG_COMPRESS_BYTES = 4 * 1024 * 1024;
+  const THEME_BG_CHUNK_CHARS = 256 * 1024;
+  let themeBgHydrating = false;
+  // localStorage 配额不足时的本次会话兜底，避免随后到达的 boot 把刚上传的图片顶掉。
+  let themeBgMemory = '';
+  let themeBgSourceMemory = '';
+  // 图片自动 palette 处于生效状态；手动改主题色/字体时据此清除整套覆盖。
+  let themeImagePaletteActive = false;
+  let themeImagePaletteInitialized = false;
+
+  function autoImagePaletteEnabled() {
+    try {
+      const value = localStorage.getItem(THEME_AUTO_PALETTE_KEY);
+      return value === null ? true : value === '1';
+    } catch { return true; }
+  }
+
+  function setAutoImagePaletteEnabled(enabled) {
+    try { localStorage.setItem(THEME_AUTO_PALETTE_KEY, enabled ? '1' : '0'); } catch { }
+  }
+
+  function readThemeAdvancedOverrides(settings) {
+    try {
+      const parsed = JSON.parse((settings || {}).themeAdvanced || '{}');
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch { return {}; }
+  }
+
+  function hasManualAdvancedPalette(settings) {
+    const overrides = readThemeAdvancedOverrides(settings);
+    // __imagePalette 是自动提取留下的标记；用户改任意颜色后会被删除。
+    if (overrides.__imagePalette === true || overrides.__imagePalette === 'true') return false;
+    return Object.keys(overrides).some(key =>
+      key !== '__imagePalette' && /^#[0-9a-f]{6}$/i.test(String(overrides[key] || '')));
+  }
+
+  function readThemeBackgroundLocal() {
+    if (themeBgMemory) return themeBgMemory;
+    try {
+      const value = localStorage.getItem(THEME_BG_STORAGE_KEY) || '';
+      return /^data:image\/(?:png|jpe?g|webp|gif);base64,/i.test(value) ? value : '';
+    } catch { return ''; }
+  }
+
+  function writeThemeBackgroundLocal(value, sourceUrl = '') {
+    themeBgMemory = value || '';
+    themeBgSourceMemory = sourceUrl || '';
+    try {
+      if (value) localStorage.setItem(THEME_BG_STORAGE_KEY, value);
+      else localStorage.removeItem(THEME_BG_STORAGE_KEY);
+      if (value && sourceUrl) localStorage.setItem(THEME_BG_SOURCE_KEY, sourceUrl);
+      else localStorage.removeItem(THEME_BG_SOURCE_KEY);
+    } catch { /* 超过 localStorage 配额时仍可用 C# 文件 URL 显示 */ }
+  }
+
+  function readThemeBackgroundLocalSource() {
+    if (themeBgMemory) return themeBgSourceMemory;
+    try { return localStorage.getItem(THEME_BG_SOURCE_KEY) || ''; } catch { return ''; }
+  }
+
+  function themeBackgroundSource(settings) {
+    const local = readThemeBackgroundLocal();
+    if (local) return local;
+    const s = settings || {};
+    return typeof s.themeBackgroundImage === 'string' ? s.themeBackgroundImage : '';
+  }
+
+  function themeBackgroundIsSet(settings) {
+    return !!readThemeBackgroundLocal()
+      || !!(settings && settings.themeBackgroundImage)
+      || !!(settings && settings.themeBackgroundImageSet);
+  }
+
+  function updateThemeBackgroundControls() {
+    const s = state.boot?.settings || {};
+    const has = themeBackgroundIsSet(s);
+    const status = document.getElementById('themeBgStatus');
+    if (status) status.textContent = has ? '已设置背景图' : '未设置';
+    const clear = document.getElementById('themeBgClear');
+    if (clear) clear.disabled = !has;
+    const extract = document.getElementById('themeExtract');
+    if (extract) extract.disabled = !has;
+  }
+
+  function hydrateThemeBackground(settings) {
+    if (!settings || !settings.themeBackgroundImageSet || settings.themeBackgroundImage) return;
+    if (readThemeBackgroundLocal() || themeBgHydrating) return;
+    themeBgHydrating = true;
+    call('theme.image.get').then(r => {
+      if (!r?.url || !state.boot?.settings) {
+        if (state.boot?.settings) state.boot.settings.themeBackgroundImageSet = false;
+        return;
+      }
+      state.boot.settings.themeBackgroundImage = r.url;
+      state.boot.settings.themeBackgroundImageSet = true;
+      applyTheme(state.boot.settings);
+      updateThemeBackgroundControls();
+    }).catch(() => { }).finally(() => { themeBgHydrating = false; });
+  }
+
+  function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error || new Error('读取图片失败'));
+      reader.readAsDataURL(blob);
+    });
+  }
+
+  function formatBytes(bytes) {
+    const value = Number(bytes) || 0;
+    if (value >= 1024 * 1024) return (value / (1024 * 1024)).toFixed(1) + 'MB';
+    if (value >= 1024) return Math.round(value / 1024) + 'KB';
+    return value + 'B';
+  }
+
+  // 面板拿到新的服务端背景图 URL 后清掉本次会话的 localStorage 预览，避免预设切换被旧图盖住。
+  // source 记录 localStorage 预览对应的服务端 URL：同一张图保留（上传失败兜底），不同图才清理。
+  function adoptBootThemeBackground(boot) {
+    const next = boot?.settings?.themeBackgroundImage || '';
+    const source = readThemeBackgroundLocalSource();
+    if (!next) {
+      // 当前主题已移除背景图：只有本地预览曾绑定过服务端图片时才清掉；没有 source 说明是上传失败兜底。
+      if (source) writeThemeBackgroundLocal('');
+      return;
+    }
+    if (!source || source !== next) writeThemeBackgroundLocal('');
+  }
+
+  function loadThemeImageBlob(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const image = new Image();
+      let done = false;
+      const finish = (fn, value) => {
+        if (done) return;
+        done = true;
+        URL.revokeObjectURL(url);
+        image.onload = null;
+        image.onerror = null;
+        fn(value);
+      };
+      const timer = setTimeout(() => finish(reject, new Error('图片解码超时')), 15000);
+      image.onload = () => { clearTimeout(timer); finish(resolve, image); };
+      image.onerror = () => { clearTimeout(timer); finish(reject, new Error('图片解码失败')); };
+      image.src = url;
+    });
+  }
+
+  // 超过 4MB 时用 Canvas 压缩为 JPEG，逐级降尺寸/质量直到缓存文件小于 4MB。
+  async function compressThemeImage(file) {
+    const image = await loadThemeImageBlob(file);
+    const sourceW = image.naturalWidth || image.width;
+    const sourceH = image.naturalHeight || image.height;
+    if (!sourceW || !sourceH) throw new Error('图片尺寸无效');
+    let maxSide = 3840;
+    for (let pass = 0; pass < 6; pass++) {
+      const scale = Math.min(1, maxSide / Math.max(sourceW, sourceH));
+      const width = Math.max(1, Math.round(sourceW * scale));
+      const height = Math.max(1, Math.round(sourceH * scale));
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('无法创建压缩画布');
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      // JPEG 不支持透明，先铺白底，避免透明 PNG 压出黑块。
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, width, height);
+      ctx.drawImage(image, 0, 0, width, height);
+      for (let quality = 0.86; quality >= 0.54; quality -= 0.08) {
+        const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', quality));
+        if (!blob) continue;
+        if (blob.size <= THEME_BG_COMPRESS_BYTES - 64 * 1024) {
+          return {
+            dataUrl: await blobToDataUrl(blob),
+            bytes: blob.size,
+            width,
+            height,
+            quality,
+          };
+        }
+      }
+      maxSide = Math.round(maxSide * 0.78);
+    }
+    throw new Error('图片压缩后仍超过 4MB，请换一张尺寸更小的图片');
+  }
+
+  function buildThemePalette(settings) {
+    const s = settings || {};
+    const primary = normalizeHexColor(s.themeAccent, '#e7b77c');
+    const font = normalizeHexColor(s.themeFont, '#8e5e43');
+    const [h, sat, light] = rgbToHsl(...hexToRgb(primary));
+    const tonal = (saturation, lightness) => hslToHex(h, saturation, lightness);
+    // 默认字体色跟主题色联动；用户手动改过字体颜色时以用户值为准。
+    const inkAuto = tonal(Math.min(0.42, Math.max(0.16, sat * 0.52)), 0.30);
+    const ink = font === '#8e5e43' ? inkAuto : font;
+    const cream4 = tonal(Math.min(0.32, sat), 0.988);
+    const auto = {
+      primary,
+      cream: tonal(Math.min(0.42, sat), 0.963),
+      cream2: tonal(Math.min(0.48, sat), 0.925),
+      cream3: tonal(Math.min(0.46, sat), 0.865),
+      cream4,
+      ink,
+      inkStrong: mixHex(ink, '#2b1710', 0.38),
+      inkDim: mixHex(ink, cream4, 0.45),
+      border: tonal(Math.min(0.62, Math.max(0.25, sat)), Math.min(0.68, Math.max(0.44, light * 0.78))),
+      active: tonal(Math.min(0.72, Math.max(0.30, sat)), 0.82),
+      accentStrong: tonal(Math.min(0.82, Math.max(0.35, sat)), Math.min(0.58, Math.max(0.30, light - 0.18))),
+      accentSoft: tonal(Math.min(0.68, Math.max(0.25, sat)), 0.88),
+    };
+    const overrides = readThemeAdvancedOverrides(s);
+    for (const key of Object.keys(auto)) {
+      if (key !== 'primary' && /^#[0-9a-f]{6}$/i.test(String(overrides[key] || '')))
+        auto[key] = String(overrides[key]).toLowerCase();
+    }
+    return auto;
+  }
+
+  function cssBackgroundUrl(value) {
+    return `url("${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/[\r\n]/g, '')}")`;
+  }
+
+  function rgbHex(color) {
+    return '#' + [color.r, color.g, color.b]
+      .map(v => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('');
+  }
+
+  function colorDistance(a, b) {
+    const dr = a.r - b.r, dg = a.g - b.g, db = a.b - b.b;
+    return Math.sqrt(dr * dr + dg * dg + db * db);
+  }
+
+  function hueDistance(a, b) {
+    const d = Math.abs(a - b) % 1;
+    return Math.min(d, 1 - d);
+  }
+
+  function loadImageElement(src, anonymous) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      if (anonymous) img.crossOrigin = 'anonymous';
+      let done = false;
+      const finish = (fn, value) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        img.onload = null;
+        img.onerror = null;
+        fn(value);
+      };
+      const timer = setTimeout(() => finish(reject, new Error('图片加载超时')), 8000);
+      img.onload = () => finish(resolve, img);
+      img.onerror = () => finish(reject, new Error('图片加载失败'));
+      img.src = src;
+    });
+  }
+
+  async function loadImageForSampling(src) {
+    if (!src) throw new Error('没有可读取的背景图');
+    if (/^data:image\//i.test(src)) return await loadImageElement(src, false);
+    try {
+      // 优先 fetch 成 Blob，避免虚拟主机图片污染 canvas。
+      const response = await fetch(src, { cache: 'no-store' });
+      if (!response.ok) throw new Error('HTTP ' + response.status);
+      const blob = await response.blob();
+      const objectUrl = URL.createObjectURL(blob);
+      try { return await loadImageElement(objectUrl, false); }
+      finally { URL.revokeObjectURL(objectUrl); }
+    } catch {
+      // 没有 CORS 时仍尝试直接加载；若 canvas 被污染会在 getImageData 处给出明确错误。
+      return await loadImageElement(src, true);
+    }
+  }
+
+  function sampleImageColors(img) {
+    const sourceW = img.naturalWidth || img.width;
+    const sourceH = img.naturalHeight || img.height;
+    if (!sourceW || !sourceH) throw new Error('图片尺寸无效');
+    const maxSide = 128;
+    const scale = Math.min(1, maxSide / Math.max(sourceW, sourceH));
+    const width = Math.max(1, Math.round(sourceW * scale));
+    const height = Math.max(1, Math.round(sourceH * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) throw new Error('无法创建图片采样画布');
+    ctx.drawImage(img, 0, 0, width, height);
+    let data;
+    try { data = ctx.getImageData(0, 0, width, height).data; }
+    catch { throw new Error('图片跨域，无法读取像素'); }
+
+    const bins = new Map();
+    const light = { r: 0, g: 0, b: 0, weight: 0 };
+    const dark = { r: 0, g: 0, b: 0, weight: 0 };
+    let sampled = 0;
+    let totalWeight = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const alpha = data[i + 3];
+      if (alpha < 128) continue;
+      const r = data[i], g = data[i + 1], b = data[i + 2];
+      const [hue, sat, lightness] = rgbToHsl(r, g, b);
+      sampled++;
+      if (lightness >= 0.72) {
+        const weight = 1 + (lightness - 0.72) * 4;
+        light.r += r * weight; light.g += g * weight; light.b += b * weight; light.weight += weight;
+      }
+      if (lightness <= 0.32) {
+        const weight = 1 + (0.32 - lightness) * 4;
+        dark.r += r * weight; dark.g += g * weight; dark.b += b * weight; dark.weight += weight;
+      }
+      if (lightness < 0.01 || lightness > 0.995) continue;
+      const hueBin = Math.min(23, Math.floor(hue * 24));
+      const satBin = sat < 0.12 ? 0 : sat < 0.35 ? 1 : sat < 0.65 ? 2 : 3;
+      const lightBin = lightness < 0.25 ? 0 : lightness < 0.45 ? 1 : lightness < 0.70 ? 2 : lightness < 0.88 ? 3 : 4;
+      const key = `${hueBin}|${satBin}|${lightBin}`;
+      let bin = bins.get(key);
+      if (!bin) {
+        bin = { r: 0, g: 0, b: 0, count: 0, weight: 0, satSum: 0, hueSin: 0, hueCos: 0 };
+        bins.set(key, bin);
+      }
+      const weight = 1 + sat * 2.4 + (lightness > 0.12 && lightness < 0.9 ? 0.35 : 0);
+      bin.r += r; bin.g += g; bin.b += b;
+      bin.count++;
+      bin.weight += weight;
+      bin.satSum += sat;
+      bin.hueSin += Math.sin(hue * Math.PI * 2);
+      bin.hueCos += Math.cos(hue * Math.PI * 2);
+      totalWeight += weight;
+    }
+    if (!bins.size) throw new Error('图片没有可用的颜色');
+    const entries = [...bins.values()].map(bin => {
+      const count = Math.max(1, bin.count);
+      const avg = { r: bin.r / count, g: bin.g / count, b: bin.b / count };
+      const hue = ((Math.atan2(bin.hueSin, bin.hueCos) / (Math.PI * 2)) + 1) % 1;
+      const sat = bin.satSum / count;
+      return { avg, hue, sat, weight: bin.weight, count: bin.count, score: bin.weight * (0.35 + sat * 1.7) };
+    }).sort((a, b) => b.score - a.score);
+    const primary = entries.find(item => item.sat >= 0.12 && item.weight >= totalWeight * 0.02) || entries[0];
+    const secondary = entries.find(item =>
+      item !== primary
+      && item.count >= Math.max(4, sampled * 0.004)
+      && (hueDistance(item.hue, primary.hue) > 0.07 || colorDistance(item.avg, primary.avg) > 45));
+    return {
+      primary: primary.avg,
+      secondary: secondary ? secondary.avg : null,
+      light: light.weight > 0 ? { r: light.r / light.weight, g: light.g / light.weight, b: light.b / light.weight } : null,
+      dark: dark.weight > 0 ? { r: dark.r / dark.weight, g: dark.g / dark.weight, b: dark.b / dark.weight } : null,
+    };
+  }
+
+  function buildPaletteFromImageColors(colors) {
+    let [primaryHue, primarySat, primaryLight] = rgbToHsl(colors.primary.r, colors.primary.g, colors.primary.b);
+    if (primarySat < 0.14) primarySat = 0.34;
+    primarySat = Math.min(0.85, Math.max(0.25, primarySat));
+    primaryLight = Math.min(0.68, Math.max(0.36, primaryLight));
+    const primary = hslToHex(primaryHue, primarySat, primaryLight);
+    // 先沿用现有主题算法生成一版基础色，再用图片的明暗和辅助色做混合。
+    const base = buildThemePalette({ themeAccent: primary, themeFont: '#8e5e43' });
+
+    const light = colors.light || { r: 250, g: 246, b: 238 };
+    let [lightHue, lightSat, lightLight] = rgbToHsl(light.r, light.g, light.b);
+    const lightBase = hslToHex(lightHue, Math.min(0.40, Math.max(0.08, lightSat)), Math.min(0.985, Math.max(0.90, lightLight)));
+
+    let secondaryHex;
+    if (colors.secondary) {
+      const [sh, ss, sl] = rgbToHsl(colors.secondary.r, colors.secondary.g, colors.secondary.b);
+      secondaryHex = hslToHex(sh, Math.min(0.72, Math.max(0.22, ss)), Math.min(0.68, Math.max(0.38, sl)));
+    } else {
+      secondaryHex = hslToHex((primaryHue + 0.08) % 1, Math.min(0.60, Math.max(0.25, primarySat * 0.7)), 0.55);
+    }
+
+    let ink;
+    if (colors.dark) {
+      const [dh, ds, dl] = rgbToHsl(colors.dark.r, colors.dark.g, colors.dark.b);
+      ink = hslToHex(dh, Math.min(0.50, Math.max(0.12, ds)), Math.min(0.32, Math.max(0.18, dl)));
+    } else {
+      ink = hslToHex(primaryHue, Math.min(0.40, Math.max(0.18, primarySat * 0.55)), 0.26);
+    }
+
+    const cream = mixHex(base.cream, lightBase, 0.30);
+    const cream2 = mixHex(base.cream2, lightBase, 0.24);
+    const cream3 = mixHex(base.cream3, secondaryHex, 0.14);
+    const cream4 = mixHex(base.cream4, lightBase, 0.18);
+    const border = mixHex(base.border, secondaryHex, 0.30);
+    const active = mixHex(base.active, secondaryHex, 0.26);
+    return {
+      accent: primary,
+      font: ink,
+      overrides: {
+        cream,
+        cream2,
+        cream3,
+        cream4,
+        ink,
+        inkStrong: mixHex(ink, '#2b1710', 0.42),
+        inkDim: mixHex(ink, cream4, 0.45),
+        border,
+        active,
+        accentStrong: mixHex(base.accentStrong, secondaryHex, 0.20),
+        accentSoft: mixHex(base.accentSoft, lightBase, 0.35),
+      },
+    };
+  }
+
+  function applyTheme(settings) {
+    const palette = buildThemePalette(settings);
+    const root = document.documentElement;
+    root.style.setProperty('--theme-accent', palette.primary);
+    root.style.setProperty('--theme-accent-strong', palette.accentStrong);
+    root.style.setProperty('--theme-accent-soft', palette.accentSoft);
+    root.style.setProperty('--theme-font', palette.ink);
+    root.style.setProperty('--cream', palette.cream);
+    root.style.setProperty('--cream-2', palette.cream2);
+    root.style.setProperty('--cream-3', palette.cream3);
+    root.style.setProperty('--cream-4', palette.cream4);
+    root.style.setProperty('--border', palette.border);
+    root.style.setProperty('--active', palette.active);
+    root.style.setProperty('--ink', palette.ink);
+    root.style.setProperty('--ink-strong', palette.inkStrong);
+    root.style.setProperty('--ink-dim', palette.inkDim);
+
+    const s = settings || {};
+    const image = themeBackgroundSource(s);
+    const opacity = Math.max(0, Math.min(1, Number(s.themeBackgroundOpacity ?? 0.25)));
+    const blur = Math.max(0, Math.min(24, Number(s.themeBackgroundBlur ?? 0)));
+    const bg = document.getElementById('themeBg');
+    if (bg) bg.style.backgroundImage = image ? cssBackgroundUrl(image) : 'none';
+    document.body.classList.toggle('theme-has-bg', !!image && opacity > 0);
+    root.style.setProperty('--theme-bg-opacity', image ? opacity : 0);
+    root.style.setProperty('--theme-bg-blur', `${blur}px`);
+    hydrateThemeBackground(s);
+  }
+
+  const THEME_ADVANCED_FIELDS = [
+    ['cream', '背景色 1'],
+    ['cream2', '背景色 2'],
+    ['cream3', '背景色 3'],
+    ['cream4', '背景色 4'],
+    ['ink', '正文颜色'],
+    ['inkStrong', '强调文字'],
+    ['inkDim', '次要文字'],
+    ['border', '边框颜色'],
+    ['active', '选中背景'],
+    ['accentStrong', '强调深色'],
+    ['accentSoft', '强调浅色'],
+  ];
+
+  function scrollSettingsSectionIntoView(section, behavior = 'smooth') {
+    const scroller = document.querySelector('.settings-scroll');
+    if (!scroller || !section) return;
+    // 不能对 section 调 scrollIntoView：它会连带滚动 html/body，把标题栏一起滚出窗口。
+    const scrollerRect = scroller.getBoundingClientRect();
+    const sectionRect = section.getBoundingClientRect();
+    const target = scroller.scrollTop
+      + (sectionRect.top - scrollerRect.top)
+      - Math.max(8, (scroller.clientHeight - sectionRect.height) / 2);
+    scroller.scrollTo({ top: Math.max(0, target), behavior });
+    // 防御性复位：滚动只允许发生在 .settings-scroll 内。
+    resetDocumentScroll();
+  }
+
+  function openThemeSettings() {
+    if (state.page !== 'settings') navigate('settings');
+    const reveal = () => {
+      const group = document.getElementById('settings-group-theme');
+      if (group) {
+        if (group.tagName === 'DETAILS') group.open = true;
+        group.setAttribute('open', '');
+        state.settingsOpenGroups.add('theme');
+        saveSettingsOpenGroups();
+      }
+      const section = document.getElementById('themeSection');
+      if (!section) return;
+      scrollSettingsSectionIntoView(section);
+      section.classList.remove('theme-highlight');
+      void section.offsetWidth;
+      section.classList.add('theme-highlight');
+      setTimeout(() => section.classList.remove('theme-highlight'), 1700);
+    };
+    setTimeout(reveal, 80);
+    setTimeout(reveal, 360);
+  }
+
+  async function togglePanelMaximized() {
+    try {
+      const r = await call('win.max');
+      applyPanelMaximized(r?.maximized);
+    } catch { }
+  }
+
+  function edgeResizeDirection(x, y) {
+    const grip = 6;
+    const w = document.documentElement.clientWidth;
+    const h = document.documentElement.clientHeight;
+    const left = x <= grip;
+    const right = x >= w - grip - 1;
+    const top = y <= grip;
+    const bottom = y >= h - grip - 1;
+    if (top && left) return 'topleft';
+    if (top && right) return 'topright';
+    if (bottom && left) return 'bottomleft';
+    if (bottom && right) return 'bottomright';
+    if (left) return 'left';
+    if (right) return 'right';
+    if (top) return 'top';
+    if (bottom) return 'bottom';
+    return '';
+  }
+
+  const RESIZE_CURSORS = {
+    left: 'ew-resize', right: 'ew-resize',
+    top: 'ns-resize', bottom: 'ns-resize',
+    topleft: 'nwse-resize', bottomright: 'nwse-resize',
+    topright: 'nesw-resize', bottomleft: 'nesw-resize',
+  };
+
   function init() {
     const hashParams = HASH_PARAMS;
+    loadSettingsOpenGroups();
     const initialPage = hashParams.get('page');
     if (initialPage && PAGES.some(p => p.key === initialPage)) state.page = initialPage;
     const warningIcon = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 2.8 20h18.4L12 3Z"/><path d="M12 9v4.5"/><path d="M12 17h.01"/></svg>';
@@ -264,10 +1071,60 @@
     document.querySelectorAll('.tab').forEach(btn => btn.onclick = () => navigate(btn.dataset.page));
     document.getElementById('closeBtn').onclick = () => call('win.close');
     document.getElementById('winCloseBtn').onclick = () => call('win.close');
+    document.getElementById('themeBtn').onclick = openThemeSettings;
     document.getElementById('minBtn').onclick = () => call('win.min');
-    document.getElementById('titlebar').addEventListener('mousedown', e => {
-      if (e.target.closest('button')) return;
+    document.getElementById('maxBtn').onclick = togglePanelMaximized;
+    window.addEventListener('mousemove', e => {
+      if (document.body.classList.contains('panel-maximized')) {
+        document.body.style.cursor = '';
+        return;
+      }
+      const dir = edgeResizeDirection(e.clientX, e.clientY);
+      document.body.style.cursor = dir ? RESIZE_CURSORS[dir] : '';
+    });
+    let edgeResizeActive = false;
+    window.addEventListener('mousedown', e => {
+      if (e.button !== 0 || document.body.classList.contains('panel-maximized')) return;
+      const dir = edgeResizeDirection(e.clientX, e.clientY);
+      if (!dir) return;
+      e.preventDefault();
+      e.stopPropagation();
+      edgeResizeActive = true;
+      call('win.resizeStart', { dir });
+    }, true);
+    window.addEventListener('mouseup', () => {
+      if (!edgeResizeActive) return;
+      edgeResizeActive = false;
+      call('win.resizeEnd');
+    });
+    const titlebar = document.getElementById('titlebar');
+    let titleDragArmed = false;
+    let titleDragStarted = false;
+    let titleDragX = 0;
+    let titleDragY = 0;
+    titlebar.addEventListener('mousedown', e => {
+      if (e.button !== 0 || e.target.closest('button')) return;
+      if (document.body.classList.contains('panel-maximized')) return;
+      titleDragArmed = true;
+      titleDragStarted = false;
+      titleDragX = e.clientX;
+      titleDragY = e.clientY;
+    });
+    // 拖拽阈值：双击标题栏时不启动原生拖动，才能稳定触发最大化/还原。
+    window.addEventListener('mousemove', e => {
+      if (!titleDragArmed || titleDragStarted) return;
+      if (Math.hypot(e.clientX - titleDragX, e.clientY - titleDragY) < 4) return;
+      titleDragStarted = true;
+      titleDragArmed = false;
       call('win.drag');
+    });
+    window.addEventListener('mouseup', () => {
+      titleDragArmed = false;
+      titleDragStarted = false;
+    });
+    titlebar.addEventListener('dblclick', e => {
+      if (e.target.closest('button')) return;
+      togglePanelMaximized();
     });
     navigate(state.page);
     setInterval(updateChestStatus, 1000);
@@ -283,12 +1140,24 @@
   async function boot() {
     try {
       const b = await call('boot');
+      const prevRegion = state.boot?.settings?.serverRegion || 'cn';
+      adoptBootThemeBackground(b);
       state.boot = b;
+      migrateLegacyAssetStorage();
       applySynthSettings(b);
+      applyTheme(b.settings);
       state.update = b.update || state.update;
       state.announcements = Array.isArray(b.announcements) ? b.announcements : [];
+      mergePendingRecentChests(b.pendingRecentChestIds);
+      applyPanelMaximized(b.panelMaximized);
       renderChrome();
-      renderPage();
+      // WebView ready 事件和显式 boot() 可能拿到同一份数据；身份没变时不重复整页重建。
+      const identity = authIdentityKey(b);
+      if (state.renderedIdentity !== identity) {
+        resetAccountScopedState(prevRegion !== (b?.settings?.serverRegion || 'cn'));
+        state.renderedIdentity = identity;
+        renderPage();
+      }
       if (isLogged()) ensureBag().catch(() => { });
       maybeShowDisclaimer();
       maybeShowUacPrompt();
@@ -466,7 +1335,64 @@
   }
 
   function handleEvent(evt, data) {
-    if (evt === 'boot') { state.boot = data; state.update = data.update || state.update; state.compatibility = data.compatibility || state.compatibility; state.announcements = Array.isArray(data.announcements) ? data.announcements : state.announcements; renderChrome(); renderPage(); maybeShowDisclaimer(); maybeShowUacPrompt(); maybeOpenEmoteEditor(); return; }
+    if (evt === 'boot') {
+      const prev = state.boot;
+      const prevAuthKey = authIdentityKey(prev);
+      const prevSettingsSig = bootSettingsSignature(prev);
+      const prevBagSig = bootBagSignature(prev);
+      const prevSynthSig = bootSynthSignature(prev);
+      const prevRoomSig = roomSignature(prev?.room);
+      adoptBootThemeBackground(data);
+      state.boot = data;
+      migrateLegacyAssetStorage();
+      state.update = data.update || state.update;
+      state.compatibility = data.compatibility || state.compatibility;
+      state.announcements = Array.isArray(data.announcements) ? data.announcements : state.announcements;
+      mergePendingRecentChests(data.pendingRecentChestIds);
+      applyPanelMaximized(data.panelMaximized);
+      applyTheme(data.settings);
+      applySynthSettings(data);
+      renderChrome();
+      applyAuthFields(data.auth);
+      const nextAuthKey = authIdentityKey(data);
+      const identityChanged = !prev || prevAuthKey !== nextAuthKey;
+      if (identityChanged && state.renderedIdentity !== nextAuthKey) {
+        const regionChanged = (prev?.settings?.serverRegion || 'cn') !== (data?.settings?.serverRegion || 'cn');
+        resetAccountScopedState(regionChanged);
+        state.renderedIdentity = nextAuthKey;
+        renderPage();
+        if (isLogged()) ensureBag().catch(() => { });
+      } else if (identityChanged) {
+        // 同一身份已经由 boot() 渲染过，不再整页重建。
+      } else if (state.page === 'settings') {
+        // 只更新真正变化的设置；点击/宝箱倒计时等 auth 字段不会触发整页重建。
+        if (prevSettingsSig !== bootSettingsSignature(data)) renderSettings();
+      } else if (state.page === 'bag') {
+        if (state.bag && prevBagSig !== bootBagSignature(data)) {
+          const host = document.getElementById('bagGroups');
+          const scroll = host?.scrollTop || 0;
+          renderBagList();
+          renderBagDetail();
+          if (host) host.scrollTop = scroll;
+        }
+      } else if (state.page === 'atlas') {
+        if (prevBagSig !== bootBagSignature(data)) {
+          const host = document.getElementById('atlasGroups');
+          const scroll = host?.scrollTop || 0;
+          const snap = state.atlasSnapshot;
+          if (snap) renderAtlasList(snap.items, snap.ownedNames);
+          if (host) host.scrollTop = scroll;
+        }
+      } else if (state.page === 'synth') {
+        if (prevSynthSig !== bootSynthSignature(data)) renderSynth(true);
+      } else if (state.page === 'room') {
+        if (prevRoomSig !== roomSignature(data.room)) renderRoom();
+      }
+      maybeShowDisclaimer();
+      maybeShowUacPrompt();
+      maybeOpenEmoteEditor();
+      return;
+    }
     if (evt === 'navigate') { if (data?.page) navigate(data.page); return; }
     if (evt === 'announcements') {
       state.announcements = Array.isArray(data) ? data : [];
@@ -477,6 +1403,7 @@
       state.compatibility = data;
       renderNotices();
       if (state.page === 'settings') renderSettings();
+      if (state.page === 'room') renderRoom();
       return;
     }
     if (evt === 'update') {
@@ -499,10 +1426,31 @@
       }
       return;
     }
-    if (evt === 'auth') { if (state.boot) state.boot.auth = { ...state.boot.auth, ...data }; renderChrome(); renderPage(); return; }
+    if (evt === 'auth') {
+      if (!state.boot) return;
+      const prevKey = authIdentityKey(state.boot);
+      const wasLogged = isLogged();
+      const nextAuth = { ...(state.boot.auth || {}), ...(data || {}) };
+      state.boot.auth = nextAuth;
+      const changed = prevKey !== authIdentityKey(state.boot) || wasLogged !== isLogged();
+      renderChrome();
+      applyAuthFields(nextAuth);
+      if (changed) {
+        const identity = authIdentityKey(state.boot);
+        if (state.renderedIdentity !== identity) {
+          resetAccountScopedState(false);
+          migrateLegacyAssetStorage();
+          state.renderedIdentity = identity;
+          renderPage();
+          if (isLogged()) ensureBag().catch(() => { });
+        }
+      }
+      return;
+    }
     if (evt === 'room') {
       if (!state.boot) return;
       state.boot.room = data;
+      if (data?.connected || !data?.lastError) state.roomError = null;
       renderChrome();
       if (state.page !== 'room') return;
       // 房间推送可能成批到达；内容没变就不重建整页（人数多时 DOM 重建很贵）。
@@ -510,13 +1458,51 @@
       if (sig !== state.roomSig) { state.roomSig = sig; renderRoom(); }
       return;
     }
+    if (evt === 'room.error') {
+      state.roomError = data || null;
+      if (state.page === 'room') renderRoom();
+      if (data?.message) toast(data.message, 'err');
+      return;
+    }
     if (evt === 'toast') { toast(data.text, data.kind); return; }
     // 自动领宝箱发生在后台，面板收到后同步背包与「最近获得」。
-    if (evt === 'chest') { refreshAfterAcquire(data?.asset_id); return; }
+    if (evt === 'chest') {
+      const id = Number(data?.asset_id) || 0;
+      if (id) call('recent.ack', { ids: [id] }).catch(() => { });
+      refreshAfterAcquire(id);
+      return;
+    }
     if (evt === 'clicks') {
       applyClicks(typeof data === 'object' && data !== null ? data : { available: data });
       return;
     }
+  }
+
+  function authIdentityKey(boot) {
+    return `${boot?.settings?.serverRegion || 'cn'}|${boot?.auth?.cuid || ''}|${boot?.auth?.loggedIn ? 1 : 0}`;
+  }
+  function bootSettingsSignature(boot) {
+    return JSON.stringify([boot?.settings || {}, boot?.themePresets || [], boot?.themeRotation || {}]);
+  }
+  function bootBagSignature(boot) {
+    return JSON.stringify([boot?.appearance || {}, boot?.locks || [], boot?.auth?.cuid || '', boot?.settings?.serverRegion || '']);
+  }
+  function bootSynthSignature(boot) {
+    return JSON.stringify([boot?.locks || [], boot?.settings?.synthCheckMode || '', boot?.settings?.anyItemSynthesisUnlocked || false, boot?.settings?.anyItemSynthesisEnabled || false]);
+  }
+  /** auth 推送只做字段级刷新：昵称、UID、点击数、宝箱时间；不重建当前页面。 */
+  function applyAuthFields(auth) {
+    if (!auth) return;
+    document.querySelectorAll('[data-auth-nickname]').forEach(el => {
+      const next = auth.loggedIn ? (auth.nickname || '漂泊者') : '—';
+      if (el.textContent !== next) el.textContent = next;
+    });
+    document.querySelectorAll('[data-auth-uid]').forEach(el => {
+      const next = auth.loggedIn ? String(auth.uid || '—') : '—';
+      if (el.textContent !== next) el.textContent = next;
+    });
+    applyClicks({ available: auth.clicks, total: auth.clickTotal, consume: auth.clickConsume });
+    updateChestStatus();
   }
 
   // 点击数每按一次键都会变：只改对应文字节点，不整页重绘（房间里人多时重绘代价很高）。
@@ -547,13 +1533,24 @@
     renderNotices();
   }
 
+  // WebView2 里 html/body 也可能被 scrollIntoView 等程序化滚动带偏，导致标题栏滚出窗口。
+  function resetDocumentScroll() {
+    if (window.scrollY || document.documentElement.scrollTop || document.body.scrollTop) {
+      window.scrollTo(0, 0);
+      document.documentElement.scrollTop = 0;
+      document.body.scrollTop = 0;
+    }
+  }
+
   function navigate(key) {
     state.page = key;
+    resetDocumentScroll();
     renderChrome();
     renderPage();
   }
 
   function renderPage() {
+    resetDocumentScroll();
     const host = document.getElementById('pageHost');
     if (!isLogged() && state.page !== 'settings') {
       host.innerHTML = renderLogin();
@@ -760,12 +1757,31 @@
   }
 
   /* ---------------- 背包 ---------------- */
+  // 所有 bag.list 串行执行：左右宝箱几乎同时领取时，两个请求并发返回可能乱序；
+  // 旧快照覆盖新快照会让「最近获得」只显示其中一个奖励。
+  let bagLoadChain = Promise.resolve();
+  function fetchBagItems(quiet = false) {
+    const task = async () => {
+      const r = quiet ? await call('bag.list') : await tryCall('bag.list');
+      state.bag = r.items || [];
+      syncFavoritesFromBag();
+      updateSynthBadge();
+      return state.bag;
+    };
+    const p = bagLoadChain.then(task, task);
+    bagLoadChain = p.catch(() => { });
+    return p;
+  }
+  /** 收藏状态以 bag.list 的 is_collect 为准；重启/重开面板后不再显示成未收藏。 */
+  function syncFavoritesFromBag() {
+    state.favors = new Set((state.bag || [])
+      .filter(x => x && x.isCollect)
+      .map(x => Number(x.id))
+      .filter(id => Number.isFinite(id) && id > 0));
+  }
   async function ensureBag(force = false) {
     if (state.bag && !force) return state.bag;
-    const r = await tryCall('bag.list');
-    state.bag = r.items || [];
-    updateSynthBadge();
-    return state.bag;
+    return await fetchBagItems();
   }
 
   const BAG_TABS = [['recent', '最近获得'], ['character_skin', '角色'], ['accessory', '配件'], ['emote', '表情']];
@@ -801,37 +1817,100 @@
   }
   const RECENT_KEY = 'wn_recent_assets';
   const UNSEEN_KEY = 'wn_unseen_assets';
+  const KNOWN_KEY = 'wn_known_assets';
+  const ASSET_SCOPE_MIGRATION_KEY = 'wn_asset_scope_migrated_v1';
   const RECENT_MAX = 80;
+
+  /**
+   * 「最近获得 / 新物品红点 / 已认识」都按 区服 + 账号 隔离。
+   * 旧版本使用设备级固定 key，切换账号或国服/国际服时会串数据。
+   */
+  function assetStorageScope() {
+    const region = state.boot?.settings?.serverRegion === 'global' ? 'global' : 'cn';
+    const cuid = String(state.boot?.auth?.cuid || '').trim();
+    return `${region}:${cuid || (DEMO ? 'demo' : 'guest')}`;
+  }
+  function scopedStorageKey(base) { return `${base}::${assetStorageScope()}`; }
+  function readStoredNumberArray(key) {
+    try {
+      const arr = JSON.parse(localStorage.getItem(key) || '[]');
+      return Array.isArray(arr) ? arr.map(Number).filter(x => Number.isFinite(x) && x > 0) : [];
+    } catch { return []; }
+  }
+  function writeStoredNumberArray(key, list) {
+    try { localStorage.setItem(key, JSON.stringify([...new Set((list || []).map(Number).filter(x => Number.isFinite(x) && x > 0))])); } catch { }
+  }
+
+  /**
+   * 旧设备级 key 只在第一次登录后迁移到当前账号作用域；旧 key 保留作为回滚备份，
+   * 之后不再被任何账号读取，避免第二个账号继承第一份数据。
+   */
+  function migrateLegacyAssetStorage() {
+    try {
+      if (localStorage.getItem(ASSET_SCOPE_MIGRATION_KEY) === '1') return;
+      if (!isLogged()) return;
+      const scope = assetStorageScope();
+      if (scope.endsWith(':guest')) return;
+      let migrated = 0;
+      for (const [base, legacyKey] of [[RECENT_KEY, 'wn_recent_assets'], [UNSEEN_KEY, 'wn_unseen_assets'], [KNOWN_KEY, 'wn_known_assets']]) {
+        const target = scopedStorageKey(base);
+        if (localStorage.getItem(target) != null) continue;
+        const value = localStorage.getItem(legacyKey);
+        if (value != null) { localStorage.setItem(target, value); migrated++; }
+      }
+      const recentTarget = scopedStorageKey(RECENT_KEY);
+      if (localStorage.getItem(recentTarget) == null) {
+        const legacyNew = localStorage.getItem('wn_new_assets');
+        if (legacyNew != null) { localStorage.setItem(recentTarget, legacyNew); migrated++; }
+      }
+      localStorage.setItem(ASSET_SCOPE_MIGRATION_KEY, '1');
+      if (migrated) console.info(`已迁移 ${migrated} 项旧设备级收集记录到 ${scope}`);
+    } catch { }
+  }
+
+  /** 登录/切换账号或区服后清空内存里的账号数据，防止新账号看到旧账号的背包/收藏。 */
+  function resetAccountScopedState(regionChanged = false) {
+    state.bag = null;
+    state.bagNewReady = false;
+    state.bagRecentIds = [];
+    state.bagNewIds = [];
+    state.bagSelected = null;
+    state.favors = new Set();
+    state.atlas = {};
+    state.atlasAllCount = 0;
+    state.atlasSnapshot = null;
+    state.atlasLimit = ATLAS_PAGE_SIZE;
+    state.presets = null;
+    state.emoteCatalog = null;
+    state.roomError = null;
+    state.roomSig = '';
+    if (regionChanged) state.catalog = {};
+  }
 
   /**
    * 「最近获得」是一个常驻的有序列表：新获得的物品逐个插到最前面，旧的一直往后排。
    * 与「已认识」集合分开保存，所以切换页签、重启都不会丢，也不会整页清空。
    */
   function loadRecent() {
-    try {
-      const raw = localStorage.getItem(RECENT_KEY);
-      if (raw == null) {
-        // 旧版本只存了「本次新增」：升级时把它迁成常驻列表，用户不会看到空白的最近获得。
-        const legacy = JSON.parse(localStorage.getItem('wn_new_assets') || '[]');
-        const seeded = Array.isArray(legacy) ? legacy.filter(x => typeof x === 'number') : [];
-        if (seeded.length) saveRecent(seeded);
-        return seeded;
-      }
-      const arr = JSON.parse(raw);
-      return Array.isArray(arr) ? arr.filter(x => typeof x === 'number') : [];
-    } catch { return []; }
+    return readStoredNumberArray(scopedStorageKey(RECENT_KEY));
   }
   function saveRecent(list) {
-    try { localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, RECENT_MAX))); } catch { }
+    writeStoredNumberArray(scopedStorageKey(RECENT_KEY), (list || []).slice(0, RECENT_MAX));
   }
   function loadUnseen() {
-    try {
-      const arr = JSON.parse(localStorage.getItem(UNSEEN_KEY) || '[]');
-      return Array.isArray(arr) ? arr.filter(x => typeof x === 'number') : [];
-    } catch { return []; }
+    return readStoredNumberArray(scopedStorageKey(UNSEEN_KEY));
   }
   function saveUnseen(list) {
-    try { localStorage.setItem(UNSEEN_KEY, JSON.stringify([...new Set(list)])); } catch { }
+    writeStoredNumberArray(scopedStorageKey(UNSEEN_KEY), list);
+  }
+  function loadKnownState() {
+    try {
+      const raw = localStorage.getItem(scopedStorageKey(KNOWN_KEY));
+      return { known: new Set(readStoredNumberArray(scopedStorageKey(KNOWN_KEY))), firstRun: raw == null };
+    } catch { return { known: new Set(), firstRun: true }; }
+  }
+  function saveKnown(known) {
+    writeStoredNumberArray(scopedStorageKey(KNOWN_KEY), [...known]);
   }
   /** 宝箱响应只有 id；先把它前插到最近获得并标记小红点，不等下一次背包扫描。 */
   function markRecentObtained(id) {
@@ -845,6 +1924,21 @@
     state.bagRecentIds = recent.filter(x => owned.has(x));
     state.bagNewIds = unseen.filter(x => owned.has(x));
   }
+  /**
+   * 合并原生层在面板关闭期间记录的宝箱奖励。
+   * 这些奖励没有 chest 事件，背包扫描又只能发现“从未拥有过”的物品，
+   * 所以重复获得的旧物品必须由这里补进「最近获得」。
+   */
+  function mergePendingRecentChests(ids) {
+    // 未登录时不要消费待合并奖励：先留在磁盘，登录后再按账号归入正确的作用域。
+    if (!isLogged()) return;
+    if (!Array.isArray(ids) || !ids.length) return;
+    const valid = ids.map(Number).filter(id => Number.isFinite(id) && id > 0);
+    if (!valid.length) return;
+    // 多次获得同一个物品时 recent 仍按物品去重，但 ack 要按获得次数全部确认。
+    for (const id of new Set(valid)) markRecentObtained(id);
+    call('recent.ack', { ids: valid }).catch(() => { });
+  }
   /** 点击/查看后清除该物品的小红点，直到它再次被重新获取。 */
   function markNewSeen(id) {
     const unseen = loadUnseen().filter(x => x !== id);
@@ -853,10 +1947,8 @@
   }
   function refreshNewAssets() {
     try {
-      const rawKnown = localStorage.getItem('wn_known_assets');
-      const known = new Set(JSON.parse(rawKnown || '[]'));
+      const { known, firstRun } = loadKnownState();
       const ids = state.bag.map(x => x.id);
-      const firstRun = rawKnown == null;
       // 首次运行不把整包物品都标成“最近获得”，只把已知集合建立起来。
       const fresh = firstRun ? [] : ids.filter(id => !known.has(id));
       let recent = loadRecent();
@@ -874,7 +1966,7 @@
       const owned = new Set(ids);
       state.bagRecentIds = recent.filter(id => owned.has(id));
       state.bagNewIds = unseen.filter(id => owned.has(id));
-      localStorage.setItem('wn_known_assets', JSON.stringify([...new Set([...known, ...ids])]));
+      saveKnown(new Set([...known, ...ids]));
     } catch { state.bagRecentIds = []; state.bagNewIds = []; }
   }
   /** 保留记录：只在用户主动清空时调用。 */
@@ -936,6 +2028,7 @@
 
     document.querySelectorAll('[data-btab]').forEach(b => b.onclick = () => {
       state.bagTab = b.dataset.btab;
+      state.bagSelected = null;
       state.bagSeries = ''; state.bagRole = ''; state.bagRarity = '';
       state.bagHidden = new Set();
       renderBag();
@@ -959,6 +2052,9 @@
     document.getElementById('bagSync').onclick = async () => {
       try {
         const r = await tryCall('appearance.sync');
+        state.boot = await call('boot');
+        renderChrome();
+        renderBagDetail();
         const blocked = [];
         if (r?.characterBlocked) blocked.push('角色');
         if (r?.accessoryBlocked) blocked.push('头饰');
@@ -979,6 +2075,7 @@
     });
     renderBagList();
     renderBagDetail();
+    ensureBagPreviewAssets();
   }
 
   function bagListItems() {
@@ -1042,23 +2139,44 @@
   function bindBagCards(host) {
     host.querySelectorAll('.card').forEach(el => {
       const id = Number(el.dataset.id);
-      el.onclick = () => {
+      el.onclick = e => {
+        if (e.detail > 1) return; // 双击的第二次 click 不再反选，交给 dblclick 装备
         markNewSeen(id);
-        state.bagSelected = state.bag.find(v => v.id === id);
-        renderBagList();
+        // 再次单击当前已选物品：取消选择，右侧回到在线/本地形态预览。
+        state.bagSelected = Number(state.bagSelected?.id) === id ? null : itemOrId(id);
+        // 只切换选中样式，不重建卡片 DOM，避免双击的第二次点击落到新节点上导致 dblclick 丢失。
+        const selectedId = Number(state.bagSelected?.id || 0);
+        host.querySelectorAll('.card').forEach(c => c.classList.toggle('selected', Number(c.dataset.id) === selectedId));
         renderBagDetail();
       };
-      el.ondblclick = () => equip(itemOrId(id));
+      // 默认双击 = 装备并同步到云端；仅本地显示仍可通过详情按钮选择。
+      // 右上角锁定/收藏按钮的快速连点不能冒泡成卡片的双击装备。
+      el.ondblclick = e => {
+        if (e.target.closest('[data-lock-type], .fav')) return;
+        if (performance.now() < (state.bagActionUntil || 0)) return;
+        equip(itemOrId(id), true);
+      };
     });
     host.querySelectorAll('[data-lock-type]').forEach(el => {
-      el.onclick = async e => { e.stopPropagation(); await toggleAssetLock(el.dataset.lockType, Number(el.dataset.lockId)); };
+      el.onclick = async e => {
+        e.stopPropagation();
+        state.bagActionUntil = performance.now() + 500;
+        await toggleAssetLock(el.dataset.lockType, Number(el.dataset.lockId));
+      };
     });
     host.querySelectorAll('.fav').forEach(el => {
       el.onclick = async e => {
         e.stopPropagation();
+        state.bagActionUntil = performance.now() + 500;
         const id = Number(el.dataset.id);
         const on = !state.favors.has(id);
-        try { await tryCall('favorite', { id, on }); on ? state.favors.add(id) : state.favors.delete(id); renderBagList(); }
+        try {
+          await tryCall('favorite', { id, on });
+          on ? state.favors.add(id) : state.favors.delete(id);
+          const item = (state.bag || []).find(x => Number(x.id) === id);
+          if (item) item.isCollect = on;
+          renderBagList();
+        }
         catch { }
       };
     });
@@ -1188,6 +2306,44 @@
     });
   }
 
+  /** 背包页首次进入时补加载目录，让在线/本地形态预览使用和预设页一致的高清图。 */
+  function ensureBagPreviewAssets() {
+    const types = ['character_skin', 'accessory', 'emote'];
+    if (types.every(t => (state.catalog[t] || []).length)) return;
+    Promise.all(types.map(t => ensureCatalog(t).catch(() => []))).then(() => {
+      if (state.page === 'bag' && !state.bagSelected) renderBagDetail();
+    });
+  }
+
+  function bagAppearanceCard(title, note, p, includeLocalOffset) {
+    return `<div class="bag-appearance-card">
+      <div class="bag-appearance-head"><span>${title}</span><span>${note}</span></div>
+      ${presetPreviewHtml(p, includeLocalOffset)}
+    </div>`;
+  }
+
+  /** 未选择物品时，右侧展示当前在线形态与本地形态；预览复用预设页的 140×140 舞台。 */
+  function bagAppearancePreviewHtml() {
+    const a = state.boot?.appearance || {};
+    const local = {
+      characterAssetId: a.characterAssetId || 0,
+      accessoryAssetId: a.accessoryAssetId || 0,
+      emoteAssetIds: a.emoteAssetIds || [],
+    };
+    const cloud = {
+      characterAssetId: a.cloudCharacterAssetId || 0,
+      accessoryAssetId: a.cloudAccessoryAssetId || 0,
+      emoteAssetIds: a.cloudEmoteAssetIds || [],
+    };
+    const cloudReady = cloud.characterAssetId > 0 || cloud.accessoryAssetId > 0
+      || (cloud.emoteAssetIds || []).some(id => Number(id) > 0);
+    return `<div class="bag-appearance-panel">
+      ${bagAppearanceCard('在线形态', cloudReady ? '云端配置' : '未同步', cloud, false)}
+      ${bagAppearanceCard('本地形态', '仅本机显示', local, true)}
+      <div class="bag-appearance-hint">单击选择物品；再次单击已选物品可取消选择<br>双击装备并同步到云端</div>
+    </div>`;
+  }
+
   function renderBagDetail() {
     const box = document.getElementById('bagDetail');
     if (!box) return;
@@ -1197,7 +2353,7 @@
     }
     const x = state.bagSelected;
     if (!x) {
-      box.innerHTML = `<div class="detail-empty">选择一件收集物<br><span style="font-size:13px">双击可直接装备；再次点击已佩戴的头饰可取消</span></div>`;
+      box.innerHTML = bagAppearancePreviewHtml();
       return;
     }
     const accessoryEquipped = x.type === 'accessory' && isAccessoryEquipped(x.id);
@@ -1209,8 +2365,8 @@
       <div class="detail-row"><span>系列</span><span>${esc(x.series || '—')}</span></div>
       <div class="detail-row"><span>数量</span><span>${x.quantity ?? 1}</span></div>
       <div class="spacer"></div>
-      <button class="btn" id="equipBtn">${accessoryEquipped ? '取消头饰（本地显示）' : '装备（本地显示）'}</button>
-      <button class="btn ghost" id="equipSyncBtn">${accessoryEquipped ? '取消头饰并同步云端' : '装备并同步云端'}</button>`;
+      <button class="btn" id="equipSyncBtn">${accessoryEquipped ? '取消头饰并同步云端' : '装备并同步云端'}</button>
+      <button class="btn ghost" id="equipBtn">${accessoryEquipped ? '取消头饰（仅本地）' : '装备（仅本地）'}</button>`;
     document.getElementById('equipBtn').onclick = () => equip(x, false);
     document.getElementById('equipSyncBtn').onclick = () => equip(x, true);
   }
@@ -1219,9 +2375,22 @@
     if (!item) return;
     try {
       const unequipAccessory = item.type === 'accessory' && isAccessoryEquipped(item.id);
-      await tryCall('appearance.set', { type: item.type, id: unequipAccessory ? 0 : item.id });
       let syncResult = null;
-      if (sync) syncResult = await tryCall('appearance.sync');
+      if (item.type === 'emote' && sync) {
+        // 表情不能通过 appearance.sync 上传，必须走带 upload 标记的槽位接口。
+        const slots = [...(state.boot?.appearance?.emoteAssetIds || [])];
+        let slot = slots.findIndex(id => Number(id) === Number(item.id));
+        if (slot < 0) slot = slots.findIndex(id => !Number(id));
+        if (slot < 0) {
+          toast('表情栏已满，请先在编辑器中调整槽位', 'err');
+          return;
+        }
+        await tryCall('appearance.setSlot', { slot, id: item.id, upload: true });
+        syncResult = { synced: true };
+      } else {
+        await tryCall('appearance.set', { type: item.type, id: unequipAccessory ? 0 : item.id });
+        if (sync) syncResult = await tryCall('appearance.sync');
+      }
       const blocked = [];
       if (syncResult?.characterBlocked) blocked.push('角色');
       if (syncResult?.accessoryBlocked) blocked.push('头饰');
@@ -1231,7 +2400,13 @@
       toast(blocked.length ? `已更新；未拥有的${blocked.join('、')}保留了云端内容` : base);
       state.boot = await call('boot');
       renderChrome();
-      if (state.page === 'bag') renderBagDetail();
+      if (state.page === 'bag') {
+        // 双击后的两次 click 可能先把选择切掉了；装备完成时保持该物品选中，方便继续操作。
+        state.bagSelected = itemOrId(item.id) || item;
+        const selectedId = Number(item.id);
+        document.querySelectorAll('#bagGroups .card').forEach(c => c.classList.toggle('selected', Number(c.dataset.id) === selectedId));
+        renderBagDetail();
+      }
     } catch { }
   }
 
@@ -1269,8 +2444,10 @@
   }
 
   const ATLAS_TABS = [['all', '全部'], ['character_skin', '角色'], ['accessory', '配件'], ['emote', '表情']];
+  const ATLAS_PAGE_SIZE = 120;
 
-  async function renderAtlas() {
+  async function renderAtlas(preserveScroll = false) {
+    const prevScroll = preserveScroll ? (document.getElementById('atlasGroups')?.scrollTop || 0) : 0;
     const type = state.atlasType;
     setPage(`<div class="loading">正在读取图鉴…</div>`);
     let items;
@@ -1315,6 +2492,7 @@
           <option value="">稀有度：全部</option>
           ${['epic', 'rare', 'uncommon', 'common'].map(r => `<option value="${r}" ${state.atlasRarity === r ? 'selected' : ''}>稀有度：${RARITY_TEXT[r]}</option>`).join('')}
         </select>
+        <input class="input" id="atlasSearch" placeholder="搜索名称 / 系列 / assetName" value="${esc(state.atlasSearch)}" style="flex:1;min-width:180px" autocomplete="off" />
         <button class="pill ${state.atlasOwnedOnly ? 'active' : ''}" id="atlasOwnedOnly" title="只显示已经拥有的图鉴">仅拥有</button>
         <span class="spacer"></span>
         <span class="muted" id="atlasCount" style="font-size:13px">共 ${items.length} 件 · 已拥有会显示标记</span>
@@ -1324,15 +2502,29 @@
 
     document.querySelectorAll('[data-atab]').forEach(b => b.onclick = () => {
       state.atlasType = b.dataset.atab;
-      state.atlasSeries = ''; state.atlasRole = ''; state.atlasRarity = ''; state.atlasHidden = new Set();
+      state.atlasSeries = ''; state.atlasRole = ''; state.atlasRarity = ''; state.atlasSearch = ''; state.atlasHidden = new Set();
+      state.atlasLimit = ATLAS_PAGE_SIZE;
       renderAtlas();
     });
-    document.getElementById('atlasSeries')?.addEventListener('change', e => { state.atlasSeries = e.target.value; renderAtlasList(items, ownedNames); });
-    document.getElementById('atlasRole')?.addEventListener('change', e => { state.atlasRole = e.target.value; renderAtlasList(items, ownedNames); });
-    document.getElementById('atlasRarity').addEventListener('change', e => { state.atlasRarity = e.target.value; renderAtlasList(items, ownedNames); });
+    const resetAtlasLimit = () => { state.atlasLimit = ATLAS_PAGE_SIZE; };
+    document.getElementById('atlasSeries')?.addEventListener('change', e => { state.atlasSeries = e.target.value; resetAtlasLimit(); renderAtlasList(items, ownedNames); });
+    document.getElementById('atlasRole')?.addEventListener('change', e => { state.atlasRole = e.target.value; resetAtlasLimit(); renderAtlasList(items, ownedNames); });
+    document.getElementById('atlasRarity').addEventListener('change', e => { state.atlasRarity = e.target.value; resetAtlasLimit(); renderAtlasList(items, ownedNames); });
+    const atlasSearchInput = document.getElementById('atlasSearch');
+    let atlasSearchTimer = 0;
+    atlasSearchInput?.addEventListener('input', e => {
+      const value = e.target.value;
+      clearTimeout(atlasSearchTimer);
+      atlasSearchTimer = setTimeout(() => {
+        state.atlasSearch = value;
+        resetAtlasLimit();
+        renderAtlasList(items, ownedNames);
+      }, 250);
+    });
     document.getElementById('atlasOwnedOnly')?.addEventListener('click', e => {
       state.atlasOwnedOnly = !state.atlasOwnedOnly;
       e.currentTarget.classList.toggle('active', state.atlasOwnedOnly);
+      resetAtlasLimit();
       renderAtlasList(items, ownedNames);
     });
     document.getElementById('atlasEmoteSendMode')?.addEventListener('click', e => {
@@ -1340,7 +2532,13 @@
       e.currentTarget.classList.toggle('active', state.atlasEmoteSendMode);
       toast(state.atlasEmoteSendMode ? '发送模式已开启：点击表情直接发送' : '发送模式已关闭');
     });
+    if (!state.atlasLimit) state.atlasLimit = ATLAS_PAGE_SIZE;
+    state.atlasSnapshot = { items, ownedNames };
     renderAtlasList(items, ownedNames);
+    if (preserveScroll) {
+      const host = document.getElementById('atlasGroups');
+      if (host) host.scrollTop = prevScroll;
+    }
   }
 
   function atlasFilteredItems(items, ownedNames) {
@@ -1349,6 +2547,11 @@
     if (state.atlasRole) list = list.filter(x => assetMeta(x).role === state.atlasRole);
     if (state.atlasRarity) list = list.filter(x => effRarity(x.rarity) === state.atlasRarity);
     if (state.atlasOwnedOnly) list = list.filter(x => ownedNames.has(x.assetName));
+    const q = String(state.atlasSearch || '').trim().toLowerCase();
+    if (q) list = list.filter(x =>
+      String(x.name || '').toLowerCase().includes(q)
+      || String(x.series || '').toLowerCase().includes(q)
+      || String(x.assetName || '').toLowerCase().includes(q));
     return list.sort((a, b) => (RARITY_ORDER[effRarity(b.rarity)] || 0) - (RARITY_ORDER[effRarity(a.rarity)] || 0)
       || String(a.series).localeCompare(String(b.series), 'zh')
       || String(a.name).localeCompare(String(b.name), 'zh'));
@@ -1368,12 +2571,16 @@
   function renderAtlasList(items, ownedNames) {
     const host = document.getElementById('atlasGroups');
     if (!host) return;
-    const list = atlasFilteredItems(items, ownedNames);
+    const full = atlasFilteredItems(items, ownedNames);
+    const paged = state.atlasType === 'all';
+    if (!state.atlasLimit) state.atlasLimit = ATLAS_PAGE_SIZE;
+    const list = paged ? full.slice(0, Math.max(ATLAS_PAGE_SIZE, state.atlasLimit)) : full;
     const count = document.getElementById('atlasCount');
-    if (count) count.textContent = state.atlasOwnedOnly
-      ? `仅拥有 ${list.length} 件`
-      : `共 ${list.length} 件 · 已拥有会显示标记`;
-    if (!list.length) { host.innerHTML = `<div class="empty-state">没有符合条件的图鉴条目</div>`; return; }
+    if (count) {
+      if (state.atlasOwnedOnly) count.textContent = `仅拥有 ${full.length} 件${paged ? ` · 已显示 ${list.length}` : ''}`;
+      else count.textContent = `共 ${full.length} 件${paged ? ` · 已显示 ${list.length}` : ''} · 已拥有会显示标记`;
+    }
+    if (!full.length) { host.innerHTML = `<div class="empty-state">没有符合条件的图鉴条目</div>`; return; }
     const byKey = new Map(list.map(x => [x.type + ':' + x.mainId, x]));
     if (state.atlasType !== 'all') {
       host.innerHTML = `<div class="bag-grid">${list.map(x => atlasCard(x, ownedNames.has(x.assetName))).join('')}</div>`;
@@ -1399,6 +2606,15 @@
         if (state.atlasHidden.has(r)) state.atlasHidden.delete(r); else state.atlasHidden.add(r);
         renderAtlasList(items, ownedNames);
       });
+    }
+    if (paged && list.length < full.length) {
+      host.insertAdjacentHTML('beforeend', `<div class="atlas-more"><button class="btn ghost" id="atlasMore">加载更多（已显示 ${list.length} / ${full.length}）</button></div>`);
+      document.getElementById('atlasMore').onclick = () => {
+        const scroll = host.scrollTop;
+        state.atlasLimit = Math.max(ATLAS_PAGE_SIZE, state.atlasLimit) + ATLAS_PAGE_SIZE;
+        renderAtlasList(items, ownedNames);
+        host.scrollTop = scroll;
+      };
     }
     host.querySelectorAll('[data-lock-type]').forEach(el => {
       el.onclick = async e => { e.stopPropagation(); await toggleAssetLock(el.dataset.lockType, Number(el.dataset.lockId)); };
@@ -1596,7 +2812,7 @@
           <span class="synth-advanced-meta">锁定 ${state.locks.size} 件</span>
           <button class="btn ghost" id="synthHide">隐藏</button>
         </div>
-        <div class="synth-advanced-note">锁定物资不参与合成，单独保存在 locks.json；每次合成前会二次确认。</div>
+        <div class="synth-advanced-note">锁定物资不参与合成，单独保存在 locks.json；每次合成前会二次确认。重新打开操作面板后会自动关闭，需要重新输入隐藏指令。</div>
         <div class="synth-advanced-actions"><button class="btn" id="synthSave">保存设置</button></div>
       </div>` : '';
 
@@ -1677,18 +2893,23 @@
         state.synthPanelVisible = false;
         renderSynth();
       };
-      document.getElementById('synthSave').onclick = async () => {
+      document.getElementById('synthSave').onclick = () => {
         const enabled = !!document.getElementById('synthEnabled')?.checked;
-        try {
-          const boot = await tryCall('settings.set', { anyItemSynthesisEnabled: enabled });
-          state.boot = boot;
-          applySynthSettings(boot);
-          state.synthEnabled = enabled;
-          if (!enabled) synthResetSlots();
-          renderChrome();
-          renderSynth();
-          toast(enabled ? '高级合成已开启' : '高级合成已关闭');
-        } catch { }
+        const save = async () => {
+          try {
+            const boot = await tryCall('settings.set', { anyItemSynthesisEnabled: enabled });
+            state.boot = boot;
+            applySynthSettings(boot);
+            state.synthEnabled = enabled;
+            if (!enabled) synthResetSlots();
+            renderChrome();
+            renderSynth();
+            toast(enabled ? '高级合成已开启' : '高级合成已关闭');
+          } catch { renderSynth(); }
+        };
+        // 每次从关闭切到开启都重新警告；已开启时重复保存不重复打扰。
+        if (enabled && !state.synthEnabled) confirmAdvancedSynthEnable(save);
+        else save();
       };
     }
 
@@ -1825,10 +3046,9 @@
     let loaded = false;
     for (let attempt = 0; attempt < 10; attempt++) {
       try {
-        const r = await call('bag.list');
-        state.bag = r.items || [];
+        const items = await fetchBagItems(true);
         loaded = true;
-        if (!acquiredId || state.bag.some(x => x.id === acquiredId)) break;
+        if (!acquiredId || items.some(x => x.id === acquiredId)) break;
       } catch { }
       await new Promise(resolve => setTimeout(resolve, 300));
     }
@@ -1903,9 +3123,8 @@
     let before = [];
     let beforeOk = false;
     try {
-      const r = await call('bag.list');
-      before = r.items || [];
-      state.bag = before;
+      before = await fetchBagItems(true);
+      before = before || [];
       beforeOk = true;
     } catch { }
 
@@ -1914,9 +3133,8 @@
     if (beforeOk) {
       for (let attempt = 0; attempt < 10; attempt++) {
         try {
-          const r = await call('bag.list');
-          state.bag = r.items || [];
-          gained = bagDelta(before, state.bag);
+          const items = await fetchBagItems(true);
+          gained = bagDelta(before, items);
           updateSynthBadge();
           if (gained.length) break;
         } catch { }
@@ -1925,17 +3143,25 @@
     }
     if (!beforeOk) {
       try {
-        const r = await call('bag.list');
-        state.bag = r.items || [];
-        updateSynthBadge();
+        await fetchBagItems(true);
       } catch { }
     }
     if (!gained.length) {
       const direct = directRedeemItems(result);
       if (direct.length) gained = direct;
     }
+    // 兑换到已有物品时 bagDelta 也会包含它；和开箱/合成一样前插到最近获得。
+    for (const item of gained) {
+      const id = Number(item?.id);
+      if (Number.isFinite(id) && id > 0) markRecentObtained(id);
+    }
     state.bagNewReady = false;
     refreshNewAssets();
+    if (gained.length) {
+      const owned = new Set((state.bag || []).map(x => x.id));
+      state.bagRecentIds = loadRecent().filter(id => owned.has(id));
+      state.bagNewIds = loadUnseen().filter(id => owned.has(id));
+    }
     if (state.page === 'bag') renderBag();
     if (gained.length) showRedeemReward(gained, code);
     else toast('兑换成功，奖励已发放到背包');
@@ -2028,41 +3254,69 @@
     const item = (state.catalog[type] || []).find(v => Number(v.id) === Number(id));
     if (item?.thumb) return item.thumb;
     const atlasItem = (state.atlas[type] || []).find(v => Number(v.mainId) === Number(id));
-    return atlasItem?.thumb || '';
+    if (atlasItem?.thumb) return atlasItem.thumb;
+    // 背包页不一定加载过图鉴目录；直接用背包里的缩略图兜底。
+    const bagItem = (state.bag || []).find(v => v.type === type && Number(v.id) === Number(id));
+    return bagItem?.thumb || '';
   }
 
   function catalogPreview(type, id) {
     const item = (state.catalog[type] || []).find(v => Number(v.id) === Number(id));
-    return item?.previewUrl || item?.thumb || '';
+    if (item?.previewUrl || item?.thumb) return item.previewUrl || item.thumb;
+    const bagItem = (state.bag || []).find(v => v.type === type && Number(v.id) === Number(id));
+    return bagItem?.thumb || '';
   }
 
-  function presetAccessoryOffset(accessoryId) {
+  function normalizeAccessoryScale(value) {
+    const n = Number(value);
+    // 25–175 以 100 为中点；滑条、native 钳制和 CSS 零刻度保持一致。
+    return Number.isFinite(n) && n > 0 ? Math.max(25, Math.min(175, Math.round(n))) : 100;
+  }
+  function normalizeAccessoryRotation(value) {
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.max(-180, Math.min(180, Math.round(n))) : 0;
+  }
+
+  function presetAccessoryOffset(accessoryId, includeLocal = true) {
     const id = Number(accessoryId) || 0;
     const item = (state.catalog.accessory || []).find(v => Number(v.id) === id);
     let x = Number(item?.offsetX || 0);
     let y = Number(item?.offsetY || 0);
+    let scalePercent = 100;
+    let rotationDegrees = 0;
     // 预设预览按“应用后实际看到的样子”叠加该头饰自己的本地微调。
-    const stored = state.boot?.appearance?.accessoryOffsets?.[String(id)];
-    if (Array.isArray(stored) && stored.length >= 2) {
-      x += Number(stored[0] || 0);
-      y += Number(stored[1] || 0);
-    } else if (id > 0 && id === Number(state.boot?.appearance?.accessoryAssetId || 0)) {
-      x += Number(state.boot?.appearance?.accessoryOffsetX || 0);
-      y += Number(state.boot?.appearance?.accessoryOffsetY || 0);
+    // 云端形态预览不应包含只在本机生效的微调，因此可以传 includeLocal=false。
+    if (includeLocal) {
+      const stored = state.boot?.appearance?.accessoryOffsets?.[String(id)];
+      if (Array.isArray(stored) && stored.length >= 2) {
+        x += Number(stored[0] || 0);
+        y += Number(stored[1] || 0);
+        // 旧配置只有 [x,y]，缺失的缩放/旋转按默认值处理。
+        if (stored.length >= 3) scalePercent = normalizeAccessoryScale(stored[2]);
+        if (stored.length >= 4) rotationDegrees = normalizeAccessoryRotation(stored[3]);
+      } else if (id > 0 && id === Number(state.boot?.appearance?.accessoryAssetId || 0)) {
+        x += Number(state.boot?.appearance?.accessoryOffsetX || 0);
+        y += Number(state.boot?.appearance?.accessoryOffsetY || 0);
+        scalePercent = normalizeAccessoryScale(state.boot?.appearance?.accessoryScalePercent);
+        rotationDegrees = normalizeAccessoryRotation(state.boot?.appearance?.accessoryRotationDegrees);
+      }
     }
-    return { x, y };
+    return { x, y, scalePercent, rotationDegrees };
   }
 
-  function presetStageHtml(characterId, accessoryId) {
+  function presetStageHtml(characterId, accessoryId, includeLocalOffset = true) {
     const charSrc = catalogPreview('character_skin', characterId);
     const accSrc = catalogPreview('accessory', accessoryId);
-    const offset = presetAccessoryOffset(accessoryId);
+    const offset = presetAccessoryOffset(accessoryId, includeLocalOffset);
     // 桌宠里角色和头饰共用 200×200 的猫区域；预览统一缩放为 140×140，偏移按同比例缩放。
     const scale = 140 / 200;
+    const accTransform = offset.scalePercent !== 100 || offset.rotationDegrees !== 0
+      ? `;transform:rotate(${offset.rotationDegrees}deg) scale(${(offset.scalePercent / 100).toFixed(3)})`
+      : '';
     return `<div class="preset-preview">
       <div class="preset-preview-stage">
         ${charSrc ? `<img class="preset-preview-char" src="${esc(charSrc)}" alt="">` : '<span class="muted preset-preview-empty">无角色</span>'}
-        ${accSrc ? `<img class="preset-preview-acc" src="${esc(accSrc)}" alt="" style="left:${(offset.x * scale).toFixed(2)}px;top:${(offset.y * scale).toFixed(2)}px">` : ''}
+        ${accSrc ? `<img class="preset-preview-acc" src="${esc(accSrc)}" alt="" style="left:${(offset.x * scale).toFixed(2)}px;top:${(offset.y * scale).toFixed(2)}px${accTransform}">` : ''}
       </div>
     </div>`;
   }
@@ -2077,18 +3331,24 @@
   }
 
   function presetEmoteIds(p) {
-    return (p.emotes || p.emoteAssetIds || []).map(e => Number(e.asset_id ?? e)).filter(Boolean).slice(0, 5);
+    return (p.emotes || p.emoteAssetIds || []).map(e => Number(e.asset_id ?? e)).filter(id => id > 0).slice(0, 5);
   }
+  /** 保留 5 个槽位的位置（0 表示空）；应用/编辑本地预设时必须保留空槽，不能把后面的表情挤到前面。 */
+  function presetEmoteSlots(p) {
+    const raw = p.emotes || p.emoteAssetIds || [];
+    return Array.from({ length: 5 }, (_, i) => Number(raw[i]?.asset_id ?? raw[i] ?? 0) || 0);
+  }
+  function presetHasEmotes(p) { return presetEmoteSlots(p).some(id => id > 0); }
 
-  function presetPreviewHtml(p) {
+  function presetPreviewHtml(p, includeLocalOffset = true) {
     const charId = Number(p.character_asset_id ?? p.characterAssetId ?? 0);
     const accId = Number(p.accessory_asset_id ?? p.accessoryAssetId ?? 0);
-    const emotes = presetEmoteIds(p);
+    const emotes = presetEmoteSlots(p);
     const emoteHtml = [0, 1, 2, 3, 4].map(i => {
       const thumb = catalogThumb('emote', emotes[i]);
       return `<div class="preset-emote">${thumb ? `<img src="${esc(thumb)}" alt="">` : '<span class="muted">空</span>'}<span>${i + 1}</span></div>`;
     }).join('');
-    return `${presetStageHtml(charId, accId)}
+    return `${presetStageHtml(charId, accId, includeLocalOffset)}
     <div class="preset-emote-preview">${emoteHtml}</div>`;
   }
 
@@ -2135,15 +3395,19 @@
   }
 
   async function applyPreset(p, isLocal, ignoreEmotes) {
+    if (!p) return;
     const charId = Number(p.character_asset_id ?? p.characterAssetId ?? 0);
     const accId = Number(p.accessory_asset_id ?? p.accessoryAssetId ?? 0);
-    const emotes = presetEmoteIds(p);
+    const emoteSlots = presetEmoteSlots(p);
+    const hasEmotes = emoteSlots.some(id => id > 0);
+    // 云端预设可能完全不包含表情：这时绝不写入 0，避免把本地 5 个表情槽静默清空。
+    const writeEmotes = hasEmotes && !ignoreEmotes;
     try {
       await ensureBag();
       if (charId > 0) await tryCall('appearance.set', { type: 'character_skin', id: charId });
       await tryCall('appearance.set', { type: 'accessory', id: accId });
-      if (!ignoreEmotes) {
-        for (let i = 0; i < 5; i++) await tryCall('appearance.setSlot', { slot: i, id: emotes[i] || 0 });
+      if (writeEmotes) {
+        for (let i = 0; i < 5; i++) await tryCall('appearance.setSlot', { slot: i, id: emoteSlots[i] || 0 });
       }
       const owned = new Set((state.bag || []).map(x => Number(x.id)));
       const charOwned = charId > 0 && owned.has(charId);
@@ -2158,10 +3422,37 @@
       const localOnly = [];
       if (!charOwned) localOnly.push('角色 ' + catalogName('character_skin', charId));
       if (!accOwned) localOnly.push('配件 ' + catalogName('accessory', accId));
-      if (localOnly.length) toast(`已应用；${localOnly.join('、')}仅本地生效`);
-      else if (isLocal) toast('已应用本地外观');
-      else toast(uploaded ? '已应用并同步云端' : '已应用本地外观');
+      const suffix = !hasEmotes
+        ? '（预设不含表情，已保留本地表情栏）'
+        : (ignoreEmotes ? '（已忽略预设表情，本地表情栏未变）' : '');
+      if (localOnly.length) toast(`已应用；${localOnly.join('、')}仅本地生效${suffix}`);
+      else if (isLocal) toast(`已应用本地外观${suffix}`);
+      else toast((uploaded ? '已应用并同步云端' : '已应用本地外观') + suffix);
     } catch (e) { toast(e.message || '应用预设失败', 'err'); }
+  }
+
+  /** 「使用」按钮：非空表情集合覆盖前明确确认；空集合直接应用并说明保留本地表情。 */
+  function confirmApplyPreset(p, isLocal) {
+    if (!p) return;
+    if (!presetHasEmotes(p)) {
+      applyPreset(p, isLocal, true);
+      return;
+    }
+    const count = presetEmoteSlots(p).filter(id => id > 0).length;
+    modal(`<div class="about">
+      <div class="about-title">应用预设</div>
+      <div class="about-note"><p>该预设包含 ${count} 个表情，应用后会覆盖本地 5 个表情槽位（空槽也会被清空）。</p></div>
+      <div class="about-note about-note--warn"><p>如果只想切换角色和配件，请选择「使用（忽略表情）」，本地表情栏不会改变。</p></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;flex-wrap:wrap">
+        <button class="btn ghost" id="presetApplyCancel">取消</button>
+        <button class="btn ghost" id="presetApplyIgnore">使用（忽略表情）</button>
+        <button class="btn" id="presetApplyWithEmotes">应用角色/配件与表情</button>
+      </div>
+    </div>`, host => {
+      host.querySelector('#presetApplyCancel').onclick = closeModal;
+      host.querySelector('#presetApplyIgnore').onclick = () => { closeModal(); applyPreset(p, isLocal, true); };
+      host.querySelector('#presetApplyWithEmotes').onclick = () => { closeModal(); applyPreset(p, isLocal, false); };
+    });
   }
 
   async function openPresetEditor(p, isLocal) {
@@ -2172,7 +3463,7 @@
     const temp = {
       characterAssetId: Number(p.character_asset_id ?? p.characterAssetId ?? 0),
       accessoryAssetId: Number(p.accessory_asset_id ?? p.accessoryAssetId ?? 0),
-      emoteAssetIds: presetEmoteIds(p),
+      emoteAssetIds: presetEmoteSlots(p),
     };
     while (temp.emoteAssetIds.length < 5) temp.emoteAssetIds.push(0);
     let tab = 'character_skin';
@@ -2365,10 +3656,10 @@
       ${presetPreviewHtml(p)}
       <div class="detail-row"><span>角色</span><span>${esc(catalogName('character_skin', charId))}</span></div>
       <div class="detail-row"><span>配件</span><span>${esc(catalogName('accessory', accId))}</span></div>
-      <div class="detail-row"><span>表情</span><span>${emotes.length} 个</span></div>
+      <div class="detail-row"><span>表情</span><span>${emotes.length ? emotes.length + ' 个' : '不含表情（应用时保留本地）'}</span></div>
       <div class="preset-actions">
-        <button class="btn ghost" data-${isLocal ? 'l' : 'c'}apply="${index}">使用</button>
-        <button class="btn ghost" data-${isLocal ? 'l' : 'c'}ignore="${index}">使用（忽略表情）</button>
+        <button class="btn ghost" data-${isLocal ? 'l' : 'c'}apply="${index}" title="${emotes.length ? '应用前会确认是否覆盖本地表情槽' : '预设不含表情，不会改变本地表情槽'}">使用</button>
+        <button class="btn ghost" data-${isLocal ? 'l' : 'c'}ignore="${index}" title="只应用角色和配件，本地 5 个表情槽保持不变">使用（忽略表情）</button>
         <button class="btn ghost" data-${isLocal ? 'l' : 'c'}edit="${index}">修改</button>
         ${isLocal ? `<button class="btn ghost" data-lupload="${index}">上传云端</button>` : ''}
         <button class="btn danger" data-${isLocal ? 'l' : 'c'}del="${index}">删除</button>
@@ -2417,7 +3708,7 @@
       } catch (e) { toast(e.message || '当前外观不满足云端条件', 'err'); }
     };
     document.getElementById('presetCreateLocal').onclick = () => saveLocalPresetDialog();
-    document.querySelectorAll('[data-capply]').forEach(b => b.onclick = () => applyPreset(list[Number(b.dataset.capply)], false, false));
+    document.querySelectorAll('[data-capply]').forEach(b => b.onclick = () => confirmApplyPreset(list[Number(b.dataset.capply)], false));
     document.querySelectorAll('[data-cignore]').forEach(b => b.onclick = () => applyPreset(list[Number(b.dataset.cignore)], false, true));
     document.querySelectorAll('[data-cedit]').forEach(b => b.onclick = () => openPresetEditor(list[Number(b.dataset.cedit)], false));
     document.querySelectorAll('[data-cdel]').forEach(b => b.onclick = async () => {
@@ -2426,7 +3717,7 @@
       if (!id) return toast('该预设缺少 id', 'err');
       try { await tryCall('presets.delete', { id }); await ensurePresets(true); renderPreset(); toast('已删除'); } catch { }
     });
-    document.querySelectorAll('[data-lapply]').forEach(b => b.onclick = () => applyPreset(localList[Number(b.dataset.lapply)], true, false));
+    document.querySelectorAll('[data-lapply]').forEach(b => b.onclick = () => confirmApplyPreset(localList[Number(b.dataset.lapply)], true));
     document.querySelectorAll('[data-lignore]').forEach(b => b.onclick = () => applyPreset(localList[Number(b.dataset.lignore)], true, true));
     document.querySelectorAll('[data-ledit]').forEach(b => b.onclick = () => openPresetEditor(localList[Number(b.dataset.ledit)], true));
     document.querySelectorAll('[data-lupload]').forEach(b => b.onclick = async () => {
@@ -2457,10 +3748,15 @@
     const ms = (room.members || [])
       .map(m => `${m.id}:${m.nickname || ''}:${m.online ? 1 : 0}:${m.visible ? 1 : 0}:${m.owner ? 1 : 0}`)
       .join('|');
-    return `${room.state}|${room.roomNo || ''}|${room.connected ? 1 : 0}|${room.serviceUnavailable ? 1 : 0}|${room.hiddenAll ? 1 : 0}|${(room.history || []).join(',')}|${ms}`;
+    return `${room.state}|${room.roomNo || ''}|${room.connected ? 1 : 0}|${room.serviceUnavailable ? 1 : 0}|${room.hiddenAll ? 1 : 0}|${room.lastError || ''}|${(room.history || []).join(',')}|${ms}`;
   }
 
   function renderRoom() {
+    const roomScroll = {
+      page: document.getElementById('pageHost')?.scrollTop || 0,
+      left: document.querySelector('.room-left')?.scrollTop || 0,
+      members: document.getElementById('memberList')?.scrollTop || 0,
+    };
     const room = state.boot?.room || { state: 'idle', members: [], history: [] };
     state.roomSig = roomSignature(room);
     const joined = room.state === 'joined';
@@ -2468,15 +3764,27 @@
     const serviceDown = !!room.serviceUnavailable;
     const auth = state.boot?.auth || {};
     const emotes = state.boot?.appearance?.emoteAssetIds || [];
+    const blocked = onlineBlockedReason();
+    const errorText = room.lastError || state.roomError?.message || '';
     setPage(`
       <div class="room-layout">
         <div class="room-left">
+          ${blocked ? `
+          <div class="panel-box room-error" style="background:#fff8e8;border:1px solid #e8c98c;color:#7a5a1f;font-size:13px;line-height:1.6">
+            联网功能已暂停：${esc(blocked)}恢复安全状态后才能加入房间、开宝箱、合成或兑换。
+          </div>` : ''}
+          ${errorText ? `
+          <div class="panel-box room-error" style="background:#fff0ee;border:1px solid #f2b8ad;color:#9b3b2e;font-size:13px;line-height:1.6">
+            <div class="setting-title" style="color:inherit">房间连接失败</div>
+            <div class="setting-sub" style="color:inherit">${esc(errorText)}</div>
+            <button class="btn ghost" id="roomRetry" style="margin-top:8px">重试</button>
+          </div>` : ''}
           ${serviceDown ? `
           <div class="panel-box" style="background:#fff0ee;border:1px solid #f2b8ad;color:#9b3b2e;font-size:13px;line-height:1.6">
             联机服务暂不可用：官方联机服务器暂时无法连接，正在自动重试。
           </div>` : ''}
           <div class="panel-box">
-            <div class="detail-row" style="margin-bottom:6px"><span>当前房间</span><span>${serviceDown ? '联机服务暂不可用' : (joined ? (room.connected ? '已连接' : '连接中…（自动重试）') : '未加入')}</span></div>
+            <div class="detail-row" style="margin-bottom:6px"><span>当前房间</span><span>${serviceDown ? '联机服务暂不可用' : (joined ? (room.connected ? '已连接' : '进入中…（等待房间确认）') : '未加入')}</span></div>
             <div class="room-no">${joined ? esc(room.roomNo) : '——'}<span class="copy" id="copyRoom" ${joined ? '' : 'style="display:none"'}>复制</span></div>
             <div class="detail-row" style="margin-top:8px"><span>可用点击数</span><span data-click-avail>${auth.clicks ?? 0}</span></div>
             <div class="detail-row"><span>累计点击数</span><span data-click-total>${auth.clickTotal ?? auth.clicks ?? 0}</span></div>
@@ -2551,11 +3859,20 @@
     document.getElementById('copyRoom')?.addEventListener('click', () => {
       navigator.clipboard?.writeText(room.roomNo).then(() => toast('房间号已复制')).catch(() => toast(room.roomNo));
     });
-    document.getElementById('roomCreate').onclick = async () => { try { const r = await tryCall('room.create'); state.boot.room = r; renderRoom(); toast('房间已创建'); } catch { } };
+    document.getElementById('roomCreate').onclick = async () => {
+      try {
+        const r = await tryCall('room.create');
+        state.boot.room = r;
+        state.roomError = null;
+        renderRoom();
+        toast(r?.connected ? '房间已创建' : '正在创建房间，等待房间确认…');
+      } catch (e) { state.roomError = { message: e?.message || '创建房间失败' }; renderRoom(); }
+    };
     const leaveRoom = async (ownerConfirmed = false) => {
       try {
         const r = await tryCall('room.leave', { ownerConfirmed });
         state.boot.room = r;
+        state.roomError = null;
         renderRoom();
         toast('已离开房间');
       } catch { }
@@ -2564,10 +3881,20 @@
       try {
         const r = await tryCall('room.join', { roomNo, ownerConfirmed });
         state.boot.room = r;
+        state.roomError = null;
         renderRoom();
-        toast('已加入房间');
-      } catch { }
+        // 只有房间成员快照确认后才算真正加入；否则只提示“进入中”，由 room 事件确认。
+        toast(r?.connected ? '已加入房间' : '正在进入房间，等待房间确认…');
+      } catch (e) {
+        state.roomError = { message: e?.message || '加入房间失败' };
+        renderRoom();
+      }
     };
+    document.getElementById('roomRetry')?.addEventListener('click', () => {
+      const no = room.roomNo || state.boot?.settings?.lastRoom || document.getElementById('joinNo')?.value.trim();
+      if (!no) return toast('请输入房间号', 'err');
+      joinRoom(no, false);
+    });
     document.getElementById('roomLeave').onclick = () => {
       if (selfIsOwner) {
         confirmOwnerRoomAction('当前账号是房主。离开房间可能导致房间解散，其他成员会受到影响。确定要继续吗？', () => leaveRoom(true));
@@ -2627,6 +3954,12 @@
     });
     if (!state.emoteCatalog)
       ensureEmotes().then(() => { if (state.page === 'room') renderRoom(); }).catch(() => { });
+    const pageHost = document.getElementById('pageHost');
+    if (pageHost && roomScroll.page > 0) pageHost.scrollTop = roomScroll.page;
+    const left = document.querySelector('.room-left');
+    if (left && roomScroll.left > 0) left.scrollTop = roomScroll.left;
+    const members = document.getElementById('memberList');
+    if (members && roomScroll.members > 0) members.scrollTop = roomScroll.members;
   }
 
   function bindChestButtons() {
@@ -2841,6 +4174,99 @@
     return 0;
   }
 
+  /** 强制更新是否属于“仅官方版本前进”的可豁免场景；维护者标记 unsafe/maintenance 时不可绕过。 */
+  function forcedOnlineCanOptIn(c = state.compatibility) {
+    if (c?.officialCheck?.state !== 'forced') return false;
+    const status = String(c?.status || '').toLowerCase();
+    return !(c?.killSwitch?.forceOffline || status === 'unsafe' || status === 'maintenance');
+  }
+
+  /** 用户是否已对“当前这个”官方强制更新版本确认自担风险联网。 */
+  function forcedOnlineAccepted(c = state.compatibility, settings = state.boot?.settings) {
+    if (!forcedOnlineCanOptIn(c)) return false;
+    const officialVersion = String(c?.officialCheck?.officialVersion || '').trim().toLowerCase();
+    const acceptedVersion = String(settings?.forcedOnlineAcceptedVersion || '').trim().toLowerCase();
+    return !!officialVersion && officialVersion === acceptedVersion;
+  }
+
+  function openForcedOnlineConfirm(oc) {
+    if (!forcedOnlineCanOptIn()) {
+      toast('当前状态由维护者强制暂停，无法通过风险确认绕过', 'err');
+      return;
+    }
+    const version = String(oc?.officialVersion || '').trim();
+    const tested = String(oc?.testedVersion || '').trim();
+    if (!version) {
+      toast('官方版本信息尚未就绪，请刷新版本状态后重试', 'err');
+      return;
+    }
+    modal(`<div class="about">
+      <div class="about-title">强制更新后继续联网</div>
+      <div class="about-note about-note--warn"><p>官方客户端已强制更新至 ${esc(version)}，当前 Native 只验证到 ${esc(tested || '更早版本')}。</p></div>
+      <div class="about-note"><p>继续后，房间、宝箱、合成、兑换、外观同步等会按旧协议尝试联网。可能出现请求失败、房间状态异常或账号风险；本程序无法保证与官方新版本兼容。</p><p>建议优先更新 Native。只有确认愿意自担风险时才继续。</p></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px;flex-wrap:wrap">
+        <button class="btn ghost" id="forcedOnlineCancel">取消</button>
+        <button class="btn danger" id="forcedOnlineConfirm">我已了解，仍要继续</button>
+      </div>
+    </div>`, host => {
+      host.querySelector('#forcedOnlineCancel').onclick = closeModal;
+      const confirm = host.querySelector('#forcedOnlineConfirm');
+      confirm.onclick = async () => {
+        confirm.disabled = true;
+        confirm.textContent = '正在开启…';
+        try {
+          const boot = await call('compatibility.acceptForcedOnline', { version });
+          closeModal();
+          try {
+            localStorage.removeItem(`wn_official_notice_forced_${version}`);
+            localStorage.removeItem(`wn_official_notice_forced_v2_${version}`);
+            localStorage.removeItem(`wn_official_notice_forced_accepted_${version}`);
+          } catch { }
+          if (boot && boot.settings) handleEvent('boot', boot);
+          else { state.boot = await call('boot'); renderChrome(); }
+          toast('已允许在官方强制更新后继续联网（风险自负）');
+        } catch (e) {
+          confirm.disabled = false;
+          confirm.textContent = '我已了解，仍要继续';
+          toast(e.message || '开启失败', 'err');
+        }
+      };
+    });
+  }
+
+  function confirmRestoreForcedOnline() {
+    modal(`<div class="about">
+      <div class="about-title">撤销风险授权</div>
+      <div class="about-note"><p>撤销后将立即恢复官方强制更新期间的联网拦截。正常情况下，授权只会在官方再次更新或维护者标记为不安全/维护中时自动失效；这里只是手动提前撤销。</p></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;margin-top:12px">
+        <button class="btn ghost" id="forcedOnlineRestoreCancel">取消</button>
+        <button class="btn danger" id="forcedOnlineRestoreConfirm">确认撤销</button>
+      </div>
+    </div>`, host => {
+      host.querySelector('#forcedOnlineRestoreCancel').onclick = closeModal;
+      const confirm = host.querySelector('#forcedOnlineRestoreConfirm');
+      confirm.onclick = async () => {
+        confirm.disabled = true;
+        try {
+          const version = String(state.compatibility?.officialCheck?.officialVersion || '').trim();
+          const boot = await call('compatibility.clearForcedOnline');
+          closeModal();
+          try {
+            localStorage.removeItem(`wn_official_notice_forced_${version}`);
+            localStorage.removeItem(`wn_official_notice_forced_v2_${version}`);
+            localStorage.removeItem(`wn_official_notice_forced_accepted_${version}`);
+          } catch { }
+          if (boot && boot.settings) handleEvent('boot', boot);
+          else { state.boot = await call('boot'); renderChrome(); }
+          toast('已撤销风险授权，联网限制已恢复');
+        } catch (e) {
+          confirm.disabled = false;
+          toast(e.message || '恢复失败', 'err');
+        }
+      };
+    });
+  }
+
   /// 官方版本提醒固定在内容区顶部；公告只在设置页显示，避免打扰其他功能。
   function renderNotices() {
     const host = document.getElementById('noticeHost');
@@ -2850,26 +4276,53 @@
     let officialHtml = '';
     let officialKey = '';
     if (oc && (oc.state === 'unverified' || oc.state === 'forced')) {
-      officialKey = `wn_official_notice_${oc.state}_${oc.officialVersion || ''}`;
+      const danger = oc.state === 'forced';
+      const accepted = danger && forcedOnlineAccepted();
+      // 强制更新提示换过语义，使用 v2 key，避免旧版“暂时继续”的关闭记录把新入口一起隐藏。
+      officialKey = accepted
+        ? `wn_official_notice_forced_accepted_${oc.officialVersion || ''}`
+        : (danger
+          ? `wn_official_notice_forced_v2_${oc.officialVersion || ''}`
+          : `wn_official_notice_unverified_${oc.officialVersion || ''}`);
       let dismissed = false;
       try { dismissed = localStorage.getItem(officialKey) === '1'; } catch { }
       if (!dismissed) {
-        const danger = oc.state === 'forced';
-        officialHtml = `<section class="official-notice ${danger ? 'danger' : 'warning'}">
-          <div class="official-notice-main">
-            <div class="official-notice-icon">${danger ? '!' : '?'}</div>
-            <div class="official-notice-copy">
-              <div class="official-notice-title">官方客户端已${danger ? '强制' : ''}更新至 ${esc(oc.officialVersion || '新版本')}</div>
-              <div class="official-notice-text">${esc(oc.message || '')}</div>
-              <div class="official-notice-meta">当前 Native 验证基线：${esc(oc.testedVersion || '—')}${oc.stale ? ' · 显示上次检查结果' : ''}</div>
+        if (accepted) {
+          officialHtml = `<section class="official-notice">
+            <div class="official-notice-main">
+              <div class="official-notice-icon">!</div>
+              <div class="official-notice-copy">
+                <div class="official-notice-title">已允许在官方强制更新后继续联网</div>
+                <div class="official-notice-text">当前官方 ${esc(oc.officialVersion || '新版本')} 超出 Native 验证基线 ${esc(oc.testedVersion || '—')}。所有联机功能已恢复正常，仅保留此提示；直到官方再次更新、维护者将当前版本标记为不安全/强制暂停，或验证基线更新到当前版本。</div>
+                <div class="official-notice-meta">风险自负 · 仅对官方 ${esc(oc.officialVersion || '当前版本')} 有效</div>
+              </div>
+              <button class="official-notice-close" data-official-dismiss title="关闭">×</button>
             </div>
-            <button class="official-notice-close" data-official-dismiss title="关闭">×</button>
-          </div>
-          <div class="official-notice-actions">
-            <a class="btn ghost" href="https://github.com/DanielToyama/WuwaTappoNative/releases/latest" target="_blank" rel="noreferrer">查看项目状态</a>
-            <button class="btn ghost" data-official-dismiss>${danger ? '暂时继续（联机可能不可用）' : '继续使用'}</button>
-          </div>
-        </section>`;
+            <div class="official-notice-actions">
+              <a class="btn ghost" href="https://github.com/DanielToyama/WuwaTappoNative/releases/latest" target="_blank" rel="noreferrer">查看项目状态</a>
+            </div>
+          </section>`;
+        } else {
+          officialHtml = `<section class="official-notice ${danger ? 'danger' : 'warning'}">
+            <div class="official-notice-main">
+              <div class="official-notice-icon">${danger ? '!' : '?'}</div>
+              <div class="official-notice-copy">
+                <div class="official-notice-title">官方客户端已${danger ? '强制' : ''}更新至 ${esc(oc.officialVersion || '新版本')}</div>
+                <div class="official-notice-text">${esc(oc.message || '')}</div>
+                <div class="official-notice-meta">当前 Native 验证基线：${esc(oc.testedVersion || '—')}${oc.stale ? ' · 显示上次检查结果' : ''}</div>
+              </div>
+              <button class="official-notice-close" data-official-dismiss title="关闭">×</button>
+            </div>
+            <div class="official-notice-actions">
+              <a class="btn ghost" href="https://github.com/DanielToyama/WuwaTappoNative/releases/latest" target="_blank" rel="noreferrer">查看项目状态</a>
+              ${danger
+                ? (forcedOnlineCanOptIn()
+                  ? '<button class="btn danger" data-official-allow>仍要联网（自担风险）</button>'
+                  : '<span class="muted" style="font-size:12px">当前状态由维护者强制暂停，无法本地绕过</span>')
+                : '<button class="btn ghost" data-official-dismiss>继续使用</button>'}
+            </div>
+          </section>`;
+        }
       }
     }
 
@@ -2882,6 +4335,8 @@
           renderNotices();
         };
       });
+      const allow = host.querySelector('[data-official-allow]');
+      if (allow) allow.onclick = () => openForcedOnlineConfirm(oc);
     }
     bindAnnouncement(host);
   }
@@ -2959,6 +4414,28 @@
     finally { announcementBusy = false; }
   }
 
+  /** 与原生层 CompatibilityGate 保持一致的联网门禁提示；空字符串表示允许联网。 */
+  function onlineBlockedReason() {
+    const c = state.compatibility;
+    if (!c) return '';
+    const sentence = (text, fallback) => {
+      const value = String(text || '').trim() || fallback;
+      return value.replace(/[。.!！?？]+$/g, '');
+    };
+    const kill = c.killSwitch || {};
+    if (kill.forceOffline) {
+      return `安全模式已启用：${sentence(kill.reason, '维护者要求暂停联网')}。`;
+    }
+    const status = String(c.status || '').toLowerCase();
+    if (status === 'unsafe') return `当前版本状态为不安全：${sentence(c.message, '请更新后再联网')}。`;
+    if (status === 'maintenance') return `官方服务维护中：${sentence(c.message, '请稍后再试')}。`;
+    if (c.officialCheck?.state === 'forced') {
+      if (forcedOnlineAccepted(c)) return '';
+      return `官方客户端已强制更新，当前 Native 尚未验证：${sentence(c.officialCheck.message, '建议暂停联机')}。`;
+    }
+    return '';
+  }
+
   function compatibilityBannerHtml() {
     const c = state.compatibility;
     if (!c) return '';
@@ -2966,9 +4443,10 @@
     const officialCheck = c.officialCheck;
     const currentNative = state.boot?.version || '';
     const belowMinSafe = !!(native.minSafe && currentNative && compareVersions(currentNative, native.minSafe) < 0);
+    const forcedAccepted = officialCheck?.state === 'forced' && forcedOnlineAccepted(c);
     let status = String(c.status || 'unknown').toLowerCase();
     if (status === 'safe' && (belowMinSafe || officialCheck?.state === 'unverified' || officialCheck?.state === 'forced'))
-      status = officialCheck?.state === 'forced' ? 'unsafe' : 'warning';
+      status = officialCheck?.state === 'forced' ? (forcedAccepted ? 'warning' : 'unsafe') : 'warning';
     const meta = ({
       safe: { cls: 'safe', icon: '✓', label: '安全', title: '当前版本可继续使用' },
       warning: { cls: 'warning', icon: '!', label: '注意', title: '当前版本需要关注' },
@@ -2984,6 +4462,7 @@
     const protocol = c.protocol || {};
     const kill = c.killSwitch || {};
     const force = !!kill.forceOffline;
+    const blocked = onlineBlockedReason();
     const updated = c.updatedAt ? new Date(c.updatedAt) : null;
     const updatedText = updated && !Number.isNaN(updated.getTime())
       ? updated.toLocaleString('zh-CN', { hour12: false })
@@ -3009,6 +4488,8 @@
       <div class="compat-meta">${bits.join(' · ')}</div>
       ${belowMinSafe ? `<div class="compat-force">当前 Native ${esc(currentNative)} 低于最低兼容版本 ${esc(native.minSafe)}，不保证兼容当前官方服务，请更新后再使用联机。</div>` : ''}
       ${force ? `<div class="compat-force">安全模式：${esc(kill.reason || '维护者要求暂停联网')}</div>` : ''}
+      ${blocked ? `<div class="compat-force">已暂停联网操作：${esc(blocked)}房间、宝箱、合成、兑换与外观同步会直接拒绝，直到状态恢复安全。</div>` : ''}
+      ${forcedAccepted ? `<div class="compat-risk-note">已按你的选择允许联网（风险自负）：官方 ${esc(officialCheck.officialVersion || '新版本')} 尚未验证，出现异常请恢复限制并更新 Native。</div>` : ''}
       ${protocol.breaking ? '<div class="compat-force">检测到破坏性协议变更，请尽快更新。</div>' : ''}
     </section>`;
   }
@@ -3122,8 +4603,102 @@
     } catch { }
   }
 
+  const SETTINGS_OPEN_GROUPS_KEY = 'wn_settings_open_groups_v1';
+  function loadSettingsOpenGroups() {
+    try {
+      const arr = JSON.parse(localStorage.getItem(SETTINGS_OPEN_GROUPS_KEY) || '[]');
+      state.settingsOpenGroups = new Set(Array.isArray(arr) ? arr.filter(x => typeof x === 'string') : []);
+    } catch { state.settingsOpenGroups = new Set(); }
+  }
+  function saveSettingsOpenGroups() {
+    try { localStorage.setItem(SETTINGS_OPEN_GROUPS_KEY, JSON.stringify([...state.settingsOpenGroups])); } catch { }
+  }
+
+  /** 记录设置页当前滚动、聚焦输入和用户尚未提交的编辑值；boot 重推后原样恢复。 */
+  function captureSettingsViewState() {
+    const scroller = document.querySelector('.settings-scroll');
+    if (!scroller) return null;
+    const dirty = {};
+    scroller.querySelectorAll('input[id],select[id],textarea[id]').forEach(el => {
+      if (el.type === 'file' || el.dataset.userDirty !== '1') return;
+      dirty[el.id] = { value: el.value, checked: !!el.checked, type: el.type };
+    });
+    const active = document.activeElement;
+    const focus = active && scroller.contains(active) && active.id
+      ? { id: active.id, start: active.selectionStart, end: active.selectionEnd }
+      : null;
+    return { scrollTop: scroller.scrollTop, dirty, focus };
+  }
+  function restoreSettingsViewState(view) {
+    const scroller = document.querySelector('.settings-scroll');
+    if (!scroller || !view) return;
+    for (const [id, stored] of Object.entries(view.dirty || {})) {
+      const el = document.getElementById(id);
+      if (!el || !(el instanceof HTMLInputElement || el instanceof HTMLSelectElement || el instanceof HTMLTextAreaElement)) continue;
+      if (stored.type === 'checkbox') el.checked = stored.checked;
+      else el.value = stored.value;
+      el.dataset.userDirty = '1';
+    }
+    if (view.scrollTop > 0) scroller.scrollTop = view.scrollTop;
+    if (view.focus) {
+      const el = document.getElementById(view.focus.id);
+      if (el && typeof el.focus === 'function') {
+        el.focus({ preventScroll: true });
+        try {
+          if (typeof view.focus.start === 'number' && typeof el.setSelectionRange === 'function')
+            el.setSelectionRange(view.focus.start, view.focus.end ?? view.focus.start);
+        } catch { }
+      }
+    }
+  }
+  function settingsItemText(el) {
+    return String(el?.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+  /** 设置页搜索：按 .setting-item 文本过滤，命中组自动展开；清空后恢复用户保存的展开状态。 */
+  function filterSettings(query) {
+    const scroller = document.querySelector('.settings-scroll');
+    if (!scroller) return;
+    const q = String(query || '').trim().toLowerCase();
+    const groups = [...scroller.querySelectorAll('.settings-group')];
+    const empty = document.getElementById('settingsSearchEmpty');
+    const countHost = document.getElementById('settingsSearchCount');
+    if (!q) {
+      for (const group of groups) {
+        group.classList.remove('settings-search-hidden');
+        group.querySelectorAll('.setting-item').forEach(item => item.classList.remove('settings-search-hidden'));
+        group._searchAuto = true;
+        group.open = state.settingsOpenGroups.has(group.dataset.groupId);
+        setTimeout(() => { group._searchAuto = false; }, 60);
+      }
+      if (empty) empty.classList.add('hidden');
+      if (countHost) countHost.textContent = '';
+      return;
+    }
+    let total = 0;
+    for (const group of groups) {
+      let matches = 0;
+      group.querySelectorAll('.setting-item').forEach(item => {
+        const hit = settingsItemText(item).includes(q);
+        item.classList.toggle('settings-search-hidden', !hit);
+        if (hit) matches++;
+      });
+      group.classList.toggle('settings-search-hidden', matches === 0);
+      if (matches > 0) {
+        total += matches;
+        if (!group.open) {
+          group._searchAuto = true;
+          group.open = true;
+          setTimeout(() => { group._searchAuto = false; }, 60);
+        }
+      }
+    }
+    if (empty) empty.classList.toggle('hidden', total > 0);
+    if (countHost) countHost.textContent = total > 0 ? `匹配 ${total} 项` : '无匹配';
+  }
+
   function createSettingsGroup(id, title, subtitle, primary = false) {
     const node = document.createElement(primary ? 'section' : 'details');
+    node.dataset.groupId = id;
     node.className = 'settings-group' + (primary ? ' settings-group-primary' : '');
     node.id = `settings-group-${id}`;
     const heading = `<span class="settings-group-heading"><span class="settings-group-title">${esc(title)}</span><span class="settings-group-sub">${esc(subtitle)}</span></span>`;
@@ -3133,8 +4708,10 @@
       node.innerHTML = `<summary>${heading}</summary><div class="settings-group-body"></div>`;
       node.open = state.settingsOpenGroups.has(id);
       node.addEventListener('toggle', () => {
+        if (node._searchAuto) return;
         if (node.open) state.settingsOpenGroups.add(id);
         else state.settingsOpenGroups.delete(id);
+        saveSettingsOpenGroups();
       });
     }
     return node;
@@ -3188,7 +4765,9 @@
     groups.push(
       makeGroup('account', '账号与兑换', '区服、账号、点击与兑换码', ['账号', '兑换']),
       makeGroup('input', '输入与录制', '桌面键盘与快捷键', ['桌面键盘', '快捷键']),
-      makeGroup('desktop', '桌面与游戏模式', '窗口、桌宠、OBS 与头饰位置', ['窗口与桌宠', '头饰位置微调']),
+      makeGroup('window', '桌宠与窗口', '大小、屏幕、不透明度与头饰微调', ['窗口与桌宠', '头饰位置微调']),
+      makeGroup('obs', 'OBS 采集', '采集窗口、背景与兼容模式', ['OBS 采集']),
+      makeGroup('theme', '主题与外观', '主题色、背景图与主题预设', ['主题与外观']),
       makeGroup('interaction', '联机与互动', '联机桌宠、宝箱、自动化与通知', ['联机与宝箱', '自动化', '通知']),
       makeGroup('maintenance', '程序与更新', '启动、权限、规则、更新、日志与关于', ['其他', '更新'])
     );
@@ -3199,8 +4778,36 @@
     scroller.insertBefore(fragment, anchor || null);
   }
 
+  function themePresetPreviewHtml(preset, activeId) {
+    if (!preset) return '<div class="muted" style="font-size:12px;padding:8px 4px">点击或悬停预设，查看完整配色、底栏与背景图预览。</div>';
+    const active = String(activeId || '') === String(preset.id);
+    const bg = preset.backgroundImageSet && preset.backgroundImage
+      ? `background-image:${cssBackgroundUrl(preset.backgroundImage)};background-size:cover;background-position:center`
+      : `background:${normalizeHexColor(preset.accentColor, '#e7b77c')}`;
+    const swatches = [
+      ['主题色', preset.accentColor],
+      ['字体', preset.fontColor],
+      ['底栏', preset.barFollowStandard ? '跟随主题' : (preset.barColor || '自动推导')],
+      ['底栏文字', preset.barTextFollowTheme ? '跟随主题' : (preset.barTextColor || '自动推导')],
+    ].map(([label, value]) => {
+      const solid = /^#[0-9a-f]{6}$/i.test(String(value || ''));
+      return `<span class="theme-preview-chip">${solid ? `<i style="background:${value}"></i>` : ''}${esc(label)}：${esc(value)}</span>`;
+    }).join('');
+    return `<div class="theme-preset-preview-card">
+      <div class="theme-preset-preview-bg" style='${bg}'></div>
+      <div class="theme-preset-preview-body">
+        <div class="theme-preset-preview-name">${esc(preset.name)}${active ? ' · 当前' : ''}</div>
+        <div class="theme-preset-preview-chips">${swatches}</div>
+        <div class="theme-preset-preview-meta">背景：${preset.backgroundImageSet ? '独立图片' : '纯配色'} · 透明度 ${Math.round((Number(preset.backgroundOpacity ?? 0.25)) * 100)}% · 模糊 ${Number(preset.backgroundBlur) || 0}px</div>
+        <div class="theme-preset-preview-meta">底栏：${preset.barFollowStandard ? '跟随标准主题' : '独立配色'}${preset.barTextFollowTheme ? ' · 文字跟随主题' : ' · 文字独立'}</div>
+      </div>
+    </div>`;
+  }
+
   function renderSettings() {
+    const viewState = captureSettingsViewState();
     const s = state.boot?.settings || {};
+    applyTheme(s);
     const auth = state.boot?.auth || {};
     const acc = state.boot?.appearance || {};
     const accId = Number(acc.accessoryAssetId || 0);
@@ -3221,12 +4828,77 @@
     const remoteNameScalePct = Math.max(50, Math.min(200, Math.round((Number(s.remoteNameScale) || 1) * 100)));
     const accX = Number(acc.accessoryOffsetX || 0);
     const accY = Number(acc.accessoryOffsetY || 0);
+    const accScale = normalizeAccessoryScale(acc.accessoryScalePercent);
+    const accRotation = normalizeAccessoryRotation(acc.accessoryRotationDegrees);
     const screens = Array.isArray(state.boot?.screens) ? state.boot.screens : [];
     const selectedScreen = s.petScreen || screens.find(x => x.primary)?.deviceName || '';
-    // 快捷键/菜单改设置会触发 boot 重推；保留滚动位置，别把用户顶回顶部。
-    const prevScroll = document.querySelector('.settings-scroll')?.scrollTop || 0;
+    const screenSwitchMode = s.screenSwitchMode || 'default';
+    const forcedCheck = state.compatibility?.officialCheck;
+    const forcedCanOptIn = forcedOnlineCanOptIn();
+    const forcedAccepted = forcedCheck?.state === 'forced' && forcedOnlineAccepted();
+    const forcedOnlineRow = forcedCheck?.state === 'forced' ? `
+          <div class="setting-item">
+            <div><div class="setting-title">官方强制更新后联网</div><div class="setting-sub">${forcedCanOptIn
+              ? (forcedAccepted
+                ? `当前官方 ${esc(forcedCheck.officialVersion || '新版本')} 已允许按旧协议联网，所有功能正常运行。此授权仅在官方再次更新、维护者标记不安全/维护中，或验证基线更新到当前版本时自动失效；也可以在这里手动撤销。`
+                : `当前官方 ${esc(forcedCheck.officialVersion || '新版本')} 超出 Native 验证基线 ${esc(forcedCheck.testedVersion || '—')}。默认暂停联机；开启后按旧协议继续，可能出现功能异常或账号风险。`)
+              : '当前版本被维护者标记为不安全或维护中，无法通过风险确认绕过联网限制。'}</div></div>
+            <div class="setting-content">
+              <span class="muted" style="font-size:12px">${forcedAccepted ? '已允许（风险自负）' : (forcedCanOptIn ? '已暂停' : '不可绕过')}</span>
+              ${forcedCanOptIn ? `<button class="btn ghost" id="forcedOnlineSettingBtn">${forcedAccepted ? '撤销风险授权' : '仍要联网…'}</button>` : ''}
+            </div>
+          </div>` : '';
+    const themePalette = buildThemePalette(s);
+    const themeAccent = themePalette.primary;
+    const themeFont = themePalette.ink;
+    const themeBgSet = themeBackgroundIsSet(s);
+    const themeAutoPalette = autoImagePaletteEnabled();
+    const themeBgOpacityPct = Math.max(0, Math.min(100, Math.round((Number(s.themeBackgroundOpacity ?? 0.25)) * 100)));
+    const themeBgBlur = Math.max(0, Math.min(24, Math.round(Number(s.themeBackgroundBlur) || 0)));
+    const themeBarFollow = s.themeBarFollowStandard !== false;
+    const themeBarColorValue = normalizeHexColor(
+      themeBarFollow ? s.themeBarEffectiveColor : (s.themeBarColor || s.themeBarEffectiveColor),
+      '#f5e4cc');
+    const themeBarTextFollow = s.themeBarTextFollowTheme !== false;
+    const themeBarTextColorValue = normalizeHexColor(
+      s.themeBarTextColor || s.themeBarEffectiveTextColor, themeFont);
+    const themePresets = Array.isArray(state.boot?.themePresets) ? state.boot.themePresets : [];
+    const themeRotation = state.boot?.themeRotation || {};
+    const rotationInterval = Math.max(1, Math.min(1440, Number(themeRotation.intervalMinutes) || 30));
+    const rotationLast = Number(themeRotation.lastAppliedMs || 0);
+    const rotationTime = rotationLast > 0
+      ? new Date(rotationLast).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+      : '';
+    const themePresetRows = themePresets.map((p, index) => {
+      const active = String(themeRotation.currentPresetId || '') === String(p.id);
+      const swatchStyle = p.backgroundImageSet && p.backgroundImage
+        ? `background-image:${cssBackgroundUrl(p.backgroundImage)};background-size:cover;background-position:center`
+        : `background:${normalizeHexColor(p.accentColor, '#e7b77c')}`;
+      return `<div class="theme-preset-row${active ? ' active' : ''}" data-theme-preset-id="${esc(p.id)}" title="点击预览；当前预设可被覆盖保存">
+        <div class="theme-preset-swatch" style='${swatchStyle}'></div>
+        <div class="theme-preset-info">
+          <div class="theme-preset-name">${esc(p.name)}</div>
+          <div class="theme-preset-meta">${p.backgroundImageSet ? '含背景图' : '纯配色'} · ${p.barFollowStandard ? '底栏跟随主题' : '底栏独立'}${active ? ' · 当前' : ''}</div>
+        </div>
+        <div class="theme-preset-actions">
+          <button class="btn ghost theme-preset-btn" data-theme-preset-up="${esc(p.id)}" ${index === 0 ? 'disabled' : ''} title="上移">↑</button>
+          <button class="btn ghost theme-preset-btn" data-theme-preset-down="${esc(p.id)}" ${index === themePresets.length - 1 ? 'disabled' : ''} title="下移">↓</button>
+          <button class="btn ghost theme-preset-btn" data-theme-preset-apply="${esc(p.id)}">应用</button>
+          <button class="btn ghost theme-preset-btn" data-theme-preset-rename="${esc(p.id)}">重命名</button>
+          <button class="btn danger theme-preset-btn" data-theme-preset-delete="${esc(p.id)}">删除</button>
+        </div>
+      </div>`;
+    }).join('');
+    const currentThemePreset = themePresets.find(p => String(p.id) === String(themeRotation.currentPresetId || '')) || null;
+    const previewPreset = themePresets.find(p => String(p.id) === String(state.themePresetPreviewId || '')) || currentThemePreset;
+    // 快捷键/菜单改设置会触发 boot 重推；保留滚动位置和正在编辑的输入，别把用户顶回顶部。
     setPage(`
       <div class="settings-scroll">
+        <div class="settings-search-bar">
+          <input class="input" id="settingsSearch" placeholder="搜索设置项（名称或说明）" value="${esc(state.settingsSearch)}" autocomplete="off" />
+          <span class="muted" id="settingsSearchCount"></span>
+        </div>
+        <div class="empty-state hidden" id="settingsSearchEmpty">没有匹配的设置项</div>
         ${updateBannerHtml()}
         <div class="section">
           <div class="section-title">账号</div>
@@ -3241,8 +4913,8 @@
               </div>
             </div>
             ${isLogged() ? `
-              <div class="detail-row"><span>昵称</span><span>${esc(auth.nickname || '—')}</span></div>
-              <div class="detail-row"><span>UID</span><span>${auth.uid || '—'}</span></div>
+              <div class="detail-row"><span>昵称</span><span data-auth-nickname>${esc(auth.nickname || '—')}</span></div>
+              <div class="detail-row"><span>UID</span><span data-auth-uid>${auth.uid || '—'}</span></div>
               <div class="detail-row"><span>可用点击</span><span data-click-avail>${auth.clicks || 0}</span></div>
               <div class="detail-row"><span>累计点击</span><span class="click-total"><span data-click-total>${auth.clickTotal ?? auth.clicks ?? 0}</span><button class="btn ghost click-boost" id="boostClicks" title="本地增加 10000 次点击并立即上报；连续操作间隔至少 0.5 秒">+10000</button></span></div>
               <div class="detail-row"><span>已消耗</span><span data-click-consume>${auth.clickConsume || 0}</span></div>
@@ -3295,10 +4967,20 @@
             </div>
           </div>
           <div class="setting-item">
-            <div><div class="setting-title">显示屏幕</div><div class="setting-sub">快捷键切换屏幕时以这个屏幕为基准；修改后桌宠会移动到所选屏幕</div></div>
+            <div><div class="setting-title">默认显示屏幕</div><div class="setting-sub">程序启动、切换区服或托盘重置位置时使用的默认屏幕；F8 始终从桌宠当前实际所在屏幕开始切换，不受此处影响</div></div>
             <div class="setting-content">
               <select class="select" id="setPetScreen" style="min-width:220px">
                 ${screens.map(x => `<option value="${esc(x.deviceName)}" ${x.deviceName === selectedScreen ? 'selected' : ''}>${esc(x.label)}</option>`).join('')}
+              </select>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">切换屏幕时的移动范围</div><div class="setting-sub">默认位置成员指最近一次重置排序后未手动拖动的成员；全部成员模式会在两屏都有成员时互相交换，分辨率不同时按屏幕比例换算</div></div>
+            <div class="setting-content">
+              <select class="select" id="setScreenSwitchMode" style="min-width:240px">
+                <option value="default" ${screenSwitchMode === 'default' ? 'selected' : ''}>仅移动默认位置成员</option>
+                <option value="main" ${screenSwitchMode === 'main' ? 'selected' : ''}>只移动主角</option>
+                <option value="all" ${screenSwitchMode === 'all' ? 'selected' : ''}>全部成员一起移动</option>
               </select>
             </div>
           </div>
@@ -3378,6 +5060,18 @@
             <div class="switch ${s.allowOverlap !== false ? 'on' : ''}" data-switch="allowOverlap"></div>
           </div>
           <div class="setting-item">
+            <div><div class="setting-title">隐藏主角底栏</div><div class="setting-sub">只隐藏计数条、工具栏和手部压条，角色本体保持完整；隐藏后仍可通过快捷键恢复</div></div>
+            <div class="switch ${s.hideMainBar ? 'on' : ''}" data-switch="hideMainBar"></div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">隐藏远程角色底栏</div><div class="setting-sub">只隐藏联机角色的昵称条和手部压条，角色本体与表情气泡保持显示；隐藏后仍可通过快捷键恢复</div></div>
+            <div class="switch ${s.hideRemoteBars ? 'on' : ''}" data-switch="hideRemoteBars"></div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="section-title">OBS 采集</div>
+          <div class="setting-item">
             <div><div class="setting-title">OBS 采集窗口</div><div class="setting-sub">主角完整 GUI（数字/计数条/宝箱/昵称）和键盘/手柄面板一起显示；可自定义背景色或设为透明</div></div>
             <div class="switch ${s.captureMode ? 'on' : ''}" data-switch="captureMode"></div>
           </div>
@@ -3392,7 +5086,7 @@
           <div class="setting-item">
             <div><div class="setting-title">采集背景颜色</div><div class="setting-sub">支持 #RRGGBB 色号；透明模式下不使用此颜色</div></div>
             <div class="setting-content" style="flex-wrap:wrap;justify-content:flex-end">
-              <input type="color" id="captureColor" value="${esc(s.captureColor || '#00FF00')}" style="width:40px;height:34px;padding:2px;border:1.5px solid var(--border);border-radius:8px;background:var(--cream)" />
+              <button type="button" class="color-picker-trigger" data-color-for="captureColorHex" title="选择颜色"></button>
               <input class="input" id="captureColorHex" maxlength="7" value="${esc(s.captureColor || '#00FF00')}" style="width:86px;text-transform:uppercase" />
               <div class="capture-palette" id="capturePalette">
                 ${['#00FF00', '#0000FF', '#FF00FF', '#00FFFF', '#FFFFFF', '#000000'].map(c => `<button type="button" class="capture-swatch" data-capture-color="${c}" style="background:${c}" title="${c}"></button>`).join('')}
@@ -3419,10 +5113,10 @@
             <div class="accessory-tuning-head">
               <div>
                 <div class="setting-title">当前头饰</div>
-                <div class="setting-sub">${accId ? '拖动左侧 X/Y 滑条粗略移动，方向按钮微调；每个头饰独立保存' : '当前未佩戴头饰，先在背包 → 配件中选择一件'}</div>
+                <div class="setting-sub">${accId ? '拖动滑条调整 X/Y、自由缩放与旋转，方向按钮微调位置；每个头饰独立保存' : '当前未佩戴头饰，先在背包 → 配件中选择一件'}</div>
                 <div class="setting-sub accessory-local-note">此调整仅本地生效，联机玩家看见的是默认样式</div>
               </div>
-              <span class="accessory-coords" id="accessoryCoords">X ${accX} · Y ${accY}</span>
+              <span class="accessory-coords" id="accessoryCoords">X ${accX} · Y ${accY} · ${accScale}% · ${accRotation}°</span>
             </div>
             <div class="accessory-tuning-body">
               <div class="accessory-sliders">
@@ -3440,6 +5134,20 @@
                   </span>
                   <output class="axis-value" id="accOffsetYValue">${accY}</output>
                 </label>
+                <label class="axis-control">
+                  <span class="axis-label axis-label-text">缩放</span>
+                  <span class="axis-slider-wrap" style="--axis-zero:50%">
+                    <input class="axis-range" id="accScale" type="range" min="25" max="175" step="1" value="${accScale}" aria-label="头饰自由缩放百分比" ${accId ? '' : 'disabled'}>
+                  </span>
+                  <output class="axis-value axis-value-wide" id="accScaleValue">${accScale}%</output>
+                </label>
+                <label class="axis-control">
+                  <span class="axis-label axis-label-text">旋转</span>
+                  <span class="axis-slider-wrap">
+                    <input class="axis-range" id="accRotation" type="range" min="-180" max="180" step="1" value="${accRotation}" aria-label="头饰自由旋转角度" ${accId ? '' : 'disabled'}>
+                  </span>
+                  <output class="axis-value axis-value-wide" id="accRotationValue">${accRotation}°</output>
+                </label>
               </div>
               <div class="accessory-actions">
                 <div class="nudge-pad">
@@ -3448,7 +5156,121 @@
                   <button class="btn ghost nudge-btn" data-nudge="0,1" ${accId ? '' : 'disabled'} title="下移">↓</button>
                   <button class="btn ghost nudge-btn" data-nudge="1,0" ${accId ? '' : 'disabled'} title="右移">→</button>
                 </div>
-                <button class="btn ghost accessory-reset" id="resetAccessoryOffset" ${accId && (accX || accY) ? '' : 'disabled'}>归零</button>
+                <button class="btn ghost accessory-reset" id="resetAccessoryOffset" ${accId && (accX || accY || accScale !== 100 || accRotation !== 0) ? '' : 'disabled'}>归零</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section" id="themeSection">
+          <div class="section-title">主题与外观</div>
+          <div class="setting-item">
+            <div><div class="setting-title">主题色</div><div class="setting-sub">作为主色自动生成整套面板配色，也用于桌宠底部信息条</div></div>
+            <div class="setting-content">
+              <button type="button" class="color-picker-trigger" data-color-for="themeAccent" title="选择颜色"></button>
+              <input class="input color-hex-input" id="themeAccent" maxlength="7" value="${themeAccent}" placeholder="#E7B77C" />
+              <button class="btn ghost" id="themeReset" title="恢复默认主题色和高级配色">恢复默认</button>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">字体颜色</div><div class="setting-sub">应用于面板主要文字和桌宠底部信息条</div></div>
+            <div class="setting-content">
+              <button type="button" class="color-picker-trigger" data-color-for="themeFont" title="选择颜色"></button>
+              <input class="input color-hex-input" id="themeFont" maxlength="7" value="${themeFont}" placeholder="#8E5E43" />
+            </div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">底栏跟随标准主题</div><div class="setting-sub">关闭后可单独设置主桌宠底栏和所有联机角色昵称条，不影响面板配色</div></div>
+            <div class="switch ${themeBarFollow ? 'on' : ''}" data-switch="themeBarFollowStandard"></div>
+          </div>
+          ${themeBarFollow ? '' : `
+          <div class="setting-item">
+            <div><div class="setting-title">底栏背景色</div><div class="setting-sub">主桌宠信息条与所有 RemoteCatWindow 昵称条共用</div></div>
+            <div class="setting-content">
+              <button type="button" class="color-picker-trigger" data-color-for="themeBarColor" title="选择颜色"></button>
+              <input class="input color-hex-input" id="themeBarColor" maxlength="7" value="${themeBarColorValue}" placeholder="#F5E4CC" />
+              <button class="btn ghost" id="themeBarColorReset" title="清空独立底色，重新使用主题色推导">跟随主题推导</button>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">底栏文字</div><div class="setting-sub">默认跟随主题字体色；也可以单独指定</div></div>
+            <div class="setting-content" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <label class="muted" style="display:inline-flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap">
+                <input type="checkbox" id="themeBarTextFollowTheme" ${themeBarTextFollow ? 'checked' : ''} />
+                跟随主题字体色
+              </label>
+              ${themeBarTextFollow
+                ? `<span class="muted" style="font-size:12px">${esc(s.themeBarEffectiveTextColor || themeFont)}</span>`
+                : `<button type="button" class="color-picker-trigger" data-color-for="themeBarTextColor" title="选择颜色"></button>
+              <input class="input color-hex-input" id="themeBarTextColor" maxlength="7" value="${themeBarTextColorValue}" placeholder="#8E5E43" />`}
+            </div>
+          </div>`}
+          <div class="setting-item">
+            <div><div class="setting-title">背景图像</div><div class="setting-sub">支持 PNG/JPG/WebP/GIF，最大 20MB；超过 4MB 自动压缩并存入主题缓存</div></div>
+            <div class="setting-content" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <input type="file" id="themeBgFile" accept="image/png,image/jpeg,image/webp,image/gif" style="max-width:220px;font-size:12px" />
+              <button class="btn ghost" id="themeBgClear" ${themeBgSet ? '' : 'disabled'}>移除</button>
+              <span class="muted" id="themeBgStatus" style="font-size:12px">${themeBgSet ? '已设置背景图' : '未设置'}</span>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">从图片提取配色</div><div class="setting-sub">采样背景图的主色、辅助色和明暗色，生成整套面板与桌宠底栏配色</div></div>
+            <div class="setting-content" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+              <button class="btn ghost" id="themeExtract" ${themeBgSet ? '' : 'disabled'}>从图片提取配色</button>
+              <label class="muted" style="display:inline-flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap">
+                <input type="checkbox" id="themeAutoPalette" ${themeAutoPalette ? 'checked' : ''} />
+                选图后自动应用
+              </label>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">背景透明度</div><div class="setting-sub">背景图在面板底层的可见程度</div></div>
+            <div class="setting-content">
+              <input type="range" id="themeBgOpacity" min="0" max="100" step="1" value="${themeBgOpacityPct}" style="width:150px" />
+              <span id="themeBgOpacityVal" class="muted" style="font-size:12px">${themeBgOpacityPct}%</span>
+            </div>
+          </div>
+          <div class="setting-item">
+            <div><div class="setting-title">背景模糊</div><div class="setting-sub">背景图模糊半径，0 表示不模糊</div></div>
+            <div class="setting-content">
+              <input type="range" id="themeBgBlur" min="0" max="24" step="1" value="${themeBgBlur}" style="width:150px" />
+              <span id="themeBgBlurVal" class="muted" style="font-size:12px">${themeBgBlur}px</span>
+            </div>
+          </div>
+          <details class="theme-advanced">
+            <summary>高级配色微调 <span class="muted">自动生成的整套颜色</span></summary>
+            <div class="theme-advanced-note">修改任意颜色后会覆盖该颜色；恢复默认会清除所有覆盖。</div>
+            <div class="theme-advanced-grid">
+              ${THEME_ADVANCED_FIELDS.map(([key, label]) => `
+                <label class="theme-advanced-field">
+                  <span>${label}</span>
+                  <button type="button" class="color-picker-trigger" data-color-for="themeAdv_${key}" title="选择颜色"></button>
+                  <input class="input color-hex-input" id="themeAdv_${key}" data-theme-key="${key}" value="${themePalette[key] || '#e7b77c'}" maxlength="7" />
+                </label>`).join('')}
+            </div>
+          </details>
+
+          <div class="theme-subsection">
+            <div class="theme-subsection-title">主题预设</div>
+            <div class="setting-item" style="border-top:0">
+              <div><div class="setting-title">保存当前主题</div><div class="setting-sub">保存主题色、字体色、高级 palette、底栏独立色和当前背景图；预设背景图会独立复制保存</div></div>
+              <div class="setting-content" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+                <input class="input" id="themePresetName" maxlength="40" placeholder="预设名称，例如：夜间森林" value="${currentThemePreset ? esc(currentThemePreset.name) : ''}" style="width:200px" />
+                ${currentThemePreset ? `<label class="muted" style="display:inline-flex;align-items:center;gap:5px;font-size:12px;white-space:nowrap"><input type="checkbox" id="themePresetOverwrite" checked /> 覆盖「${esc(currentThemePreset.name)}」</label>` : ''}
+                <button class="btn" id="themePresetSave">${currentThemePreset ? '覆盖当前预设' : '保存为预设'}</button>
+              </div>
+            </div>
+            <div class="theme-preset-list" id="themePresetList">
+              ${themePresetRows || '<div class="muted" style="font-size:12px;padding:6px 2px">还没有保存的主题预设。</div>'}
+            </div>
+            <div class="theme-preset-preview" id="themePresetPreview">${themePresetPreviewHtml(previewPreset, themeRotation.currentPresetId)}</div>
+            <div class="setting-item">
+              <div><div class="setting-title">自动轮换</div><div class="setting-sub">按预设列表顺序应用；面板关闭或设置页重渲染不会中断。${rotationLast > 0 ? `上次应用：${rotationTime}` : ''}</div></div>
+              <div class="setting-content" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+                <div class="switch ${themeRotation.enabled ? 'on' : ''}" id="themeRotationToggle"></div>
+                <span class="muted" style="font-size:12px">间隔</span>
+                <input class="input" id="themeRotationInterval" type="number" min="1" max="1440" step="1" value="${rotationInterval}" style="width:84px" />
+                <span class="muted" style="font-size:12px">分钟</span>
               </div>
             </div>
           </div>
@@ -3490,8 +5312,12 @@
         <div class="section">
           <div class="section-title">快捷键</div>
           <div class="hint muted" style="font-size:12px;margin:-4px 0 10px">点击输入框后按下新组合键；Esc 取消，退格清除（禁用该快捷键）。支持 Ctrl / Alt / Shift + 普通按键。快捷键为被动监听，不会拦截其他程序的按键，也不影响按键延迟。</div>
+          <div class="setting-item">
+            <div><div class="setting-title">分开设置底栏快捷键</div><div class="setting-sub">关闭时用一个快捷键同时切换主角和远程角色底栏；开启后分别用两个快捷键控制。切换只影响当前显示和注册的行，另一模式已录制的绑定会保留。</div></div>
+            <div class="switch ${s.separateBarHotkeys ? 'on' : ''}" data-switch="separateBarHotkeys"></div>
+          </div>
           <div class="hotkey-list" id="hotkeyList">
-            ${HOTKEY_ACTIONS.map(a => `
+            ${HOTKEY_ACTIONS.filter(a => !a.mode || a.mode === (s.separateBarHotkeys ? 'separate' : 'together')).map(a => `
               <div class="hotkey-row">
                 <span class="hotkey-label">${esc(a.label)}</span>
                 <input class="input hotkey-input" readonly data-hotkey="${a.id}" value="${esc((s.hotkeys || {})[a.id] || '未设置')}" />
@@ -3537,6 +5363,7 @@
           <div class="setting-item">
             <div><div class="setting-title">宝箱冷却</div><div class="setting-sub" id="chestStatus">正在读取…</div></div>
           </div>
+          ${forcedOnlineRow}
         </div>
 
         <div class="section">
@@ -3672,10 +5499,43 @@
       state.updateDismissed = true;
       renderSettings();
     });
+    document.getElementById('forcedOnlineSettingBtn')?.addEventListener('click', () => {
+      if (forcedOnlineAccepted()) confirmRestoreForcedOnline();
+      else openForcedOnlineConfirm(forcedCheck);
+    });
     bindSettings();
+    bindColorTriggers(document);
     loadAutoEmoteOptions().catch(() => { });
     const scroller = document.querySelector('.settings-scroll');
-    if (scroller && prevScroll > 0) scroller.scrollTop = prevScroll;
+    if (scroller) {
+      // 记录用户正在编辑但尚未提交的输入；boot/主题重绘后恢复，不会被服务端值覆盖。
+      const markDirty = e => { if (e.target?.id) e.target.dataset.userDirty = '1'; };
+      scroller.addEventListener('input', markDirty);
+      scroller.addEventListener('change', markDirty);
+      const search = document.getElementById('settingsSearch');
+      let searchTimer = 0;
+      const runSearch = () => {
+        state.settingsSearch = search?.value || '';
+        filterSettings(state.settingsSearch);
+      };
+      if (search) {
+        search.addEventListener('input', () => {
+          clearTimeout(searchTimer);
+          searchTimer = setTimeout(runSearch, 150);
+        });
+        search.addEventListener('keydown', e => {
+          if (e.key === 'Enter') { e.preventDefault(); clearTimeout(searchTimer); runSearch(); }
+          if (e.key === 'Escape') { search.value = ''; clearTimeout(searchTimer); runSearch(); }
+        });
+      }
+      filterSettings(state.settingsSearch);
+      restoreSettingsViewState(viewState);
+      const searchAfterRestore = document.getElementById('settingsSearch');
+      if (searchAfterRestore && searchAfterRestore.value !== state.settingsSearch) {
+        state.settingsSearch = searchAfterRestore.value;
+        filterSettings(state.settingsSearch);
+      }
+    }
   }
 
   // 与原版 Helper 一致的默认键位；实际值来自 boot.settings.hotkeys。
@@ -3683,6 +5543,9 @@
     { id: 'game', label: '游戏模式（鼠标穿透）', def: 'F7' },
     { id: 'monitor', label: '切换屏幕', def: 'F8' },
     { id: 'visibility', label: '显示／隐藏桌宠', def: 'F9' },
+    { id: 'barToggle', label: '隐藏／显示底栏（主角+远程）', def: '', mode: 'together' },
+    { id: 'barToggleMain', label: '隐藏／显示主角底栏', def: '', mode: 'separate' },
+    { id: 'barToggleRemote', label: '隐藏／显示远程角色底栏', def: '', mode: 'separate' },
     { id: 'reload', label: '刷新界面', def: 'F5' },
     ...[1, 2, 3, 4, 5, 6].map(i => ({ id: 'emote' + i, label: '发送表情 · 槽位 ' + i, def: 'Ctrl+Alt+' + i })),
     { id: 'capture', label: 'OBS 采集窗口', def: '' },
@@ -3805,6 +5668,10 @@
 
   function bindSettings() {
     const val = (id) => document.getElementById(id)?.value;
+    if (!themeImagePaletteInitialized) {
+      themeImagePaletteInitialized = true;
+      themeImagePaletteActive = !!readThemeAdvancedOverrides(state.boot?.settings).__imagePalette;
+    }
     bindChestButtons();
     const scaleSel = document.getElementById('setScale');
     const scaleRange = document.getElementById('setScaleRange');
@@ -3845,8 +5712,410 @@
         await tryCall('settings.set', { petScreen: e.target.value });
         await syncBoot();
         renderSettings();
-        toast('已切换显示屏幕');
+        toast('已切换默认屏幕并移动桌宠');
       } catch { }
+    });
+    document.getElementById('setScreenSwitchMode')?.addEventListener('change', async e => {
+      try {
+        await tryCall('settings.set', { screenSwitchMode: e.target.value });
+        await syncBoot();
+        renderSettings();
+        toast('已更新切换屏幕时的移动方式');
+      } catch { }
+    });
+
+    const previewTheme = patch => {
+      if (!state.boot) return;
+      state.boot.settings = { ...(state.boot.settings || {}), ...patch };
+      applyTheme(state.boot.settings);
+      previewPetTheme(patch);
+    };
+    const saveTheme = async (patch, refreshUi = false) => {
+      try {
+        state.boot = await tryCall('settings.set', patch);
+        clearPetThemePreview();
+        // 手动改任意主题字段后，原主题预设不再代表当前状态。
+        const themePatch = Object.keys(patch || {}).some(key => key.startsWith('theme'));
+        if (themePatch && state.boot?.themeRotation) state.boot.themeRotation.currentPresetId = '';
+        applyTheme(state.boot.settings);
+        // 主题色/字体变化后重渲染设置页，让高级配色输入框和“当前预设”标记显示新状态。
+        if (state.page === 'settings' && (refreshUi || themePatch)) renderSettings();
+        return true;
+      } catch {
+        clearPetThemePreview();
+        return false;
+      }
+    };
+    const themeAccentInput = document.getElementById('themeAccent');
+    const previewThemeColor = (key, value) => {
+      const overrides = readAdvancedOverrides();
+      const patch = { [key]: value };
+      // 图片自动配色是整套高级覆盖；手动改主题色/字体时先清掉它，让新主色重新生成整套颜色。
+      if (themeImagePaletteActive || overrides.__imagePalette) patch.themeAdvanced = '';
+      previewTheme(patch);
+    };
+    const saveThemeColor = (key, value) => {
+      const overrides = readAdvancedOverrides();
+      const patch = { [key]: value };
+      // 这里必须显式把空 themeAdvanced 发给 C#：input 事件只会改内存里的预览状态，
+      // change 事件才是持久化点，否则重启后图片自动配色会回来。
+      if (themeImagePaletteActive || overrides.__imagePalette) {
+        themeImagePaletteActive = false;
+        patch.themeAdvanced = '';
+      }
+      return saveTheme(patch, true);
+    };
+    themeAccentInput?.addEventListener('input', e => previewThemeColor('themeAccent', e.target.value));
+    themeAccentInput?.addEventListener('change', e => saveThemeColor('themeAccent', e.target.value));
+    const themeFontInput = document.getElementById('themeFont');
+    themeFontInput?.addEventListener('input', e => previewThemeColor('themeFont', e.target.value));
+    themeFontInput?.addEventListener('change', e => saveThemeColor('themeFont', e.target.value));
+    // 底栏独立配色：拖动取色弹窗时先本地预览，change 时由 C# 持久化并重绘。
+    const themeBarColorInput = document.getElementById('themeBarColor');
+    themeBarColorInput?.addEventListener('input', e => previewTheme({ themeBarColor: e.target.value }));
+    themeBarColorInput?.addEventListener('change', async e => {
+      await saveTheme({ themeBarColor: e.target.value });
+    });
+    document.getElementById('themeBarColorReset')?.addEventListener('click', async () => {
+      await saveTheme({ themeBarColor: '' });
+      renderSettings();
+    });
+    document.getElementById('themeBarTextFollowTheme')?.addEventListener('change', async e => {
+      await saveTheme({ themeBarTextFollowTheme: !!e.target.checked }, true);
+    });
+    const themeBarTextColorInput = document.getElementById('themeBarTextColor');
+    themeBarTextColorInput?.addEventListener('input', e => previewTheme({ themeBarTextColor: e.target.value }));
+    themeBarTextColorInput?.addEventListener('change', async e => {
+      await saveTheme({ themeBarTextColor: e.target.value });
+    });
+    document.getElementById('themePresetSave')?.addEventListener('click', async () => {
+      const input = document.getElementById('themePresetName');
+      const overwrite = !!document.getElementById('themePresetOverwrite')?.checked;
+      const currentId = String(state.boot?.themeRotation?.currentPresetId || '');
+      const current = (state.boot?.themePresets || []).find(p => String(p.id) === currentId);
+      let name = String(input?.value || '').trim();
+      if (!name && overwrite && current) name = current.name;
+      if (!name) { toast('请先输入预设名称', 'err'); input?.focus(); return; }
+      try {
+        await call('theme.presets.save', { name, id: overwrite && currentId ? currentId : '' });
+        await syncBoot();
+        renderSettings();
+        toast(overwrite && currentId ? '已覆盖当前主题预设' : '主题预设已保存');
+      } catch (err) { toast('保存预设失败：' + (err?.message || err), 'err'); }
+    });
+    document.getElementById('themePresetList')?.addEventListener('click', async e => {
+      const applyBtn = e.target.closest('[data-theme-preset-apply]');
+      const renameBtn = e.target.closest('[data-theme-preset-rename]');
+      const deleteBtn = e.target.closest('[data-theme-preset-delete]');
+      const upBtn = e.target.closest('[data-theme-preset-up]');
+      const downBtn = e.target.closest('[data-theme-preset-down]');
+      const row = e.target.closest('[data-theme-preset-id]');
+      if (row && !e.target.closest('.theme-preset-actions')) {
+        // 点击行固定预览，不重建设置页，避免滚动位置跳动。
+        state.themePresetPreviewId = row.dataset.themePresetId || '';
+        const preset = (state.boot?.themePresets || []).find(p => String(p.id) === state.themePresetPreviewId);
+        const host = document.getElementById('themePresetPreview');
+        if (host) host.innerHTML = themePresetPreviewHtml(preset, state.boot?.themeRotation?.currentPresetId);
+        return;
+      }
+      try {
+        if (applyBtn) {
+          await call('theme.presets.apply', { id: applyBtn.dataset.themePresetApply });
+          // 预设切换必须清掉即时预览，否则 localStorage 旧图会盖住新预设背景。
+          writeThemeBackgroundLocal('');
+          await syncBoot();
+          renderSettings();
+          toast('已应用主题预设');
+        } else if (upBtn || downBtn) {
+          const id = (upBtn || downBtn).dataset.themePresetUp || (upBtn || downBtn).dataset.themePresetDown;
+          const direction = upBtn ? -1 : 1;
+          await call('theme.presets.move', { id, direction });
+          await syncBoot();
+          renderSettings();
+          toast(direction < 0 ? '预设已上移' : '预设已下移');
+        } else if (renameBtn) {
+          const preset = (state.boot?.themePresets || []).find(p => String(p.id) === String(renameBtn.dataset.themePresetRename));
+          const next = window.prompt('新的预设名称', preset?.name || '');
+          if (next == null) return;
+          if (!String(next).trim()) { toast('预设名称不能为空', 'err'); return; }
+          await call('theme.presets.rename', { id: renameBtn.dataset.themePresetRename, name: String(next).trim() });
+          await syncBoot();
+          renderSettings();
+          toast('预设已重命名');
+        } else if (deleteBtn) {
+          const id = String(deleteBtn.dataset.themePresetDelete || '').trim();
+          if (!id) {
+            toast('主题预设缺少 id，已刷新列表', 'err');
+            await syncBoot();
+            renderSettings();
+            return;
+          }
+          const presets = Array.isArray(state.boot?.themePresets) ? state.boot.themePresets : [];
+          const removed = presets.find(p => String(p.id) === id);
+          const removedIndex = removed ? presets.indexOf(removed) : -1;
+          const rotation = state.boot?.themeRotation;
+          const previousRotationId = rotation ? rotation.currentPresetId : '';
+          // 先本地移除并重绘，点击后立即消失；桥接异常时回滚，后端明确失败时以服务端状态覆盖。
+          if (removed) {
+            state.boot.themePresets = presets.filter(p => String(p.id) !== id);
+            if (rotation && String(rotation.currentPresetId || '') === id) rotation.currentPresetId = '';
+            renderSettings();
+          }
+          let result;
+          try {
+            result = await call('theme.presets.delete', { id });
+          } catch (err) {
+            if (removed) {
+              state.boot.themePresets.splice(removedIndex, 0, removed);
+              if (rotation) rotation.currentPresetId = previousRotationId;
+              renderSettings();
+            }
+            throw err;
+          }
+          if (result?.ok === false) {
+            // 以服务端真实状态为准：写盘失败时预设恢复，已被别处删除时保持消失。
+            await syncBoot();
+            renderSettings();
+            toast('主题预设删除失败', 'err');
+            return;
+          }
+          await syncBoot();
+          renderSettings();
+          toast('主题预设已删除');
+        }
+      } catch (err) { toast('主题预设操作失败：' + (err?.message || err), 'err'); }
+    });
+    const presetListHost = document.getElementById('themePresetList');
+    const showPresetPreview = id => {
+      const preset = (state.boot?.themePresets || []).find(p => String(p.id) === String(id || ''));
+      const host = document.getElementById('themePresetPreview');
+      if (host) host.innerHTML = themePresetPreviewHtml(preset, state.boot?.themeRotation?.currentPresetId);
+    };
+    presetListHost?.addEventListener('mouseover', e => {
+      const row = e.target.closest('[data-theme-preset-id]');
+      if (!row) return;
+      showPresetPreview(row.dataset.themePresetId);
+    });
+    presetListHost?.addEventListener('mouseleave', () => {
+      const pinned = state.themePresetPreviewId || state.boot?.themeRotation?.currentPresetId || '';
+      showPresetPreview(pinned);
+    });
+    document.getElementById('themeRotationToggle')?.addEventListener('click', async e => {
+      const el = e.currentTarget;
+      const next = !el.classList.contains('on');
+      if (next && !(state.boot?.themePresets || []).length) {
+        toast('请先保存一个主题预设再开启轮换', 'err');
+        return;
+      }
+      el.classList.toggle('on', next);
+      const interval = Math.max(1, Math.min(1440, Math.round(Number(document.getElementById('themeRotationInterval')?.value) || 30)));
+      try {
+        await call('theme.rotation.set', { enabled: next, intervalMinutes: interval });
+        await syncBoot();
+        renderSettings();
+        toast(next ? '已开启主题轮换' : '已关闭主题轮换');
+      } catch (err) {
+        el.classList.toggle('on', !next);
+        toast('主题轮换设置失败：' + (err?.message || err), 'err');
+      }
+    });
+    document.getElementById('themeRotationInterval')?.addEventListener('change', async e => {
+      const interval = Math.max(1, Math.min(1440, Math.round(Number(e.target.value) || 30)));
+      e.target.value = interval;
+      const enabled = document.getElementById('themeRotationToggle')?.classList.contains('on') || false;
+      try {
+        await call('theme.rotation.set', { enabled, intervalMinutes: interval });
+        await syncBoot();
+        renderSettings();
+        toast('轮换间隔已更新');
+      } catch (err) { toast('轮换间隔设置失败：' + (err?.message || err), 'err'); }
+    });
+    const readAdvancedOverrides = () => readThemeAdvancedOverrides(state.boot?.settings);
+    const setAdvancedOverride = (key, value, persist) => {
+      const overrides = readAdvancedOverrides();
+      themeImagePaletteActive = false;
+      delete overrides.__imagePalette;
+      if (normalizeHexColor(value, null)) overrides[key] = normalizeHexColor(value, '#e7b77c');
+      else delete overrides[key];
+      const json = JSON.stringify(overrides);
+      previewTheme({ themeAdvanced: json });
+      if (persist) saveTheme({ themeAdvanced: json });
+    };
+    document.querySelectorAll('[data-theme-key]').forEach(input => {
+      input.addEventListener('input', e => setAdvancedOverride(e.target.dataset.themeKey, e.target.value, false));
+      input.addEventListener('change', e => setAdvancedOverride(e.target.dataset.themeKey, e.target.value, true));
+    });
+    document.getElementById('themeReset')?.addEventListener('click', async () => {
+      const patch = { themeAccent: '#e7b77c', themeFont: '#8e5e43', themeAdvanced: '' };
+      themeImagePaletteActive = false;
+      previewTheme(patch);
+      await saveTheme(patch);
+      renderSettings();
+      toast('已恢复默认主题');
+    });
+    const themeOpacity = document.getElementById('themeBgOpacity');
+    themeOpacity?.addEventListener('input', e => {
+      const pct = Number(e.target.value);
+      previewTheme({ themeBackgroundOpacity: pct / 100 });
+      const label = document.getElementById('themeBgOpacityVal');
+      if (label) label.textContent = pct + '%';
+    });
+    themeOpacity?.addEventListener('change', e => saveTheme({ themeBackgroundOpacity: Number(e.target.value) }));
+    const themeBlur = document.getElementById('themeBgBlur');
+    themeBlur?.addEventListener('input', e => {
+      const px = Number(e.target.value);
+      previewTheme({ themeBackgroundBlur: px });
+      const label = document.getElementById('themeBgBlurVal');
+      if (label) label.textContent = px + 'px';
+    });
+    themeBlur?.addEventListener('change', e => saveTheme({ themeBackgroundBlur: Number(e.target.value) }));
+    const readThemeFile = file => new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(reader.error || new Error('读取图片失败'));
+      reader.readAsDataURL(file);
+    });
+    // data URL 不经过 settings.set：分片传给 C# 落盘，BootPayload 只回传小体积文件 URL。
+    const uploadThemeBackground = async dataUrl => {
+      const match = /^data:(image\/[a-z0-9.+-]+);base64,/i.exec(dataUrl);
+      if (!match) throw new Error('不支持的图片格式');
+      const mime = match[1].toLowerCase();
+      const payload = dataUrl.slice(match[0].length);
+      const begin = await call('theme.image.begin', { mime });
+      const uploadId = begin?.uploadId;
+      if (!uploadId) throw new Error('无法开始保存背景图');
+      try {
+        for (let offset = 0; offset < payload.length; offset += THEME_BG_CHUNK_CHARS) {
+          await call('theme.image.chunk', { uploadId, data: payload.slice(offset, offset + THEME_BG_CHUNK_CHARS) });
+        }
+        return await call('theme.image.commit', { uploadId });
+      } catch (err) {
+        call('theme.image.cancel', { uploadId }).catch(() => { });
+        throw err;
+      }
+    };
+    const applyImagePalette = async source => {
+      const button = document.getElementById('themeExtract');
+      const oldText = button?.textContent || '从图片提取配色';
+      if (button) { button.disabled = true; button.textContent = '提取中…'; }
+      try {
+        const image = await loadImageForSampling(source);
+        const colors = sampleImageColors(image);
+        const result = buildPaletteFromImageColors(colors);
+        const overrides = { ...result.overrides, __imagePalette: true };
+        themeImagePaletteActive = true;
+        const patch = {
+          themeAccent: result.accent,
+          themeFont: result.font,
+          themeAdvanced: JSON.stringify(overrides),
+        };
+        previewTheme(patch);
+        const saved = await saveTheme(patch, true);
+        if (!saved) return false;
+        toast('已根据背景图生成配色');
+        return true;
+      } catch (err) {
+        toast('图片配色提取失败：' + (err?.message || err), 'err');
+        return false;
+      } finally {
+        const current = document.getElementById('themeExtract');
+        if (current) {
+          current.textContent = oldText;
+          current.disabled = !themeBackgroundIsSet(state.boot?.settings || {});
+        }
+      }
+    };
+    const maybeAutoApplyImagePalette = async source => {
+      if (!autoImagePaletteEnabled()) return false;
+      if (hasManualAdvancedPalette(state.boot?.settings)) {
+        toast('检测到手动高级配色，已保留；可点击「从图片提取配色」覆盖');
+        return false;
+      }
+      return await applyImagePalette(source);
+    };
+    document.getElementById('themeExtract')?.addEventListener('click', async () => {
+      const source = themeBackgroundSource(state.boot?.settings || {});
+      if (!source) { toast('请先选择背景图', 'err'); return; }
+      await applyImagePalette(source);
+    });
+    document.getElementById('themeAutoPalette')?.addEventListener('change', async e => {
+      const enabled = !!e.target.checked;
+      setAutoImagePaletteEnabled(enabled);
+      if (!enabled) return;
+      const source = themeBackgroundSource(state.boot?.settings || {});
+      if (source) await maybeAutoApplyImagePalette(source);
+    });
+    document.getElementById('themeBgFile')?.addEventListener('change', async e => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      if (file.size > THEME_BG_MAX_BYTES) {
+        toast('背景图不能超过 20MB', 'err');
+        e.target.value = '';
+        return;
+      }
+      if (!/^image\/(?:png|jpe?g|webp|gif)$/i.test(file.type || '')) {
+        toast('仅支持 PNG / JPG / WebP / GIF 背景图', 'err');
+        e.target.value = '';
+        return;
+      }
+      try {
+        let dataUrl;
+        let compressed = null;
+        if (file.size > THEME_BG_COMPRESS_BYTES) {
+          toast('图片超过 4MB，正在压缩到主题缓存…');
+          compressed = await compressThemeImage(file);
+          dataUrl = compressed.dataUrl;
+        } else {
+          dataUrl = await readThemeFile(file);
+        }
+        // 先写 localStorage 让当前面板立即显示；大图只写压缩后的版本，绝不写原始大图。
+        const previousServerImage = state.boot?.settings?.themeBackgroundImage || '';
+        writeThemeBackgroundLocal(dataUrl, previousServerImage);
+        applyTheme(state.boot?.settings || {});
+        updateThemeBackgroundControls();
+        try {
+          const result = await uploadThemeBackground(dataUrl);
+          if (state.boot?.settings) {
+            state.boot.settings.themeBackgroundImage = result?.url || '';
+            state.boot.settings.themeBackgroundImageSet = !!result?.url;
+          }
+          if (state.boot?.themeRotation) state.boot.themeRotation.currentPresetId = '';
+          // 上传成功后记录这张预览对应的服务端 URL；后续 boot 看到相同 URL 不会误清。
+          writeThemeBackgroundLocal(dataUrl, result?.url || previousServerImage);
+          applyTheme(state.boot?.settings || {});
+          updateThemeBackgroundControls();
+          toast(compressed
+            ? `背景图已压缩并保存（${formatBytes(file.size)} → ${formatBytes(compressed.bytes)}）`
+            : '背景图已保存');
+        } catch (err) {
+          // C# 落盘失败时 localStorage 仍能保证本次/下次启动显示；提示但不回滚预览。
+          toast('背景图已应用，但备份保存失败：' + (err?.message || err), 'err');
+        }
+        // 没有手动高级配色时，选图后自动根据图片生成整套 palette。
+        await maybeAutoApplyImagePalette(dataUrl);
+      } catch (err) {
+        toast('读取背景图失败：' + (err?.message || err), 'err');
+      } finally {
+        e.target.value = '';
+      }
+    });
+    document.getElementById('themeBgClear')?.addEventListener('click', async () => {
+      try {
+        await call('theme.image.clear');
+      } catch (err) {
+        toast('移除背景图失败：' + (err?.message || err), 'err');
+        return;
+      }
+      writeThemeBackgroundLocal('');
+      if (state.boot?.settings) {
+        state.boot.settings.themeBackgroundImage = '';
+        state.boot.settings.themeBackgroundImageSet = false;
+      }
+      if (state.boot?.themeRotation) state.boot.themeRotation.currentPresetId = '';
+      applyTheme(state.boot?.settings || {});
+      updateThemeBackgroundControls();
+      const input = document.getElementById('themeBgFile');
+      if (input) input.value = '';
     });
     scaleRange?.addEventListener('input', () => {
       const pct = Number(scaleRange.value);
@@ -4075,7 +6344,7 @@
       try {
         await tryCall('settings.set', { [key]: next });
         await syncBoot();
-        if (key === 'rhythmMode' || key === 'autoEmoteEnabled' || key === 'autoClickEnabled') { renderSettings(); return; }
+        if (key === 'rhythmMode' || key === 'autoEmoteEnabled' || key === 'autoClickEnabled' || key === 'themeBarFollowStandard' || key === 'separateBarHotkeys') { renderSettings(); return; }
         if (key === 'runAsAdmin') {
           const saved = !!state.boot?.settings?.runAsAdmin;
           const elevated = !!state.boot?.settings?.isElevated;
@@ -4113,34 +6382,69 @@
     bindAutoRate('autoClickRate', 10, 'autoClickPerSecond', 10);
     const accXRange = document.getElementById('accOffsetX');
     const accYRange = document.getElementById('accOffsetY');
+    const accScaleRange = document.getElementById('accScale');
+    const accRotationRange = document.getElementById('accRotation');
     const accReadout = document.getElementById('accessoryCoords');
     let accSliderTimer = 0;
+    let accSaveGeneration = 0;
+    const accClamp = (value, min, max, fallback) => {
+      const n = Number(value);
+      return Number.isFinite(n) ? Math.max(min, Math.min(max, Math.round(n))) : fallback;
+    };
+    const accControls = () => [accXRange, accYRange, accScaleRange, accRotationRange].filter(Boolean);
     const readAccSliders = () => ({
-      x: Number(accXRange?.value) || 0,
-      y: Number(accYRange?.value) || 0,
+      x: accClamp(accXRange?.value, -160, 160, 0),
+      y: accClamp(accYRange?.value, -160, 160, 0),
+      scale: accClamp(accScaleRange?.value, 25, 175, 100),
+      rotation: accClamp(accRotationRange?.value, -180, 180, 0),
     });
     const updateAccReadout = () => {
       if (!accXRange || !accYRange) return;
-      const { x, y } = readAccSliders();
+      const { x, y, scale, rotation } = readAccSliders();
       const xValue = document.getElementById('accOffsetXValue');
       const yValue = document.getElementById('accOffsetYValue');
+      const scaleValue = document.getElementById('accScaleValue');
+      const rotationValue = document.getElementById('accRotationValue');
       if (xValue) xValue.textContent = String(x);
       if (yValue) yValue.textContent = String(y);
-      if (accReadout) accReadout.textContent = `X ${x} · Y ${y}`;
+      if (scaleValue) scaleValue.textContent = `${scale}%`;
+      if (rotationValue) rotationValue.textContent = `${rotation}°`;
+      if (accReadout) accReadout.textContent = `X ${x} · Y ${y} · ${scale}% · ${rotation}°`;
       const resetButton = document.getElementById('resetAccessoryOffset');
       if (resetButton) {
         const accId = Number(state.boot?.appearance?.accessoryAssetId || 0);
-        resetButton.disabled = !(accId > 0 && (x !== 0 || y !== 0));
+        resetButton.disabled = !(accId > 0 && (x !== 0 || y !== 0 || scale !== 100 || rotation !== 0));
       }
     };
+    const applyAccSliders = (transform) => {
+      if (!transform) return;
+      if (accXRange && transform.x != null) accXRange.value = String(accClamp(transform.x, -160, 160, 0));
+      if (accYRange && transform.y != null) accYRange.value = String(accClamp(transform.y, -160, 160, 0));
+      if (accScaleRange && transform.scale != null) accScaleRange.value = String(accClamp(transform.scale, 25, 175, 100));
+      if (accRotationRange && transform.rotation != null) accRotationRange.value = String(accClamp(transform.rotation, -180, 180, 0));
+      updateAccReadout();
+    };
+    // 程序化复位/微调后必须清掉脏标记，否则 renderSettings 的旧值恢复会把滑条改回旧位置。
+    const clearAccDirty = () => {
+      for (const el of accControls()) delete el.dataset.userDirty;
+    };
     const saveAccOffset = async () => {
-      if (!accXRange || !accYRange) return;
+      if (!accXRange || !accYRange || !accScaleRange || !accRotationRange) return;
       clearTimeout(accSliderTimer);
-      const { x, y } = readAccSliders();
+      const submitted = readAccSliders();
+      const generation = ++accSaveGeneration;
       try {
-        const r = await tryCall('appearance.offset', { x, y });
+        const r = await tryCall('appearance.offset', submitted);
+        if (generation !== accSaveGeneration) return;
         if (r?.boot) state.boot = r.boot;
-        updateAccReadout();
+        const current = readAccSliders();
+        if (current.x === submitted.x && current.y === submitted.y &&
+            current.scale === submitted.scale && current.rotation === submitted.rotation) {
+          applyAccSliders({ x: r?.x, y: r?.y, scale: r?.scale, rotation: r?.rotation });
+          clearAccDirty();
+        } else {
+          updateAccReadout();
+        }
       } catch { }
     };
     const queueAccOffset = () => {
@@ -4148,27 +6452,33 @@
       clearTimeout(accSliderTimer);
       accSliderTimer = setTimeout(saveAccOffset, 80);
     };
-    accXRange?.addEventListener('input', queueAccOffset);
-    accYRange?.addEventListener('input', queueAccOffset);
-    accXRange?.addEventListener('change', saveAccOffset);
-    accYRange?.addEventListener('change', saveAccOffset);
-    accXRange?.addEventListener('blur', saveAccOffset);
-    accYRange?.addEventListener('blur', saveAccOffset);
+    for (const el of accControls()) {
+      el.addEventListener('input', queueAccOffset);
+      // range 的 change 在松手/按键结束时提交；不再额外监听 blur，避免点“归零”时先发一次旧值保存。
+      el.addEventListener('change', saveAccOffset);
+    }
     document.querySelectorAll('[data-nudge]').forEach(el => el.onclick = async () => {
       clearTimeout(accSliderTimer);
+      ++accSaveGeneration;
       const [dx, dy] = String(el.dataset.nudge || '0,0').split(',').map(Number);
       try {
         const r = await tryCall('appearance.offset', { dx, dy });
         if (r?.boot) state.boot = r.boot;
+        applyAccSliders({ x: r?.x, y: r?.y, scale: r?.scale, rotation: r?.rotation });
+        clearAccDirty();
         renderChrome();
         renderSettings();
       } catch { }
     });
     document.getElementById('resetAccessoryOffset')?.addEventListener('click', async () => {
       clearTimeout(accSliderTimer);
+      ++accSaveGeneration;
       try {
         const r = await tryCall('appearance.offset', { reset: true });
         if (r?.boot) state.boot = r.boot;
+        // 先让当前 DOM 立即归零并清除脏标记，再按最新 BootPayload 重绘设置页。
+        applyAccSliders({ x: r?.x ?? 0, y: r?.y ?? 0, scale: r?.scale ?? 100, rotation: r?.rotation ?? 0 });
+        clearAccDirty();
         renderChrome();
         renderSettings();
       } catch { }
@@ -4479,11 +6789,43 @@
   }
 
   async function syncBoot() {
-    state.boot = await call('boot');
+    const boot = await call('boot');
+    adoptBootThemeBackground(boot);
+    state.boot = boot;
+    applyTheme(state.boot.settings);
     renderChrome();
   }
 
   // 仅供本地浏览器预览更新提示：?preview=verified|unverified|forced|minSafe|unavailable
+  function previewThemeSettings() {
+    let stored = {};
+    try { stored = JSON.parse(localStorage.getItem('wuwa.preview.settings.v1') || '{}') || {}; } catch { stored = {}; }
+    const settings = {
+      themeAccent: '#e7b77c',
+      themeFont: '#8e5e43',
+      themeAdvanced: '',
+      themeBackgroundImage: '',
+      themeBackgroundImageSet: false,
+      themeBackgroundOpacity: 0.25,
+      themeBackgroundBlur: 0,
+      themeBarFollowStandard: true,
+      themeBarColor: '',
+      themeBarTextFollowTheme: true,
+      themeBarTextColor: '',
+      themeBarEffectiveColor: '#f5e4cc',
+      themeBarEffectiveTextColor: '#8e5e43',
+      ...stored,
+    };
+    try {
+      const image = localStorage.getItem('wuwa.preview.serverThemeImage.v1') || '';
+      if (image) {
+        settings.themeBackgroundImage = image;
+        settings.themeBackgroundImageSet = true;
+      }
+    } catch { }
+    return settings;
+  }
+
   function previewBoot(mode) {
     return {
       version: '0.1.4',
@@ -4531,6 +6873,9 @@
         keyboardMode: 'hidden',
         showMappingControls: true,
         hideOtherPets: false,
+        hideMainBar: false,
+        hideRemoteBars: false,
+        separateBarHotkeys: false,
         allowOverlap: true,
         catLayout: 'vertical',
         captureMode: false,
@@ -4549,18 +6894,29 @@
         launchAtLogin: true,
         runAsAdmin: false,
         serverRegion: 'cn',
+        forcedOnlineAcceptedVersion: '',
         gameModeRules: [],
         hotkeys: {},
+        ...previewThemeSettings(),
       },
       appearance: {
         characterAssetId: 3060,
         characterRoleId: 1407,
         accessoryAssetId: 1604,
+        accessoryOffsetX: 0,
+        accessoryOffsetY: 0,
+        accessoryScalePercent: 100,
+        accessoryRotationDegrees: 0,
+        accessoryOffsets: {},
         emoteAssetIds: [1971, 1965, 1969, 1970, 1968],
+        cloudCharacterAssetId: 3060,
+        cloudAccessoryAssetId: 1604,
         cloudEmoteAssetIds: [1971, 1965, 1969, 1970, 1968],
       },
       catalog: {},
       locks: [],
+      themePresets: [],
+      themeRotation: { enabled: false, intervalMinutes: 30, currentPresetId: '', lastAppliedMs: 0 },
       update: null,
     };
   }
@@ -4598,7 +6954,8 @@
       base.officialCheck = official('unverified', '1.0.5', false,
         '官方客户端已更新至 1.0.5，当前 Native 尚未验证该版本。大多数情况下，如果当前功能正常，不必立即更新；如果联机异常，建议暂停联机并等待 Native 更新。');
     } else if (mode === 'forced') {
-      base.status = 'unsafe';
+      // 官方强制更新不等于维护者判定 unsafe；这里模拟“仅官方强更”的可豁免场景。
+      base.status = 'safe';
       base.message = '官方客户端已强制更新至 1.0.5，旧版 Native 的联机功能可能已经失效。';
       base.official.cn.latest = '1.0.5';
       base.official.global.latest = '1.0.5';
@@ -4660,8 +7017,11 @@
   }
 
   if (PREVIEW) {
+    window.__previewBoot = previewBoot;
+    window.__previewMode = PREVIEW;
     state.boot = previewBoot(PREVIEW);
     applySynthSettings(state.boot);
+    applyTheme(state.boot.settings);
     state.compatibility = previewCompatibility(PREVIEW);
     state.announcements = previewAnnouncements(PREVIEW);
     if (PREVIEW === 'synth') {

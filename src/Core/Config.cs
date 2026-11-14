@@ -64,6 +64,12 @@ public sealed class Settings
     public string KeyboardMode { get; set; } = "hidden"; // hidden | letters | wuwa | rhythm | controller
     public bool ShowMappingControls { get; set; } = true;
     public bool HideOtherPets { get; set; }
+    /// <summary>隐藏主角底栏（计数条/工具栏/手部压条），角色本体仍完整显示。</summary>
+    public bool HideMainBar { get; set; }
+    /// <summary>隐藏联机角色昵称条与手部压条，角色本体和表情气泡仍显示。</summary>
+    public bool HideRemoteBars { get; set; }
+    /// <summary>底栏快捷键是否分开为主角/远程两个；关闭时共用一个快捷键。</summary>
+    public bool SeparateBarHotkeys { get; set; }
     /// <summary>开启后把鸣潮专属指示器替换成四键音游指示器。</summary>
     public bool RhythmMode { get; set; }
     /// <summary>音游模式按键数量：4K / 5K / 6K。</summary>
@@ -104,8 +110,33 @@ public sealed class Settings
     public bool AllowOverlap { get; set; } = true;
     /// <summary>联机桌宠排列方向：horizontal = 底部横向，vertical = 右侧纵向。</summary>
     public string CatLayout { get; set; } = "horizontal";
-    /// <summary>快捷键切换屏幕时使用的显示基准；空字符串表示主屏幕。</summary>
+    /// <summary>默认显示屏幕：启动/重置位置/区服切换时使用；F8 本身从桌宠当前实际屏幕开始。</summary>
     public string PetScreen { get; set; } = "";
+    /// <summary>面板主题强调色（十六进制）。</summary>
+    public string ThemeAccentColor { get; set; } = "#E7B77C";
+    /// <summary>面板与桌宠底栏的字体颜色（十六进制）。</summary>
+    public string ThemeFontColor { get; set; } = "#8E5E43";
+    /// <summary>主题高级配色覆盖，JSON 对象字符串；空表示全部自动生成。</summary>
+    public string ThemeAdvanced { get; set; } = "";
+    /// <summary>桌宠底栏是否跟随标准主题；关闭后主桌宠与所有联机昵称条使用独立配色。</summary>
+    public bool ThemeBarFollowStandard { get; set; } = true;
+    /// <summary>独立底栏背景色；空表示沿用标准主题推导出的奶油色。</summary>
+    public string ThemeBarColor { get; set; } = "";
+    /// <summary>独立底栏文字是否跟随主题字体色；关闭后使用 ThemeBarTextColor。</summary>
+    public bool ThemeBarTextFollowTheme { get; set; } = true;
+    /// <summary>独立底栏文字色；空表示沿用主题字体色。</summary>
+    public string ThemeBarTextColor { get; set; } = "";
+    /// <summary>
+    /// 面板背景图索引：只保存 %LOCALAPPDATA%\WuwatappoNative\cache\theme 下的文件名。
+    /// 兼容旧版 data URL，启动时会迁移成独立文件，避免大字符串进入 WebView2 boot 消息。
+    /// </summary>
+    public string ThemeBackgroundImage { get; set; } = "";
+    /// <summary>背景图像透明度（0..1）。</summary>
+    public double ThemeBackgroundOpacity { get; set; } = 0.25;
+    /// <summary>背景图像模糊半径（px）。</summary>
+    public double ThemeBackgroundBlur { get; set; }
+    /// <summary>切换屏幕时的移动策略：default=只移动默认位置成员，main=只移动主角，all=全部一起移动。</summary>
+    public string ScreenSwitchMode { get; set; } = "default";
     /// <summary>获得新道具后的合成提醒检查偏好：up / same / off。</summary>
     public string SynthCheckMode { get; set; } = "up";
     /// <summary>OBS 采集窗口：只显示主角，可自定义背景色或使用透明背景。</summary>
@@ -149,6 +180,11 @@ public sealed class Settings
 
     [JsonIgnore] public int PetX { get; set; } = -1;
     [JsonIgnore] public int PetY { get; set; } = -1;
+    /// <summary>操作面板普通状态下的尺寸（DIP），由 StateStore 持久化。</summary>
+    [JsonIgnore] public int PanelWidth { get; set; }
+    [JsonIgnore] public int PanelHeight { get; set; }
+    /// <summary>面板是否最大化；由 StateStore 持久化，下次打开恢复。</summary>
+    [JsonIgnore] public bool PanelMaximized { get; set; }
     [JsonIgnore] public string RoomNo { get; set; } = "";
     /// <summary>最近确认过的房主房间号；用于重启/切设备时避免对房主房间执行 rooms/join 或 rl。</summary>
     [JsonIgnore] public string OwnerRoomNo { get; set; } = "";
@@ -160,10 +196,17 @@ public sealed class Settings
     [JsonIgnore] public Dictionary<string, int[]> MemberPositions { get; set; } = new();
     /// <summary>联机成员单独显示/隐藏；key = 成员 id，false 表示隐藏，缺省为显示。</summary>
     [JsonIgnore] public Dictionary<string, bool> MemberVisibility { get; set; } = new();
+    /// <summary>手动拖动过的联机成员；key = 成员 id，true 表示离开默认排序位置。</summary>
+    [JsonIgnore] public Dictionary<string, bool> MemberCustomPositions { get; set; } = new();
     /// <summary>本地已读公告 id；由 StateStore 持久化，不写入 config.json，也不回传服务器。</summary>
     [JsonIgnore] public List<string> ReadAnnouncementIds { get; set; } = new();
     /// <summary>服务器区服：cn（国服） | global（国际服），默认 cn。</summary>
     public string ServerRegion { get; set; } = "cn";
+    /// <summary>
+    /// 用户已确认可自担风险继续联网的官方客户端版本。
+    /// 仅当官方强制更新且版本完全匹配时生效；官方再次更新后会重新要求确认。
+    /// </summary>
+    public string ForcedOnlineAcceptedVersion { get; set; } = "";
     /// <summary>更新下载源：auto | github | ghproxy。auto 按 GH-Proxy -> GitHub 顺序回退。</summary>
     public string UpdateDownloadSource { get; set; } = "auto";
     /// <summary>更新检查和下载是否显式使用 HTTP 代理；关闭时使用系统代理。</summary>
@@ -179,7 +222,10 @@ public sealed class Settings
     public bool DisclaimerShown { get; set; }
     /// <summary>首次启动的 UAC 管理员权限询问是否已经回答过。</summary>
     public bool UacPromptShown { get; set; }
-    /// <summary>当前头饰相对默认位置的用户微调偏移（key = 配件 asset id，value = [x,y] 逻辑像素）。</summary>
+    /// <summary>
+    /// 当前头饰的本地微调（key = 配件 asset id）。value = [x,y,scalePercent,rotationDegrees]；
+    /// 旧版本的 [x,y] 仍然兼容，缺失的缩放/旋转按 100 / 0 处理。
+    /// </summary>
     public Dictionary<string, int[]> AccessoryOffsets { get; set; } = new();
 }
 
@@ -244,6 +290,22 @@ public static class ConfigStore
                     cfg.GameModeRules = GameModeRules.Normalize(cfg.GameModeRules);
                     if (cfg.AutoEmoteMode != "specific" && cfg.AutoEmoteMode != "library") cfg.AutoEmoteMode = "quickbar";
                     cfg.ServerRegion = NormalizeRegion(cfg.ServerRegion);
+                    cfg.ScreenSwitchMode = cfg.ScreenSwitchMode switch
+                    {
+                        "main" => "main",
+                        "all" => "all",
+                        _ => "default",
+                    };
+                    cfg.ThemeAccentColor = NormalizeThemeColor(cfg.ThemeAccentColor, "#E7B77C");
+                    cfg.ThemeFontColor = NormalizeThemeColor(cfg.ThemeFontColor, "#8E5E43");
+                    cfg.ThemeAdvanced ??= "";
+                    cfg.ThemeBarColor = NormalizeOptionalThemeColor(cfg.ThemeBarColor);
+                    cfg.ThemeBarTextColor = NormalizeOptionalThemeColor(cfg.ThemeBarTextColor);
+                    cfg.ThemeBackgroundImage ??= "";
+                    cfg.ThemeBackgroundOpacity = Math.Clamp(cfg.ThemeBackgroundOpacity, 0, 1);
+                    cfg.ThemeBackgroundBlur = Math.Clamp(cfg.ThemeBackgroundBlur, 0, 24);
+                    cfg.ForcedOnlineAcceptedVersion = (cfg.ForcedOnlineAcceptedVersion ?? "").Trim();
+                    if (cfg.ForcedOnlineAcceptedVersion.Length > 64) cfg.ForcedOnlineAcceptedVersion = "";
                     cfg.UpdateDownloadSource = cfg.UpdateDownloadSource switch
                     {
                         "github" => "github",
@@ -264,6 +326,7 @@ public static class ConfigStore
                     if (string.IsNullOrWhiteSpace(cfg.SdkDeviceNum) || cfg.SdkDeviceNum.Length < 16)
                         cfg.SdkDeviceNum = Guid.NewGuid().ToString("N");
                     cfg.LocalPresets ??= new List<LocalPreset>();
+                    cfg.AccessoryOffsets ??= new Dictionary<string, int[]>();
                     foreach (var preset in cfg.LocalPresets)
                     {
                         if (preset == null) continue;
@@ -296,6 +359,27 @@ public static class ConfigStore
             if (ok) return value.ToUpperInvariant();
         }
         return "#00FF00";
+    }
+
+    public static string NormalizeThemeColor(string value, string fallback)
+    {
+        value = (value ?? "").Trim();
+        if (value.Length == 7 && value[0] == '#')
+        {
+            bool ok = true;
+            for (int i = 1; i < 7; i++)
+                if (!Uri.IsHexDigit(value[i])) { ok = false; break; }
+            if (ok) return value.ToUpperInvariant();
+        }
+        return fallback;
+    }
+
+    /// <summary>可选颜色：空字符串保留“跟随主题/自动推导”语义，非法值也归为空。</summary>
+    public static string NormalizeOptionalThemeColor(string value)
+    {
+        value = (value ?? "").Trim();
+        if (value.Length == 0) return "";
+        return NormalizeThemeColor(value, "");
     }
 
     static string NormalizeRegion(string region)

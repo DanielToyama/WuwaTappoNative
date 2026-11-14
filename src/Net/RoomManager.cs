@@ -30,6 +30,7 @@ public sealed class RoomManager : IDisposable
 {
     readonly AuthService _auth;
     readonly Settings _cfg;
+    readonly Func<string> _blockedReason;
     SocketClient _socket;
     System.Threading.Timer _reportTimer;
     System.Threading.Timer _reconnectTimer;
@@ -50,6 +51,9 @@ public sealed class RoomManager : IDisposable
     long _lastRejectedClickLogMs;
     int _connectionFailures;
     volatile bool _serviceUnavailable;
+    volatile string _lastError = "";
+    long _lastErrorAtMs;
+    volatile bool _leavingIntentionally;
 
     /// <summary>累计总额：服务器已记录 + 本地未上报 + 正在上报的点击。上报 cr 与开宝箱的 click_num 都用它。</summary>
     public long DisplayClicks
@@ -78,6 +82,12 @@ public sealed class RoomManager : IDisposable
     public long SelfId => _auth.UserId;
     /// <summary>只有 socket 握手成功且房间成员快照也成功，才算真正进入房间。</summary>
     public bool IsConnected => _socket?.Connected == true && (string.IsNullOrEmpty(RoomNo) || _roomReady);
+    /// <summary>房间成员快照已经完成；UI 用它区分“已加入”和“进入中”。</summary>
+    public bool RoomReady => _roomReady;
+    /// <summary>最近一次加入失败/被拒绝/断线的原因；成功进入房间后清空。</summary>
+    public string LastError => _lastError;
+    public long LastErrorAtMs => Interlocked.Read(ref _lastErrorAtMs);
+    public bool IsLeavingIntentionally => _leavingIntentionally;
     /// <summary>服务器成员快照中自己的房主标记。</summary>
     public bool SelfIsOwner { get; private set; }
     public readonly ConcurrentDictionary<long, RoomMember> Members = new();
@@ -98,19 +108,55 @@ public sealed class RoomManager : IDisposable
     /// <summary>服务器拒绝进入房间（例如房间不存在/已解散），UI 可提示用户。</summary>
     public event Action<string> JoinRejected;
 
-    public RoomManager(AuthService auth, Settings cfg)
+    public RoomManager(AuthService auth, Settings cfg, Func<string> blockedReason = null)
     {
         _auth = auth;
         _cfg = cfg;
+        _blockedReason = blockedReason;
         // 与原版一致：点击上报周期 30 秒。首次也等 30 秒，避免启动时撞上服务端频率窗口。
         _reportTimer = new System.Threading.Timer(_ => _ = FlushClicksAsync(), null, 30000, 30000);
         // Socket 断开或首次连接失败后，不能只等一次重试；后台每 5 秒检查并恢复房间连接。
         _reconnectTimer = new System.Threading.Timer(_ => _ = AutoReconnectTickAsync(), null, 3000, 5000);
     }
 
+    void EnsureNetworkAllowed()
+    {
+        string reason = _blockedReason?.Invoke();
+        if (!string.IsNullOrEmpty(reason)) throw new ApiException(-1, reason);
+    }
+
+    void SetLastError(string message)
+    {
+        _lastError = message ?? "";
+        Interlocked.Exchange(ref _lastErrorAtMs, DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+    }
+
+    void ClearLastError()
+    {
+        _lastError = "";
+        Interlocked.Exchange(ref _lastErrorAtMs, 0);
+    }
+
+    /// <summary>
+    /// 等待房间成员快照完成。返回 true 表示已就绪，false 表示被拒绝或超时（UI 显示“进入中”，
+    /// 后续 room 状态事件会继续确认）。</summary>
+    public async Task<bool> WaitForRoomReadyAsync(TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (_roomReady && _socket?.Connected == true) return true;
+            if (State != "joined") return false;
+            await Task.Delay(100).ConfigureAwait(false);
+        }
+        return _roomReady && _socket?.Connected == true;
+    }
+
     public async Task CreateAsync()
     {
+        EnsureNetworkAllowed();
         if (Interlocked.Exchange(ref _busy, 1) == 1) return;
+        ClearLastError();
         try
         {
             await LeaveSocketOnlyAsync();
@@ -118,14 +164,22 @@ public sealed class RoomManager : IDisposable
             string no = ApiClient.ReadString(data?["room_no"]);
             if (string.IsNullOrEmpty(no)) throw new ApiException(-1, "创建房间失败：未返回房间号");
             await EnterAsync(no);
+            await WaitForRoomReadyAsync(TimeSpan.FromSeconds(8));
+        }
+        catch (Exception ex)
+        {
+            SetLastError(ex.Message);
+            throw;
         }
         finally { Interlocked.Exchange(ref _busy, 0); }
     }
 
     public async Task JoinAsync(string roomNo, bool ownerConfirmed = false)
     {
+        EnsureNetworkAllowed();
         if (Interlocked.Exchange(ref _busy, 1) == 1) return;
         _reconnectSuppressed = false;
+        ClearLastError();
         try
         {
             roomNo = (roomNo ?? "").Trim();
@@ -175,6 +229,12 @@ public sealed class RoomManager : IDisposable
                 }
             }
             await EnterAsync(roomNo);
+            await WaitForRoomReadyAsync(TimeSpan.FromSeconds(8));
+        }
+        catch (Exception ex)
+        {
+            SetLastError(ex.Message);
+            throw;
         }
         finally { Interlocked.Exchange(ref _busy, 0); }
     }
@@ -188,12 +248,14 @@ public sealed class RoomManager : IDisposable
         if (Interlocked.Exchange(ref _busy, 1) == 1) return;
         // 退房后 cfg.RoomNo 会被清空，自动重连只会恢复大厅，不会误回旧房间。
         _reconnectSuppressed = false;
+        ClearLastError();
         try
         {
             if (IsOwnerRoom(RoomNo) && !ownerConfirmed)
                 throw new ApiException(-1, "当前账号是房主，不能通过挂机端离开房主房间；请先在官方客户端操作");
             string leavingRoom = RoomNo;
             await LeaveSocketOnlyAsync();
+            ClearLastError();
             State = "idle";
             RoomNo = "";
             _cfg.RoomNo = "";
@@ -213,6 +275,7 @@ public sealed class RoomManager : IDisposable
     /// <summary>回到大厅 socket（rm 为空）。大厅里没有房间成员，但仍用于点击上报。</summary>
     public async Task EnsureLobbyAsync()
     {
+        if (!string.IsNullOrEmpty(_blockedReason?.Invoke())) return;
         if (State == "joined" || string.IsNullOrEmpty(_auth.Token)) return;
         if (_socket?.Connected == true) return;
         await ConnectSocketAsync("");
@@ -223,6 +286,7 @@ public sealed class RoomManager : IDisposable
         if (Interlocked.Exchange(ref _reconnectBusy, 1) == 1) return;
         try
         {
+            if (!string.IsNullOrEmpty(_blockedReason?.Invoke())) return;
             if (_reconnectSuppressed || string.IsNullOrEmpty(_auth.Token)) return;
             // 只重连服务器确认过的当前房间；本地 OwnerRoomNo 不能覆盖服务器状态。
             string desiredRoom = _cfg.RoomNo;
@@ -250,16 +314,21 @@ public sealed class RoomManager : IDisposable
 
     async Task LeaveSocketOnlyAsync()
     {
-        if (!string.IsNullOrEmpty(RoomNo) && _socket != null)
+        _leavingIntentionally = true;
+        try
         {
-            // EnterAsync 返回时 WebSocket 可能刚连上、Socket.IO 命名空间还没就绪
-            var deadline = DateTime.UtcNow.AddSeconds(6);
-            while (!_socket.Connected && DateTime.UtcNow < deadline) await Task.Delay(100);
-            if (_socket.Connected) await EmitLeaveAsync();
-            await Task.Delay(150);
+            if (!string.IsNullOrEmpty(RoomNo) && _socket != null)
+            {
+                // EnterAsync 返回时 WebSocket 可能刚连上、Socket.IO 命名空间还没就绪
+                var deadline = DateTime.UtcNow.AddSeconds(6);
+                while (!_socket.Connected && DateTime.UtcNow < deadline) await Task.Delay(100);
+                if (_socket.Connected) await EmitLeaveAsync();
+                await Task.Delay(150);
+            }
+            await CloseSocketAsync();
+            Members.Clear();
         }
-        await CloseSocketAsync();
-        Members.Clear();
+        finally { _leavingIntentionally = false; }
     }
 
     async Task EmitLeaveAsync()
@@ -358,6 +427,7 @@ public sealed class RoomManager : IDisposable
 
     async Task EnterAsync(string roomNo, bool announce = true)
     {
+        ClearLastError();
         RoomNo = roomNo;
         _cfg.RoomNo = roomNo;
         _cfg.LastRoom = roomNo;
@@ -421,6 +491,8 @@ public sealed class RoomManager : IDisposable
             {
                 // 保留 joined 状态让 UI 显示“连接中…”，由后台定时器持续重连。
                 Members.Clear();
+                if (!_leavingIntentionally)
+                    SetLastError("连接断开：" + (string.IsNullOrWhiteSpace(reason) ? "网络异常" : reason));
                 StateChanged?.Invoke();
             }
             MarkConnectionFailure(reason);
@@ -467,6 +539,7 @@ public sealed class RoomManager : IDisposable
             {
                 // 超时/连接中断：保持“连接中”，交给后台重连，不要误报成已连接。
                 Log.Write("房间快照超时 " + RoomNo);
+                SetLastError("等待房间快照超时，正在自动重试…");
                 MarkConnectionFailure("房间快照超时");
                 return;
             }
@@ -480,10 +553,12 @@ public sealed class RoomManager : IDisposable
                 }
                 // 快照无效不等于房间不存在；保持连接中，交给后台重连，避免误清房主房间。
                 Log.Write("房间快照无效，保持房间状态等待重连 " + RoomNo);
+                SetLastError("房间快照无效，正在自动重试…");
                 MarkConnectionFailure("房间快照无效");
                 return;
             }
             _roomReady = true;
+            ClearLastError();
             MarkConnectionSuccess();
             StateChanged?.Invoke();
             var appearanceSnap = await socket.EmitAsync("rd", new JsonObject { ["r"] = RoomNo }, 8000);
@@ -493,6 +568,7 @@ public sealed class RoomManager : IDisposable
         catch (Exception ex)
         {
             Log.Write("房间快照失败 " + ex.Message);
+            SetLastError("进入房间失败：" + ex.Message);
             MarkConnectionFailure(ex.Message);
         }
         finally { _awaitingSnapshot = false; }
@@ -503,6 +579,7 @@ public sealed class RoomManager : IDisposable
         _roomReady = false;
         _awaitingSnapshot = false;
         SelfIsOwner = false;
+        SetLastError(message);
         string rejectedRoom = RoomNo;
         State = "idle";
         RoomNo = "";
@@ -628,6 +705,7 @@ public sealed class RoomManager : IDisposable
                     _reconnectSuppressed = true;
                     State = "idle";
                     Members.Clear();
+                    SetLastError(code == 90002 ? "账号已在其他设备登录，房间已断开" : $"房间已关闭（{code}）");
                     ForcedDisconnect?.Invoke(code);
                     StateChanged?.Invoke();
                     break;
@@ -754,18 +832,21 @@ public sealed class RoomManager : IDisposable
     /// <summary>本地每次按键/点击都发一次无载荷 rc，和官方客户端保持同样频率，不做丢包节流。</summary>
     public void NotifyLocalAction()
     {
+        if (!string.IsNullOrEmpty(_blockedReason?.Invoke())) return;
         if (_socket?.Connected != true) return;
         _ = _socket.EmitNoAckAsync("rc");
     }
 
     public async Task SendEmoteAsync(long emoteId)
     {
+        if (!string.IsNullOrEmpty(_blockedReason?.Invoke())) return;
         if (_socket?.Connected == true)
             await _socket.EmitNoAckAsync("re", new JsonObject { ["e"] = emoteId });
     }
 
     public async Task AnnounceAppearanceAsync()
     {
+        if (!string.IsNullOrEmpty(_blockedReason?.Invoke())) return;
         if (_socket?.Connected != true) return;
         // 原版换装广播会带 {b,c}（数字 id），其他成员用它立即换皮；
         // 不带载荷的 rc 只用于“按键动作”。
@@ -911,6 +992,7 @@ public sealed class RoomManager : IDisposable
 
     async Task FlushClicksAsync()
     {
+        if (!string.IsNullOrEmpty(_blockedReason?.Invoke())) return;
         if (!await _clickUploadGate.WaitAsync(0)) return;
         long sent = 0, gross = 0;
         try

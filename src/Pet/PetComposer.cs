@@ -243,10 +243,16 @@ public static class PetComposer
         public long NowMs;
         public bool ShowChestLeft, ShowChestRight;
         public bool Selected;
+        /// <summary>是否绘制计数条/工具栏/手部压条；关闭时角色本体、宝箱、气泡和轮盘仍照常显示。</summary>
+        public bool ShowBar = true;
         public Image ChestButton, ChestCountdown;
         public bool Loading;
         public double LoadingPhase;
         public int AccOffsetX, AccOffsetY;
+        public int AccScalePercent = 100, AccRotationDegrees;
+        public Color BarColor;
+        public Color BarTextColor;
+        public Color BarAccentColor;
     }
 
     public static readonly Rectangle ChestLeftRect = new(183, 263, 62, 44);
@@ -281,10 +287,12 @@ public static class PetComposer
         Image body = bodyFrame switch { 2 => f.Body2 ?? f.Body1, 3 => f.Body3 ?? f.Body1, _ => f.Body1 };
         var cat = new Rectangle((int)Math.Round(CatX * s), (int)Math.Round(CatY * s), (int)Math.Round(CatSize * s), (int)Math.Round(CatSize * s));
         if (cache == null)
-            DrawCharacter(g, s, head, body, f.Accessory, f.AccOffsetX + info.AccOffsetX, f.AccOffsetY + info.AccOffsetY, cat);
+            DrawCharacter(g, s, head, body, f.Accessory, f.AccOffsetX + info.AccOffsetX, f.AccOffsetY + info.AccOffsetY,
+                info.AccScalePercent, info.AccRotationDegrees, cat);
         else
             cache.DrawCharacter(g, bmp.Size, s, head, body, f.Accessory,
-                f.AccOffsetX + info.AccOffsetX, f.AccOffsetY + info.AccOffsetY, cat);
+                f.AccOffsetX + info.AccOffsetX, f.AccOffsetY + info.AccOffsetY,
+                info.AccScalePercent, info.AccRotationDegrees, cat);
         if (info.Selected)
             DrawSelection(g, new RectangleF(cat.X, cat.Y, cat.Width, cat.Height), s);
 
@@ -296,10 +304,14 @@ public static class PetComposer
         info.Wheel?.Draw(g, s, CatX, CatY);
 
         // 气泡、宝箱、轮盘仍在底栏后面，不能把整个桌宠合成一张背景缓存。
+        // 底栏隐藏时也必须走缓存路径，让缓存用新的 ShowBar key 清空旧底栏位图。
         if (cache == null)
         {
-            DrawStrip(g, s, info, bmp.Height);
-            DrawHandsOverStrip(g, s, body, cat, bmp.Height);
+            if (info.ShowBar)
+            {
+                DrawStrip(g, s, info, bmp.Height);
+                DrawHandsOverStrip(g, s, body, cat, bmp.Height);
+            }
         }
         else cache.DrawStrip(g, bmp.Size, s, info, body, cat);
         if (info.Loading) DrawLoading(g, s, info.LoadingPhase, CatX + CatSize - 30, CatY + 30);
@@ -315,7 +327,8 @@ public static class PetComposer
         }
     }
 
-    static void DrawCharacter(Graphics g, float s, Image head, Image body, Image accessory, double offsetX, double offsetY, Rectangle cat)
+    static void DrawCharacter(Graphics g, float s, Image head, Image body, Image accessory, double offsetX, double offsetY,
+        int scalePercent, int rotationDegrees, Rectangle cat)
     {
         if (head != null) g.DrawImage(head, cat);
         if (body != null) g.DrawImage(body, cat);
@@ -323,7 +336,30 @@ public static class PetComposer
         {
             int ax = (int)Math.Round((CatX + offsetX) * s);
             int ay = (int)Math.Round((CatY + offsetY) * s);
-            g.DrawImage(accessory, ax, ay, cat.Width, cat.Height);
+            scalePercent = Math.Clamp(scalePercent <= 0 ? 100 : scalePercent,
+                AccessoryTransform.MinScalePercent, AccessoryTransform.MaxScalePercent);
+            rotationDegrees = Math.Clamp(rotationDegrees,
+                AccessoryTransform.MinRotationDegrees, AccessoryTransform.MaxRotationDegrees);
+            if (scalePercent != 100 || rotationDegrees != 0)
+            {
+                // 只对头饰做围绕自身中心的缩放/旋转，头和身体保持原样。
+                var state = g.Save();
+                try
+                {
+                    float cx = ax + cat.Width / 2f;
+                    float cy = ay + cat.Height / 2f;
+                    g.TranslateTransform(cx, cy);
+                    g.RotateTransform(rotationDegrees);
+                    g.ScaleTransform(scalePercent / 100f, scalePercent / 100f);
+                    g.TranslateTransform(-cx, -cy);
+                    g.DrawImage(accessory, ax, ay, cat.Width, cat.Height);
+                }
+                finally { g.Restore(state); }
+            }
+            else
+            {
+                g.DrawImage(accessory, ax, ay, cat.Width, cat.Height);
+            }
         }
     }
 
@@ -331,19 +367,20 @@ public static class PetComposer
     internal sealed class FrameCache : IDisposable
     {
         Bitmap _character, _strip;
-        (Size Size, Image Head, Image Body, Image Accessory, double X, double Y) _characterKey;
-        (Size Size, Image Body, long Clicks, bool KeyboardOn) _stripKey;
+        (Size Size, Image Head, Image Body, Image Accessory, double X, double Y, int ScalePercent, int RotationDegrees) _characterKey;
+        (Size Size, bool ShowBar, Image Body, long Clicks, bool KeyboardOn, Color BarColor, Color BarTextColor, Color BarAccentColor) _stripKey;
 
         internal void DrawCharacter(Graphics target, Size size, float scale, Image head, Image body, Image accessory,
-            double offsetX, double offsetY, Rectangle cat)
+            double offsetX, double offsetY, int accessoryScalePercent, int accessoryRotationDegrees, Rectangle cat)
         {
-            var key = (size, head, body, accessory, offsetX, offsetY);
+            var key = (size, head, body, accessory, offsetX, offsetY, accessoryScalePercent, accessoryRotationDegrees);
             if (_character == null || _characterKey != key)
             {
                 Prepare(ref _character, size);
                 using var g = Graphics.FromImage(_character);
                 Configure(g);
-                PetComposer.DrawCharacter(g, scale, head, body, accessory, offsetX, offsetY, cat);
+                PetComposer.DrawCharacter(g, scale, head, body, accessory, offsetX, offsetY,
+                    accessoryScalePercent, accessoryRotationDegrees, cat);
                 _characterKey = key;
             }
             target.DrawImageUnscaled(_character, 0, 0);
@@ -351,17 +388,22 @@ public static class PetComposer
 
         internal void DrawStrip(Graphics target, Size size, float scale, Info info, Image body, Rectangle cat)
         {
-            var key = (size, body, info.Clicks, info.KeyboardOn);
+            var key = (size, info.ShowBar, body, info.Clicks, info.KeyboardOn, info.BarColor, info.BarTextColor, info.BarAccentColor);
             if (_strip == null || _stripKey != key)
             {
                 Prepare(ref _strip, size);
-                using var g = Graphics.FromImage(_strip);
-                Configure(g);
-                PetComposer.DrawStrip(g, scale, info, size.Height);
-                DrawHandsOverStrip(g, scale, body, cat, size.Height);
+                using (var g = Graphics.FromImage(_strip))
+                {
+                    Configure(g);
+                    if (info.ShowBar)
+                    {
+                        PetComposer.DrawStrip(g, scale, info, size.Height);
+                        DrawHandsOverStrip(g, scale, body, cat, size.Height);
+                    }
+                }
                 _stripKey = key;
             }
-            target.DrawImageUnscaled(_strip, 0, 0);
+            if (info.ShowBar) target.DrawImageUnscaled(_strip, 0, 0);
         }
 
         static void Prepare(ref Bitmap bitmap, Size size)
@@ -401,6 +443,7 @@ public static class PetComposer
 
     static void DrawStrip(Graphics g, float s, Info info, int windowHeight)
     {
+        if (!info.ShowBar) return;
         // 官方底栏是一整块圆角奶油条：计数与右侧按钮共用一个轮廓，不再画成两个分离的小胶囊。
         var counter = Scaled(CounterRect, s);
         var toolbar = new Rectangle((int)Math.Round(ToolbarX * s), (int)Math.Round(InfoY * s),
@@ -409,39 +452,79 @@ public static class PetComposer
             Math.Max(counter.Height, toolbar.Height)), windowHeight);
 
         using (var path = Rounded(bar, 16 * s))
-        using (var brush = new SolidBrush(Cream))
+        using (var brush = new SolidBrush(info.BarColor.IsEmpty ? Cream : info.BarColor))
             g.FillPath(brush, path);
 
         using (var font = new Font("Microsoft YaHei UI", 18f * s, FontStyle.Bold, GraphicsUnit.Pixel))
-        using (var brush = new SolidBrush(InkStrong))
+        using (var brush = new SolidBrush(info.BarTextColor.IsEmpty ? InkStrong : info.BarTextColor))
         using (var fmt = new StringFormat { Alignment = StringAlignment.Near, LineAlignment = StringAlignment.Center })
         {
             var textRect = new RectangleF(counter.X + 18 * s, bar.Y, counter.Width - 18 * s, bar.Height);
-            g.DrawString(FormatClicks(info.Clicks), font, brush, textRect, fmt);
+            DrawClickCount(g, FormatClicks(info.Clicks), font, brush.Color, textRect, fmt);
         }
 
-        // 键盘图标
+        // 键盘图标：描边粗细、可见高度和中心线与右侧菜单图标保持一致。
         var kb = Scaled(KeyboardRect, s);
-        using (var pen = new Pen(info.KeyboardOn ? InkStrong : Color.FromArgb(190, 160, 130), Math.Max(1.2f, 1.5f * s)))
+        Color iconColor = info.BarAccentColor.IsEmpty ? Ink : info.BarAccentColor;
+        float iconStroke = Math.Max(1.2f, 2.2f * s);
+        using (var pen = new Pen(info.KeyboardOn ? iconColor : Color.FromArgb(190, iconColor), iconStroke))
         {
-            float pad = 4 * s;
-            var r = new RectangleF(kb.X + pad, kb.Y + kb.Height * 0.32f, kb.Width - pad * 2, kb.Height * 0.42f);
-            using var p = Rounded(r, 3 * s);
+            float pad = 3.2f * s;
+            float iconH = 10.0f * s;
+            var r = new RectangleF(kb.X + pad, kb.Y + (kb.Height - iconH) / 2f, kb.Width - pad * 2, iconH);
+            using var p = Rounded(r, 2.6f * s);
             g.DrawPath(pen, p);
-            g.DrawLine(pen, kb.X + kb.Width * 0.34f, kb.Y + kb.Height * 0.5f, kb.X + kb.Width * 0.66f, kb.Y + kb.Height * 0.5f);
+            g.DrawLine(pen, r.X + r.Width * 0.34f, r.Y + r.Height / 2f, r.X + r.Width * 0.66f, r.Y + r.Height / 2f);
         }
-        // 菜单图标 ≡
+        // 菜单图标 ≡：比原来短一点，线宽稍加厚，圆头端点让三条横线更有质感。
         var menu = Scaled(MenuRect, s);
-        using (var pen = new Pen(Ink, Math.Max(1.4f, 1.8f * s)) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+        using (var pen = new Pen(info.BarAccentColor.IsEmpty ? Ink : info.BarAccentColor, iconStroke) { StartCap = LineCap.Round, EndCap = LineCap.Round })
         {
             float cx = menu.X + menu.Width / 2f, cy = menu.Y + menu.Height / 2f;
-            float w = menu.Width * 0.42f;
+            float w = menu.Width * 0.34f;
             for (int i = -1; i <= 1; i++)
-                g.DrawLine(pen, cx - w, cy + i * 5.5f * s, cx + w, cy + i * 5.5f * s);
+                g.DrawLine(pen, cx - w, cy + i * 5.0f * s, cx + w, cy + i * 5.0f * s);
         }
     }
 
     static string FormatClicks(long n) => n.ToString();
+
+    /// <summary>
+    /// 点击数字用矢量文字路径填充，而不是 DrawString 的 ClearType 子像素渲染。
+    /// 底栏最终会缓存到透明位图并可能按 DPI/缩放重采样，路径填充在透明背景上更干净、边缘更平滑。
+    /// </summary>
+    static void DrawClickCount(Graphics g, string text, Font font, Color color, RectangleF rect, StringFormat format)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        try
+        {
+            using var path = new GraphicsPath();
+            path.AddString(text, font.FontFamily, (int)font.Style, font.Size, rect, format);
+            using var brush = new SolidBrush(color);
+            using var oldHint = new GraphicsStateScope(g);
+            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+            g.FillPath(brush, path);
+        }
+        catch
+        {
+            // 极少数字体/环境不支持 AddString 时保持原行为，不能让 HUD 消失。
+            using var brush = new SolidBrush(color);
+            g.DrawString(text, font, brush, rect, format);
+        }
+    }
+
+    /// <summary>临时切换 TextRenderingHint，避免影响同一次 Composer 里的其他文字绘制。</summary>
+    readonly struct GraphicsStateScope : IDisposable
+    {
+        readonly Graphics _graphics;
+        readonly TextRenderingHint _oldHint;
+        public GraphicsStateScope(Graphics graphics)
+        {
+            _graphics = graphics;
+            _oldHint = graphics.TextRenderingHint;
+        }
+        public void Dispose() { if (_graphics != null) _graphics.TextRenderingHint = _oldHint; }
+    }
 
     /// <summary>只把角色手部帧重新画在计数条/工具栏范围内，避免整只角色压到 HUD 上。</summary>
     static void DrawHandsOverStrip(Graphics g, float s, Image body, Rectangle cat, int windowHeight)
@@ -567,17 +650,35 @@ public static class PetComposer
     /// 只按角色图片的 alpha 判断鼠标是否真正落在角色本体上。
     /// 表情/键帽气泡画在角色上方，不能参与悬停虚化判定。
     /// </summary>
-    public static bool HitTestCat(PetFrames f, int bodyFrame, int headFrame, int x, int y, int accOffsetX = 0, int accOffsetY = 0)
+    public static bool HitTestCat(PetFrames f, int bodyFrame, int headFrame, int x, int y, int accOffsetX = 0, int accOffsetY = 0,
+        int accScalePercent = 100, int accRotationDegrees = 0)
     {
         if (f == null || !f.Ready || x < 0 || y < 0 || x >= CatSize || y >= CatSize) return false;
         Image head = headFrame == 2 ? f.Head2 ?? f.Head1 : f.Head1;
         Image body = bodyFrame switch { 2 => f.Body2 ?? f.Body1, 3 => f.Body3 ?? f.Body1, _ => f.Body1 };
         if (HasOpaquePixel(head, x, y)) return true;
         if (HasOpaquePixel(body, x, y)) return true;
-        return f.Accessory != null && HasOpaquePixel(f.Accessory, x - accOffsetX, y - accOffsetY);
+        if (f.Accessory == null) return false;
+
+        // 与 DrawCharacter 一致：头饰围绕绘制中心缩放/旋转。命中检测先把点反向变换回原图坐标。
+        double scale = Math.Clamp(accScalePercent <= 0 ? 100 : accScalePercent,
+            AccessoryTransform.MinScalePercent, AccessoryTransform.MaxScalePercent) / 100.0;
+        double angle = Math.Clamp(accRotationDegrees,
+            AccessoryTransform.MinRotationDegrees, AccessoryTransform.MaxRotationDegrees) * Math.PI / 180.0;
+        double cx = accOffsetX + CatSize / 2.0;
+        double cy = accOffsetY + CatSize / 2.0;
+        double dx = x - cx;
+        double dy = y - cy;
+        double cos = Math.Cos(angle);
+        double sin = Math.Sin(angle);
+        double localX = cx + (dx * cos + dy * sin) / scale - accOffsetX;
+        double localY = cy + (-dx * sin + dy * cos) / scale - accOffsetY;
+        return HasOpaquePixel(f.Accessory, localX, localY);
     }
 
-    static bool HasOpaquePixel(Image image, int x, int y)
+    static bool HasOpaquePixel(Image image, int x, int y) => HasOpaquePixel(image, (double)x, (double)y);
+
+    static bool HasOpaquePixel(Image image, double x, double y)
     {
         if (image is not Bitmap bmp || x < 0 || y < 0) return false;
         int px = (int)Math.Round(x * (bmp.Width - 1) / (double)(CatSize - 1));

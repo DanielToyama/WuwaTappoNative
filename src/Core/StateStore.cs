@@ -52,6 +52,9 @@ public static class StateStore
                     ["schema"] = 1,
                     ["petX"] = cfg.PetX,
                     ["petY"] = cfg.PetY,
+                    ["panelWidth"] = cfg.PanelWidth,
+                    ["panelHeight"] = cfg.PanelHeight,
+                    ["panelMaximized"] = cfg.PanelMaximized,
                     ["roomNo"] = cfg.RoomNo ?? "",
                     ["ownerRoomNo"] = cfg.OwnerRoomNo ?? "",
                     ["ownerRoomCuid"] = cfg.OwnerRoomCuid ?? "",
@@ -59,6 +62,7 @@ public static class StateStore
                     ["roomHistory"] = ToArray(cfg.RoomHistory),
                     ["memberPositions"] = ToPositions(cfg.MemberPositions),
                     ["memberVisibility"] = ToVisibility(cfg.MemberVisibility),
+                    ["memberCustomPositions"] = ToTrueFlags(cfg.MemberCustomPositions),
                     ["readAnnouncementIds"] = ToArray(cfg.ReadAnnouncementIds),
                 };
                 string tmp = Paths.StateFile + ".tmp";
@@ -82,6 +86,9 @@ public static class StateStore
         if (node is not JsonObject root) return;
         cfg.PetX = ReadInt(root["petX"], -1);
         cfg.PetY = ReadInt(root["petY"], -1);
+        cfg.PanelWidth = ReadInt(root["panelWidth"], 0);
+        cfg.PanelHeight = ReadInt(root["panelHeight"], 0);
+        cfg.PanelMaximized = ReadBool(root["panelMaximized"]);
         cfg.RoomNo = ReadString(root["roomNo"]);
         cfg.OwnerRoomNo = ReadString(root["ownerRoomNo"]);
         cfg.OwnerRoomCuid = ReadString(root["ownerRoomCuid"]);
@@ -89,6 +96,7 @@ public static class StateStore
         cfg.RoomHistory = ReadStringArray(root["roomHistory"]);
         cfg.MemberPositions = ReadPositions(root["memberPositions"]);
         cfg.MemberVisibility = ReadVisibility(root["memberVisibility"]);
+        cfg.MemberCustomPositions = ReadTrueFlags(root["memberCustomPositions"]);
         cfg.ReadAnnouncementIds = ReadStringArray(root["readAnnouncementIds"]).ToList();
     }
 
@@ -194,6 +202,17 @@ public static class StateStore
         return obj;
     }
 
+    static JsonObject ToTrueFlags(Dictionary<string, bool> flags)
+    {
+        var obj = new JsonObject();
+        if (flags == null) return obj;
+        foreach (var pair in flags)
+        {
+            if (pair.Value) obj[pair.Key] = true;
+        }
+        return obj;
+    }
+
     static Dictionary<string, int[]> ReadPositions(JsonNode node)
     {
         var result = new Dictionary<string, int[]>();
@@ -213,6 +232,17 @@ public static class StateStore
         foreach (var pair in obj)
         {
             if (!ReadBool(pair.Value)) result[pair.Key] = false;
+        }
+        return result;
+    }
+
+    static Dictionary<string, bool> ReadTrueFlags(JsonNode node)
+    {
+        var result = new Dictionary<string, bool>();
+        if (node is not JsonObject obj) return result;
+        foreach (var pair in obj)
+        {
+            if (ReadBool(pair.Value)) result[pair.Key] = true;
         }
         return result;
     }

@@ -8,6 +8,7 @@
 </head>
 <body>
   <div class="shell">
+    <div class="theme-bg" id="themeBg" aria-hidden="true"></div>
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-name">Wuwa Tappo</div>
@@ -24,8 +25,19 @@
       <header class="titlebar" id="titlebar">
         <div class="page-title" id="pageTitle">我的背包</div>
         <div class="title-actions">
-          <button class="icon-btn" id="minBtn" title="最小化">—</button>
-          <button class="icon-btn" id="winCloseBtn" title="关闭">×</button>
+          <button class="icon-btn theme-btn" id="themeBtn" title="主题设置" aria-label="主题设置">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3.5 3 6.4l2 3.2 2-1.2V20h10V8.4l2 1.2 2-3.2-4-2.9h-2.1c-.4 1.7-1.7 2.7-2.9 2.7S8.5 5.2 8.1 3.5Z" /></svg>
+          </button>
+          <button class="icon-btn" id="minBtn" title="最小化" aria-label="最小化">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 8h8" /></svg>
+          </button>
+          <button class="icon-btn" id="maxBtn" title="最大化" aria-label="最大化">
+            <svg class="icon-max" viewBox="0 0 16 16" aria-hidden="true"><rect x="4.25" y="4.25" width="7.5" height="7.5" rx="1.2" /></svg>
+            <svg class="icon-restore" viewBox="0 0 16 16" aria-hidden="true"><rect x="3.5" y="5.5" width="7" height="7" rx="1.1" /><path d="M5.5 5.5V4.6a1.1 1.1 0 0 1 1.1-1.1h5.3a1.1 1.1 0 0 1 1.1 1.1v5.3a1.1 1.1 0 0 1-1.1 1.1h-.9" /></svg>
+          </button>
+          <button class="icon-btn close" id="winCloseBtn" title="关闭" aria-label="关闭">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7" /></svg>
+          </button>
         </div>
       </header>
       <section class="notice-host" id="noticeHost"></section>
@@ -42,6 +54,40 @@
       const params = new URLSearchParams(location.search);
       if (!params.has('preview')) return;
       const listeners = [];
+      const previewSettingsKey = 'wuwa.preview.settings.v1';
+      const previewImageKey = 'wuwa.preview.serverThemeImage.v1';
+      const previewPresetsKey = 'wuwa.preview.themePresets.v1';
+      const previewRotationKey = 'wuwa.preview.themeRotation.v1';
+      const uploads = new Map();
+      let uploadSeq = 0;
+      let previewSettings = {};
+      let previewPresets = [];
+      let previewRotation = { enabled: false, intervalMinutes: 30, currentPresetId: '', lastAppliedMs: 0 };
+      try { previewSettings = JSON.parse(localStorage.getItem(previewSettingsKey) || '{}') || {}; } catch { previewSettings = {}; }
+      try { previewPresets = JSON.parse(localStorage.getItem(previewPresetsKey) || '[]') || []; } catch { previewPresets = []; }
+      try { previewRotation = { ...previewRotation, ...(JSON.parse(localStorage.getItem(previewRotationKey) || '{}') || {}) }; } catch { }
+      const savePreviewSettings = () => {
+        try { localStorage.setItem(previewSettingsKey, JSON.stringify(previewSettings)); } catch { }
+      };
+      const savePreviewPresets = () => {
+        try { localStorage.setItem(previewPresetsKey, JSON.stringify(previewPresets)); } catch { }
+      };
+      const savePreviewRotation = () => {
+        try { localStorage.setItem(previewRotationKey, JSON.stringify(previewRotation)); } catch { }
+      };
+      const buildPreviewBoot = () => {
+        const mode = window.__previewMode || params.get('preview') || '';
+        const boot = window.__previewBoot ? window.__previewBoot(mode) : { settings: {} };
+        boot.settings = { ...(boot.settings || {}), ...previewSettings };
+        try {
+          const image = localStorage.getItem(previewImageKey) || '';
+          boot.settings.themeBackgroundImage = image;
+          boot.settings.themeBackgroundImageSet = !!image;
+        } catch { }
+        boot.themePresets = previewPresets;
+        boot.themeRotation = previewRotation;
+        return boot;
+      };
       window.chrome = window.chrome || {};
       window.chrome.webview = {
         addEventListener(type, fn) { if (type === 'message') listeners.push(fn); },
@@ -49,7 +95,59 @@
           const reply = data => listeners.forEach(fn => {
             try { fn({ data: { id: msg.id, ok: true, data } }); } catch { }
           });
-          if (msg.cmd === 'atlas.list') {
+          if (msg.cmd === 'boot') {
+            reply(buildPreviewBoot());
+          }
+          else if (msg.cmd === 'settings.set') {
+            const patch = { ...(msg.data || {}) };
+            // 模拟 C# settings.set 的百分比归一化，保持预览与真实面板一致。
+            if ('themeBackgroundOpacity' in patch) {
+              patch.themeBackgroundOpacity = Math.max(0, Math.min(1, Number(patch.themeBackgroundOpacity) / 100));
+            }
+            if ('themeBackgroundBlur' in patch) {
+              patch.themeBackgroundBlur = Math.max(0, Math.min(24, Number(patch.themeBackgroundBlur) || 0));
+            }
+            previewSettings = { ...previewSettings, ...patch };
+            savePreviewSettings();
+            reply(buildPreviewBoot());
+          }
+          else if (msg.cmd === 'theme.image.begin') {
+            const uploadId = 'preview-' + (++uploadSeq);
+            uploads.set(uploadId, { mime: msg.data?.mime || 'image/png', chunks: [] });
+            reply({ uploadId });
+          }
+          else if (msg.cmd === 'theme.image.chunk') {
+            const upload = uploads.get(msg.data?.uploadId);
+            if (!upload) reply(null);
+            else {
+              upload.chunks.push(String(msg.data?.data || ''));
+              reply({ received: upload.chunks.reduce((n, x) => n + x.length, 0) });
+            }
+          }
+          else if (msg.cmd === 'theme.image.commit') {
+            const upload = uploads.get(msg.data?.uploadId);
+            if (!upload) reply(null);
+            else {
+              const dataUrl = `data:${upload.mime};base64,${upload.chunks.join('')}`;
+              uploads.delete(msg.data?.uploadId);
+              try { localStorage.setItem(previewImageKey, dataUrl); } catch { }
+              reply({ name: 'background', url: dataUrl });
+            }
+          }
+          else if (msg.cmd === 'theme.image.cancel') {
+            uploads.delete(msg.data?.uploadId);
+            reply({ ok: true });
+          }
+          else if (msg.cmd === 'theme.image.clear') {
+            try { localStorage.removeItem(previewImageKey); } catch { }
+            reply({ ok: true });
+          }
+          else if (msg.cmd === 'theme.image.get') {
+            let image = '';
+            try { image = localStorage.getItem(previewImageKey) || ''; } catch { }
+            reply({ url: image, isSet: !!image });
+          }
+          else if (msg.cmd === 'atlas.list') {
             const type = msg.data?.type || 'emote';
             const items = type === 'emote'
               ? [
@@ -103,6 +201,77 @@
             reply([
               { id: 'local-preview-1', name: '我的本地搭配', characterAssetId: 3060, accessoryAssetId: 1604, emoteAssetIds: [1971, 1965, 0, 0, 0] },
             ]);
+          }
+          else if (msg.cmd === 'theme.presets.save') {
+            let image = '';
+            try { image = localStorage.getItem(previewImageKey) || ''; } catch { }
+            const preset = {
+              id: 'preview-preset-' + Date.now().toString(36),
+              name: String(msg.data?.name || '主题预设'),
+              accentColor: previewSettings.themeAccent || '#e7b77c',
+              fontColor: previewSettings.themeFont || '#8e5e43',
+              advanced: previewSettings.themeAdvanced || '',
+              barFollowStandard: previewSettings.themeBarFollowStandard !== false,
+              barColor: previewSettings.themeBarColor || '',
+              barTextFollowTheme: previewSettings.themeBarTextFollowTheme !== false,
+              barTextColor: previewSettings.themeBarTextColor || '',
+              backgroundImage: image,
+              backgroundImageSet: !!image,
+              backgroundOpacity: Number(previewSettings.themeBackgroundOpacity ?? 0.25),
+              backgroundBlur: Number(previewSettings.themeBackgroundBlur || 0),
+              createdAtMs: Date.now(),
+            };
+            previewPresets.push(preset);
+            savePreviewPresets();
+            reply({ preset });
+          }
+          else if (msg.cmd === 'theme.presets.apply') {
+            const preset = previewPresets.find(p => p.id === msg.data?.id);
+            if (preset) {
+              previewSettings = {
+                ...previewSettings,
+                themeAccent: preset.accentColor,
+                themeFont: preset.fontColor,
+                themeAdvanced: preset.advanced,
+                themeBarFollowStandard: preset.barFollowStandard,
+                themeBarColor: preset.barColor,
+                themeBarTextFollowTheme: preset.barTextFollowTheme,
+                themeBarTextColor: preset.barTextColor,
+                themeBackgroundOpacity: preset.backgroundOpacity,
+                themeBackgroundBlur: preset.backgroundBlur,
+              };
+              try {
+                if (preset.backgroundImage) localStorage.setItem(previewImageKey, preset.backgroundImage);
+                else localStorage.removeItem(previewImageKey);
+              } catch { }
+              previewRotation = { ...previewRotation, currentPresetId: preset.id };
+              savePreviewSettings(); savePreviewRotation();
+            }
+            reply(buildPreviewBoot());
+          }
+          else if (msg.cmd === 'theme.presets.delete') {
+            previewPresets = previewPresets.filter(p => p.id !== msg.data?.id);
+            if (previewRotation.currentPresetId === msg.data?.id) previewRotation.currentPresetId = '';
+            savePreviewPresets(); savePreviewRotation();
+            reply({ ok: true });
+          }
+          else if (msg.cmd === 'theme.presets.rename') {
+            const preset = previewPresets.find(p => p.id === msg.data?.id);
+            if (preset && String(msg.data?.name || '').trim()) {
+              preset.name = String(msg.data.name).trim();
+              savePreviewPresets();
+            }
+            reply({ preset });
+          }
+          else if (msg.cmd === 'theme.rotation.set') {
+            previewRotation = {
+              ...previewRotation,
+              enabled: !!msg.data?.enabled,
+              intervalMinutes: Math.max(1, Math.min(1440, Number(msg.data?.intervalMinutes) || 30)),
+              lastAppliedMs: msg.data?.enabled ? Date.now() : previewRotation.lastAppliedMs,
+            };
+            savePreviewRotation();
+            reply({ rotation: previewRotation });
           }
           else if (msg.cmd === 'locks.toggle') {
             reply({ locked: false, items: [] });
