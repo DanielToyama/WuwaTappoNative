@@ -6,6 +6,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using WuwatappoNative.Assets;
 using WuwatappoNative.Core;
 using WuwatappoNative.Net;
@@ -28,6 +29,7 @@ internal static class Program
             Console.WriteLine("Theme checks use isolated data root: " + _root);
 
             CheckBottomBarColors();
+            CheckBarIconContrast();
             CheckBarVisibilityAndHotkeys();
             CheckKeyboardTheme();
             CheckAccessoryTransform();
@@ -38,6 +40,7 @@ internal static class Program
             CheckPresetReorderAndLastDelete();
             CheckOfficialBaseline();
             CheckCompatibilityGate();
+            CheckCatOrderScreenSelection();
             if (args.Length > 0 && File.Exists(args[0])) CheckExternalPresetFile(args[0]);
 
             Console.WriteLine($"PASS: {_checks} assertions.");
@@ -123,6 +126,177 @@ internal static class Program
         Assert(pillPixel.R == 0x11 && pillPixel.G == 0x22 && pillPixel.B == 0x33,
             $"Remote nickname pill pixel is {pillPixel}, expected #112233.");
         Console.WriteLine("PASS: bottom bar custom color reaches main PetComposer strip and RemoteCatWindow nickname pill.");
+    }
+
+    /// <summary>
+    /// 底栏按钮图标不能直接使用浅色主题色：派生色必须在实际底栏背景上达到 3:1，
+    /// 同时保留主题色相，并覆盖浅色/深色、标准/独立底栏、真实绘制、实时预览和主题预设路径。
+    /// </summary>
+    static void CheckBarIconContrast()
+    {
+        var lightCfg = new Settings
+        {
+            ThemeAccentColor = "#FFF3DC",
+            ThemeFontColor = "#8E5E43",
+            ThemeBarFollowStandard = false,
+            ThemeBarColor = "#FBF4E8",
+            ThemeBarTextFollowTheme = false,
+            ThemeBarTextColor = "#7A5B40",
+        };
+        var light = PetWindow.ResolveThemeBarPalette(lightCfg);
+        Assert(light.accent == ColorTranslator.FromHtml("#FFF3DC"),
+            "User theme accent must not be replaced by the derived icon color.");
+        Assert(light.bar == ColorTranslator.FromHtml("#FBF4E8") && light.text == ColorTranslator.FromHtml("#7A5B40"),
+            "Independent bottom bar background/text must keep the user values.");
+        Assert(KeyboardTheme.ContrastRatio(light.icon, light.bar) >= 3.0,
+            $"Light accent icon contrast is {KeyboardTheme.ContrastRatio(light.icon, light.bar):F2}, expected >= 3.0.");
+        Assert(KeyboardTheme.ContrastRatio(light.iconMuted, light.bar) >= 3.0,
+            $"Light accent muted icon contrast is {KeyboardTheme.ContrastRatio(light.iconMuted, light.bar):F2}, expected >= 3.0.");
+        Assert(light.icon.GetBrightness() < light.accent.GetBrightness(),
+            "Light theme accent on a light bar must be darkened for the icon.");
+        Assert(HueDistance(light.icon, light.accent) <= 10,
+            $"Warm icon must keep the theme hue, got {light.icon.GetHue():F1} vs {light.accent.GetHue():F1}.");
+
+        // 标准主题底栏（默认奶油底 + 浅色主题色）同样不能把主题色直接当图标色。
+        var standardLightCfg = new Settings { ThemeAccentColor = "#FFF3DC", ThemeFontColor = "#8E5E43" };
+        var standardLight = PetWindow.ResolveThemeBarPalette(standardLightCfg);
+        Assert(KeyboardTheme.ContrastRatio(standardLight.icon, standardLight.bar) >= 3.0,
+            $"Standard light bar icon contrast is {KeyboardTheme.ContrastRatio(standardLight.icon, standardLight.bar):F2}, expected >= 3.0.");
+        Assert(standardLight.icon.GetBrightness() < standardLight.accent.GetBrightness(),
+            "Standard light bar must darken the light theme accent for icons.");
+
+        // 冷色浅主题同样不能被固定成棕色。
+        var coolCfg = new Settings
+        {
+            ThemeAccentColor = "#DCEBFF",
+            ThemeFontColor = "#8E5E43",
+            ThemeBarFollowStandard = false,
+            ThemeBarColor = "#F5F9FF",
+            ThemeBarTextFollowTheme = false,
+            ThemeBarTextColor = "#5B6B80",
+        };
+        var cool = PetWindow.ResolveThemeBarPalette(coolCfg);
+        Assert(KeyboardTheme.ContrastRatio(cool.icon, cool.bar) >= 3.0,
+            $"Cool light icon contrast is {KeyboardTheme.ContrastRatio(cool.icon, cool.bar):F2}, expected >= 3.0.");
+        Assert(cool.icon.B > cool.icon.R,
+            "Cool light theme must derive a blue-leaning dark icon, not a fixed brown.");
+        Assert(HueDistance(cool.icon, cool.accent) <= 10,
+            $"Cool icon must keep the theme hue, got {cool.icon.GetHue():F1} vs {cool.accent.GetHue():F1}.");
+
+        // 深色独立底栏：深色主题色必须向浅色方向提亮，不能继续变暗。
+        var darkCfg = new Settings
+        {
+            ThemeAccentColor = "#223344",
+            ThemeFontColor = "#8E5E43",
+            ThemeBarFollowStandard = false,
+            ThemeBarColor = "#101820",
+            ThemeBarTextFollowTheme = false,
+            ThemeBarTextColor = "#DCE6F2",
+        };
+        var dark = PetWindow.ResolveThemeBarPalette(darkCfg);
+        Assert(KeyboardTheme.ContrastRatio(dark.icon, dark.bar) >= 3.0,
+            $"Dark bar icon contrast is {KeyboardTheme.ContrastRatio(dark.icon, dark.bar):F2}, expected >= 3.0.");
+        Assert(dark.icon.GetBrightness() > dark.accent.GetBrightness(),
+            "Dark theme color on a dark bar must be lightened for the icon.");
+        Assert(HueDistance(dark.icon, dark.accent) <= 10,
+            $"Dark-bar icon must keep the theme hue, got {dark.icon.GetHue():F1} vs {dark.accent.GetHue():F1}.");
+
+        // 标准主题底栏被高级 cream 调成深色时同样达标。
+        var darkStandardCfg = new Settings
+        {
+            ThemeAccentColor = "#E7B77C",
+            ThemeFontColor = "#8E5E43",
+            ThemeBarFollowStandard = true,
+            ThemeAdvanced = "{\"cream\":\"#101010\"}",
+        };
+        var darkStandard = PetWindow.ResolveThemeBarPalette(darkStandardCfg);
+        Assert(KeyboardTheme.ContrastRatio(darkStandard.icon, darkStandard.bar) >= 3.0,
+            "Dark advanced standard bar must keep the derived icon readable.");
+
+        // 真实合成路径：键盘关闭/开启两种图标都要在底栏像素上达到 3:1。
+        using (var offStrip = RenderPetStrip(light.bar, light.text, light.icon, light.iconMuted, keyboardOn: false))
+        {
+            var barPixel = offStrip.GetPixel(PetComposer.ToolbarX - 4, PetComposer.InfoY + 16);
+            Assert(Near(barPixel, light.bar), $"Light bar pixel is {barPixel}, expected {light.bar}.");
+            double kb = MaxIconContrast(offStrip, PetComposer.KeyboardRect, light.bar);
+            double menu = MaxIconContrast(offStrip, PetComposer.MenuRect, light.bar);
+            Assert(kb >= 3.0 && menu >= 3.0,
+                $"Composed light bar icons must reach 3:1, got keyboard={kb:F2}, menu={menu:F2}.");
+        }
+        using (var onStrip = RenderPetStrip(light.bar, light.text, light.icon, light.iconMuted, keyboardOn: true))
+        {
+            double kb = MaxIconContrast(onStrip, PetComposer.KeyboardRect, light.bar);
+            double menu = MaxIconContrast(onStrip, PetComposer.MenuRect, light.bar);
+            Assert(kb >= 3.0 && menu >= 3.0,
+                $"Composed light bar keyboard-on icons must reach 3:1, got keyboard={kb:F2}, menu={menu:F2}.");
+        }
+        // 兜底路径：调用方把未处理的浅色主题色直接塞进 Info，绘制端也必须产出可读图标。
+        using (var rawStrip = RenderPetStrip(light.bar, light.text, light.accent, Color.Empty, keyboardOn: true))
+        {
+            double kb = MaxIconContrast(rawStrip, PetComposer.KeyboardRect, light.bar);
+            double menu = MaxIconContrast(rawStrip, PetComposer.MenuRect, light.bar);
+            Assert(kb >= 3.0 && menu >= 3.0,
+                $"Draw-time icon guard must keep raw light accent readable, got keyboard={kb:F2}, menu={menu:F2}.");
+        }
+
+        // 实时预览：PreviewTheme 必须走同一套 ResolveThemeBarPalette，并把派生图标色带进预览缓存。
+        var previewCfg = new Settings
+        {
+            ThemeAccentColor = "#FFF3DC",
+            ThemeFontColor = "#8E5E43",
+            ThemeBarFollowStandard = false,
+            ThemeBarColor = "#FBF4E8",
+            ThemeBarTextFollowTheme = false,
+            ThemeBarTextColor = "#7A5B40",
+        };
+        var preview = PetWindow.ResolveThemeBarPalette(previewCfg);
+        Assert(preview.accent == ColorTranslator.FromHtml("#FFF3DC") && preview.bar == ColorTranslator.FromHtml("#FBF4E8"),
+            "Preview must keep the user accent and independent bar color.");
+        Assert(KeyboardTheme.ContrastRatio(preview.icon, preview.bar) >= 3.0 &&
+               KeyboardTheme.ContrastRatio(preview.iconMuted, preview.bar) >= 3.0,
+            "Preview icons must stay readable on the preview bar.");
+        using (var previewStrip = RenderPetStrip(preview.bar, preview.text, preview.icon, preview.iconMuted, keyboardOn: false))
+        {
+            Assert(MaxIconContrast(previewStrip, PetComposer.KeyboardRect, preview.bar) >= 3.0 &&
+                   MaxIconContrast(previewStrip, PetComposer.MenuRect, preview.bar) >= 3.0,
+                "Preview strip icons must reach 3:1 on the preview bar.");
+        }
+        string petSource = ReadRepoSource("src", "Pet", "PetWindow.cs");
+        Assert(Regex.IsMatch(petSource,
+                @"public\s+void\s+PreviewTheme\(Settings\s+preview\)[\s\S]*?ResolveThemeBarPalette\(preview\);[\s\S]*?_themePreview\s*=\s*theme;"),
+            "PreviewTheme must resolve the preview palette and store it for BuildInfo.");
+        Assert(petSource.Contains("BarAccentColor = barIconColor") &&
+               petSource.Contains("BarAccentMutedColor = barIconMutedColor"),
+            "BuildInfo must pass the derived icon colors into PetComposer.");
+
+        // 主题预设：应用浅色预设后仍要得到同一套可读图标色。
+        string presetFile = Path.Combine(_root, "theme_presets_icon.json");
+        var presetCfg = new Settings
+        {
+            ThemeAccentColor = "#FFF3DC",
+            ThemeFontColor = "#8E5E43",
+            ThemeBarFollowStandard = false,
+            ThemeBarColor = "#FBF4E8",
+            ThemeBarTextFollowTheme = false,
+            ThemeBarTextColor = "#7A5B40",
+        };
+        using (var manager = new ThemePresetManager(presetCfg, presetFile))
+        {
+            var preset = manager.SaveCurrent("Light icon");
+            presetCfg.ThemeAccentColor = "#101820";
+            presetCfg.ThemeBarColor = "#101820";
+            manager.Apply(preset.Id);
+            var applied = PetWindow.ResolveThemeBarPalette(presetCfg);
+            Assert(applied.accent == ColorTranslator.FromHtml("#FFF3DC") &&
+                   applied.bar == ColorTranslator.FromHtml("#FBF4E8"),
+                "Applying a theme preset must restore the saved light accent/bar.");
+            Assert(KeyboardTheme.ContrastRatio(applied.icon, applied.bar) >= 3.0 &&
+                   KeyboardTheme.ContrastRatio(applied.iconMuted, applied.bar) >= 3.0,
+                "Theme preset application must keep bar icons readable.");
+        }
+
+        Console.WriteLine("PASS: bar icon contrast (light/dark/standard/independent/preset) >= 3:1 with hue preserved.");
+        Console.WriteLine("PASS: real PetComposer strip and live PreviewTheme paths draw readable keyboard/menu icons.");
     }
 
     static void CheckBarVisibilityAndHotkeys()
@@ -585,6 +759,47 @@ internal static class Program
         // Only the upper half is opaque so the bottom HUD remains visible for pixel assertions.
         g.FillRectangle(brush, 0, 0, 200, 110);
         return image;
+    }
+
+    static Bitmap RenderPetStrip(Color bar, Color text, Color icon, Color iconMuted, bool keyboardOn)
+    {
+        using var head = ArtTop(Color.FromArgb(210, 70, 130, 240));
+        using var body = ArtTop(Color.FromArgb(200, 200, 70, 50));
+        var frames = new PetFrames { Head1 = head, Head2 = head, Body1 = body, Body2 = body, Body3 = body };
+        var info = new PetComposer.Info
+        {
+            Clicks = 7,
+            KeyboardOn = keyboardOn,
+            BarColor = bar,
+            BarTextColor = text,
+            BarAccentColor = icon,
+            BarAccentMutedColor = iconMuted,
+        };
+        var bitmap = new Bitmap(PetComposer.WindowW, PetComposer.WindowH, PixelFormat.Format32bppPArgb);
+        PetComposer.ComposeInto(bitmap, frames, 1, 1, info);
+        return bitmap;
+    }
+
+    /// <summary>图标区域里与底栏背景差异最大的像素对比度；抗锯齿边缘不会高于实心描边像素。</summary>
+    static double MaxIconContrast(Bitmap bitmap, Rectangle rect, Color background)
+    {
+        double max = 0;
+        for (int y = rect.Top; y < rect.Bottom; y++)
+        {
+            for (int x = rect.Left; x < rect.Right; x++)
+            {
+                var pixel = bitmap.GetPixel(x, y);
+                if (pixel.A < 240 || Near(pixel, background)) continue;
+                max = Math.Max(max, KeyboardTheme.ContrastRatio(pixel, background));
+            }
+        }
+        return max;
+    }
+
+    static double HueDistance(Color a, Color b)
+    {
+        double delta = Math.Abs(a.GetHue() - b.GetHue());
+        return Math.Min(delta, 360 - delta);
     }
 
     static void CheckAccessoryTransform()
@@ -1136,6 +1351,39 @@ internal static class Program
         ConfigStore.Save(new Settings { ForcedOnlineAcceptedVersion = " 1.0.5 " });
         Assert(ConfigStore.Load().ForcedOnlineAcceptedVersion == "1.0.5",
             "Forced-online acceptance version must trim and persist across config reload.");
+    }
+
+    /// <summary>
+    /// 多屏环境不能依赖测试机的真实显示器，这里静态检查所有自动排序入口的屏幕来源：
+    /// 托盘/排列方向/面板重置排序都必须落到 ConfiguredScreen()，显式 targetScreen 仍优先。
+    /// </summary>
+    static void CheckCatOrderScreenSelection()
+    {
+        string pet = ReadRepoSource("src", "Pet", "PetWindow.cs");
+        Assert(Regex.IsMatch(pet, @"public\s+void\s+ResetCatOrder\(\)\s*=>\s*ResetCatOrder\(ConfiguredScreen\(\)\);"),
+            "Parameterless ResetCatOrder must sort on ConfiguredScreen().");
+        Assert(!pet.Contains("ResetCatOrder(null)", StringComparison.Ordinal),
+            "ResetCatOrder must not pass null and fall back to the main pet's current screen.");
+        Assert(Regex.IsMatch(pet, @"var\s+wa\s*=\s*\(targetScreen\s*\?\?\s*ConfiguredScreen\(\)\)\.WorkingArea;"),
+            "ResetCatOrder(Screen) must fall back to ConfiguredScreen(), not the current screen.");
+        Assert(Regex.IsMatch(pet, @"public\s+void\s+SetCatLayout\([^)]*\)\s*\{[^{}]*ResetCatOrder\(\);", RegexOptions.Singleline),
+            "SetCatLayout must reorder through the parameterless ResetCatOrder().");
+
+        string panel = ReadRepoSource("src", "Ui", "PanelWindow.cs");
+        Assert(Regex.IsMatch(panel, @"case\s+""room\.resetOrder"":\s*_app\.Pet\.BeginInvoke\(new Action\(_app\.Pet\.ResetCatOrder\)\);"),
+            "Panel reset-order command must use the parameterless ResetCatOrder() overload.");
+    }
+
+    static string ReadRepoSource(params string[] relativeParts)
+    {
+        var dir = new DirectoryInfo(AppContext.BaseDirectory);
+        while (dir != null)
+        {
+            string candidate = Path.Combine(dir.FullName, Path.Combine(relativeParts));
+            if (File.Exists(candidate)) return File.ReadAllText(candidate);
+            dir = dir.Parent;
+        }
+        throw new InvalidOperationException("Static source check could not find " + Path.Combine(relativeParts));
     }
 
     static void SetField(object target, string name, object value)

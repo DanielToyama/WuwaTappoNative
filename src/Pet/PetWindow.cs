@@ -40,8 +40,8 @@ public sealed class PetWindow : Form
     readonly LayeredSurface _surface = new();
     readonly PetComposer.FrameCache _frameCache = new();
     /// <summary>取色器拖动时的临时底栏配色；不写入配置，保存/取消后清除。</summary>
-    (Color bar, Color text, Color accent)? _themePreview;
-    (Color bar, Color text, Color accent) _themeColors;
+    (Color bar, Color text, Color accent, Color icon, Color iconMuted)? _themePreview;
+    (Color bar, Color text, Color accent, Color icon, Color iconMuted) _themeColors;
     int _themeColorHash;
     bool _themeColorsReady;
     AnimationTimer _composeTimer;
@@ -255,7 +255,7 @@ public sealed class PetWindow : Form
         long rightTs = ApiClient.ReadLong(_auth.UserInfo?["right_treasure_chest"]);
         var accTransform = AccessoryTransformFor(_cfg.AccessoryAssetId);
         var theme = _themePreview.HasValue ? _themePreview.Value : ThemeBarColors();
-        var (barColor, barTextColor, barAccentColor) = theme;
+        var (barColor, barTextColor, _, barIconColor, barIconMutedColor) = theme;
         return new PetComposer.Info
         {
             Clicks = _room.AvailableClicks,
@@ -280,11 +280,12 @@ public sealed class PetWindow : Form
             ChestCountdown = _chestBgArt,
             BarColor = barColor,
             BarTextColor = barTextColor,
-            BarAccentColor = barAccentColor,
+            BarAccentColor = barIconColor,
+            BarAccentMutedColor = barIconMutedColor,
         };
     }
 
-    (Color bar, Color text, Color accent) ThemeBarColors()
+    (Color bar, Color text, Color accent, Color icon, Color iconMuted) ThemeBarColors()
     {
         // BuildInfo 每帧都会取色；高级配色是 JSON 字符串，不能每帧解析。
         int hash = HashCode.Combine(
@@ -297,7 +298,7 @@ public sealed class PetWindow : Form
             _cfg.ThemeBarTextColor);
         if (!_themeColorsReady || hash != _themeColorHash)
         {
-            _themeColors = ResolveThemeBarColors(_cfg);
+            _themeColors = ResolveThemeBarPalette(_cfg);
             _themeColorHash = hash;
             _themeColorsReady = true;
         }
@@ -305,10 +306,22 @@ public sealed class PetWindow : Form
     }
 
     /// <summary>
-    /// 计算主桌宠底栏与联机昵称条颜色。默认跟随标准主题；用户关闭跟随后使用独立背景色/文字色。
-    /// 高级配色中的 cream / ink 也会参与底栏推导，保证面板与桌宠一致。
+    /// 计算主桌宠底栏与联机昵称条颜色（只保留原有三色契约）。
+    /// 实际绘制按钮所需的派生图标色请使用 <see cref="ResolveThemeBarPalette"/>。
     /// </summary>
     public static (Color bar, Color text, Color accent) ResolveThemeBarColors(Settings cfg)
+    {
+        var palette = ResolveThemeBarPalette(cfg);
+        return (palette.bar, palette.text, palette.accent);
+    }
+
+    /// <summary>
+    /// 计算主桌宠底栏与联机昵称条颜色。默认跟随标准主题；用户关闭跟随后使用独立背景色/文字色。
+    /// 高级配色中的 cream / ink 也会参与底栏推导，保证面板与桌宠一致。
+    /// accent 保留用户输入的主题色值；icon/iconMuted 是实际绘制键盘、菜单按钮时使用的派生色，
+    /// 始终与实际底栏背景保持至少 3:1 的对比度，避免浅色主题色在浅色底栏上不可见。
+    /// </summary>
+    public static (Color bar, Color text, Color accent, Color icon, Color iconMuted) ResolveThemeBarPalette(Settings cfg)
     {
         cfg ??= new Settings();
         var themeAccent = ParseThemeColor(cfg.ThemeAccentColor, PetComposer.Border);
@@ -322,12 +335,63 @@ public sealed class PetWindow : Form
             : ParseThemeColor(cfg.ThemeFontColor, PetComposer.InkStrong);
         var barBase = ParseThemeColor(AdvancedThemeColor(cfg, "cream"), PetComposer.Cream);
         var standardBar = BlendColor(barBase, themeAccent, 0.22f);
-        if (cfg.ThemeBarFollowStandard) return (standardBar, themeFont, themeAccent);
+        if (cfg.ThemeBarFollowStandard)
+            return (standardBar, themeFont, themeAccent,
+                EnsureBarIconReadable(themeAccent, standardBar), MutedBarIcon(themeAccent, standardBar));
         var bar = ParseThemeColor(cfg.ThemeBarColor, standardBar);
         var text = cfg.ThemeBarTextFollowTheme
             ? themeFont
             : ParseThemeColor(cfg.ThemeBarTextColor, themeFont);
-        return (bar, text, themeAccent);
+        return (bar, text, themeAccent,
+            EnsureBarIconReadable(themeAccent, bar), MutedBarIcon(themeAccent, bar));
+    }
+
+    /// <summary>底栏按钮图标的非文本对比度目标（WCAG 非文本组件最低 3:1）。</summary>
+    internal const double MinBarIconContrast = 3.0;
+
+    /// <summary>
+    /// 把主题色调整为在实际底栏背景上可读的按钮/图标色。
+    /// 对比度足够时原样返回；不足时沿明度向黑/白混合到阈值，保留原色相，
+    /// 而不是套用固定的棕色。浅色底栏会得到同色相的深色图标，深色底栏会得到同色相的浅色图标。
+    /// </summary>
+    internal static Color EnsureBarIconReadable(Color icon, Color background)
+    {
+        if (background.IsEmpty) background = PetComposer.Cream;
+        if (icon.IsEmpty) icon = PetComposer.Ink;
+        double Ratio(Color color) => KeyboardTheme.ContrastRatio(color, background);
+        if (Ratio(icon) >= MinBarIconContrast) return icon;
+
+        double towardBlack = Ratio(Color.Black);
+        double towardWhite = Ratio(Color.White);
+        bool darken = towardBlack >= towardWhite;
+        Color target = darken ? Color.Black : Color.White;
+        // 极端半透明/中间色底栏可能黑白都达不到 3:1；此时至少取对比度更高的黑或白。
+        if (Math.Max(towardBlack, towardWhite) < MinBarIconContrast) return target;
+
+        // 找刚好达到阈值的最小改动量：保留尽可能多的原主题色。
+        double low = 0, high = 1;
+        for (int i = 0; i < 24; i++)
+        {
+            double mid = (low + high) / 2;
+            var candidate = BlendColor(icon, target, (float)mid);
+            if (Ratio(candidate) >= MinBarIconContrast) high = mid;
+            else low = mid;
+        }
+        var result = BlendColor(icon, target, (float)high);
+        // 字节取整可能让边界候选差一点点，向目标方向补两步。
+        for (int i = 0; i < 4 && Ratio(result) < MinBarIconContrast; i++)
+        {
+            high = Math.Min(1, high + 0.02);
+            result = BlendColor(icon, target, (float)high);
+        }
+        return Ratio(result) >= MinBarIconContrast ? result : target;
+    }
+
+    /// <summary>键盘关闭时使用的次要图标色：向底栏混合后再校正回可读阈值，避免 75% 透明叠加后对比度不足。</summary>
+    static Color MutedBarIcon(Color icon, Color background)
+    {
+        var seed = BlendColor(EnsureBarIconReadable(icon, background), background, 0.28f);
+        return EnsureBarIconReadable(seed, background);
     }
 
     /// <summary>读取高级配色 JSON 中的某个颜色；任何格式问题都安静回退。</summary>
@@ -1080,7 +1144,7 @@ public sealed class PetWindow : Form
     public void PreviewTheme(Settings preview)
     {
         if (preview == null) return;
-        var theme = ResolveThemeBarColors(preview);
+        var theme = ResolveThemeBarPalette(preview);
         _themePreview = theme;
         Compose();
         ApplyThemeToCats(theme);
@@ -1936,7 +2000,7 @@ public sealed class PetWindow : Form
 
     string CatKey(long id) => id.ToString();
 
-    void ApplyThemeToCats((Color bar, Color text, Color accent)? preview = null)
+    void ApplyThemeToCats((Color bar, Color text, Color accent, Color icon, Color iconMuted)? preview = null)
     {
         var theme = preview.HasValue ? preview.Value : ThemeBarColors();
         foreach (var cat in _cats.Values)
@@ -2109,13 +2173,15 @@ public sealed class PetWindow : Form
     /// 联机面板“重置排序”：横向时主角贴右下、其他成员从右往左排成底部横排；
     /// 纵向时沿屏幕右侧向下排列，排满后向左换列并从顶部继续。
     /// 锚点使用可见区域并贴住工作区底边/右边，和手动拖动贴边后的位置一致。
+    /// 自动排序使用设置中的“默认显示屏幕”，不跟随主角当前所在屏幕；
+    /// 显式传入 targetScreen 的调用仍以显式目标为准。
     /// </summary>
-    public void ResetCatOrder() => ResetCatOrder(null);
+    public void ResetCatOrder() => ResetCatOrder(ConfiguredScreen());
 
     public void ResetCatOrder(Screen targetScreen)
     {
         _cfg.MemberCustomPositions.Clear();
-        var wa = (targetScreen ?? Screen.FromControl(this)).WorkingArea;
+        var wa = (targetScreen ?? ConfiguredScreen()).WorkingArea;
         float s = RemoteScaleFactor;
         float ms = Width / (float)PetComposer.WindowW;
         int gap = Math.Max(6, (int)Math.Round(10 * s));

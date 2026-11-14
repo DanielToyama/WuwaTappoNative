@@ -252,7 +252,10 @@ public static class PetComposer
         public int AccScalePercent = 100, AccRotationDegrees;
         public Color BarColor;
         public Color BarTextColor;
+        /// <summary>键盘/菜单等底栏按钮图标的实际绘制色；由主题色按底栏背景派生，保证对比度。</summary>
         public Color BarAccentColor;
+        /// <summary>键盘关闭时的次要按钮图标色；与 BarAccentColor 同色相但更弱，仍保证可读。</summary>
+        public Color BarAccentMutedColor;
     }
 
     public static readonly Rectangle ChestLeftRect = new(183, 263, 62, 44);
@@ -368,7 +371,7 @@ public static class PetComposer
     {
         Bitmap _character, _strip;
         (Size Size, Image Head, Image Body, Image Accessory, double X, double Y, int ScalePercent, int RotationDegrees) _characterKey;
-        (Size Size, bool ShowBar, Image Body, long Clicks, bool KeyboardOn, Color BarColor, Color BarTextColor, Color BarAccentColor) _stripKey;
+        (Size Size, bool ShowBar, Image Body, long Clicks, bool KeyboardOn, Color BarColor, Color BarTextColor, Color BarAccentColor, Color BarAccentMutedColor) _stripKey;
 
         internal void DrawCharacter(Graphics target, Size size, float scale, Image head, Image body, Image accessory,
             double offsetX, double offsetY, int accessoryScalePercent, int accessoryRotationDegrees, Rectangle cat)
@@ -388,7 +391,7 @@ public static class PetComposer
 
         internal void DrawStrip(Graphics target, Size size, float scale, Info info, Image body, Rectangle cat)
         {
-            var key = (size, info.ShowBar, body, info.Clicks, info.KeyboardOn, info.BarColor, info.BarTextColor, info.BarAccentColor);
+            var key = (size, info.ShowBar, body, info.Clicks, info.KeyboardOn, info.BarColor, info.BarTextColor, info.BarAccentColor, info.BarAccentMutedColor);
             if (_strip == null || _stripKey != key)
             {
                 Prepare(ref _strip, size);
@@ -451,8 +454,9 @@ public static class PetComposer
         var bar = AlignStripBottom(new Rectangle(counter.X, counter.Y, toolbar.Right - counter.X,
             Math.Max(counter.Height, toolbar.Height)), windowHeight);
 
+        var barColor = info.BarColor.IsEmpty ? Cream : info.BarColor;
         using (var path = Rounded(bar, 16 * s))
-        using (var brush = new SolidBrush(info.BarColor.IsEmpty ? Cream : info.BarColor))
+        using (var brush = new SolidBrush(barColor))
             g.FillPath(brush, path);
 
         using (var font = new Font("Microsoft YaHei UI", 18f * s, FontStyle.Bold, GraphicsUnit.Pixel))
@@ -465,9 +469,18 @@ public static class PetComposer
 
         // 键盘图标：描边粗细、可见高度和中心线与右侧菜单图标保持一致。
         var kb = Scaled(KeyboardRect, s);
-        Color iconColor = info.BarAccentColor.IsEmpty ? Ink : info.BarAccentColor;
+        // 绘制端再兜底一次：即使调用方仍把原始主题色直接塞进 Info，也不会在浅色底栏上画出不可见图标。
+        Color iconColor = PetWindow.EnsureBarIconReadable(
+            info.BarAccentColor.IsEmpty ? Ink : info.BarAccentColor, barColor);
+        // 键盘关闭时不再用 75% 透明叠加（会把已经贴近阈值的图标重新压到不可读），
+        // 改用同色相、已校正对比度的次要图标色。
+        Color mutedIconColor = PetWindow.EnsureBarIconReadable(
+            info.BarAccentMutedColor.IsEmpty
+                ? PetWindow.BlendColor(iconColor, barColor, 0.28f)
+                : info.BarAccentMutedColor,
+            barColor);
         float iconStroke = Math.Max(1.2f, 2.2f * s);
-        using (var pen = new Pen(info.KeyboardOn ? iconColor : Color.FromArgb(190, iconColor), iconStroke))
+        using (var pen = new Pen(info.KeyboardOn ? iconColor : mutedIconColor, iconStroke))
         {
             float pad = 3.2f * s;
             float iconH = 10.0f * s;
@@ -478,7 +491,7 @@ public static class PetComposer
         }
         // 菜单图标 ≡：比原来短一点，线宽稍加厚，圆头端点让三条横线更有质感。
         var menu = Scaled(MenuRect, s);
-        using (var pen = new Pen(info.BarAccentColor.IsEmpty ? Ink : info.BarAccentColor, iconStroke) { StartCap = LineCap.Round, EndCap = LineCap.Round })
+        using (var pen = new Pen(iconColor, iconStroke) { StartCap = LineCap.Round, EndCap = LineCap.Round })
         {
             float cx = menu.X + menu.Width / 2f, cy = menu.Y + menu.Height / 2f;
             float w = menu.Width * 0.34f;

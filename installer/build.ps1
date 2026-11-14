@@ -1,18 +1,23 @@
 param(
   [string]$Configuration = "Release",
   [string]$Version = "0.3.0",
+  [string]$DisplayVersion = "",
+  [string]$InformationalVersion = "",
   [string]$PublishDir = ""
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
 
+if ([string]::IsNullOrWhiteSpace($DisplayVersion)) { $DisplayVersion = $Version }
+if ([string]::IsNullOrWhiteSpace($InformationalVersion)) { $InformationalVersion = $Version }
+$fileVersion = if ($Version -match '^\d+\.\d+\.\d+\.\d+$') { $Version } else { "$Version.0" }
 if ([string]::IsNullOrWhiteSpace($PublishDir)) { $PublishDir = "publish/app-$Version" }
 $publishDir = $PublishDir
 $distDir = "dist"
 New-Item -ItemType Directory -Force -Path $distDir | Out-Null
 
-Write-Host "== publish $Version (win-x64, self-contained single file) =="
+Write-Host "== publish $InformationalVersion (win-x64, self-contained single file) =="
 if (Test-Path -LiteralPath $publishDir) {
   try { Remove-Item -LiteralPath $publishDir -Recurse -Force -ErrorAction Stop }
   catch { throw "publish 目录被占用，请先退出正在运行的 WuwatappoNative：$publishDir" }
@@ -23,6 +28,10 @@ dotnet publish -c $Configuration -r win-x64 --self-contained true `
   -p:IncludeNativeLibrariesForSelfExtract=true `
   -p:IncludeAllContentForSelfExtract=true `
   -p:EnableCompressionInSingleFile=true `
+  -p:Version=$InformationalVersion `
+  -p:AssemblyVersion=$fileVersion `
+  -p:FileVersion=$fileVersion `
+  -p:InformationalVersion=$InformationalVersion `
   -p:DebugType=none -p:DebugSymbols=false -o $publishDir -v q --nologo
 
 $exe = Join-Path $publishDir 'WuwatappoNative.exe'
@@ -40,11 +49,11 @@ $iscc = $isccCandidates | Where-Object { Test-Path -LiteralPath $_ } | Select-Ob
 if (-not $iscc) { $iscc = (Get-Command ISCC.exe -ErrorAction SilentlyContinue | Select-Object -First 1).Source }
 if (-not $iscc) { throw "缺少 Inno Setup 6 的 ISCC.exe，请先安装 Inno Setup 6" }
 $sourceDir = (Resolve-Path -LiteralPath $publishDir).Path
-& $iscc "/DMyVersion=$Version" "/DMySourceDir=$sourceDir" (Join-Path $root 'installer\WuwatappoNative.iss')
+& $iscc "/DMyVersion=$Version" "/DMyDisplayVersion=$DisplayVersion" "/DMyFileVersion=$fileVersion" "/DMySourceDir=$sourceDir" (Join-Path $root 'installer\WuwatappoNative.iss')
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup 编译失败" }
 
 Write-Host "== portable zip =="
-$zip = "$distDir/WuwatappoNative-$Version-portable.zip"
+$zip = "$distDir/WuwatappoNative-$DisplayVersion-portable.zip"
 Remove-Item -Force $zip -ErrorAction SilentlyContinue
 Compress-Archive -Path "$publishDir/*" -DestinationPath $zip
 

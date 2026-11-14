@@ -2,6 +2,12 @@
 #ifndef MyVersion
   #define MyVersion "0.3.0"
 #endif
+#ifndef MyDisplayVersion
+  #define MyDisplayVersion MyVersion
+#endif
+#ifndef MyFileVersion
+  #define MyFileVersion "0.3.0.0"
+#endif
 #ifndef MySourceDir
   #define MySourceDir "..\publish\app-" + MyVersion
 #endif
@@ -9,7 +15,7 @@
 [Setup]
 AppId={{A7C3F6D2-5B1E-4E8A-9C2D-8F4B6A1D3E57}
 AppName={#MyAppName}
-AppVersion={#MyVersion}
+AppVersion={#MyDisplayVersion}
 AppPublisher=Wuwatappo Native
 DefaultDirName={localappdata}\Programs\Wuwatappo Native
 UsePreviousAppDir=yes
@@ -23,7 +29,7 @@ UsePreviousPrivileges=no
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=..\dist
-OutputBaseFilename=WuwatappoNative-{#MyVersion}-Setup
+OutputBaseFilename=WuwatappoNative-{#MyDisplayVersion}-Setup
 SetupIconFile=..\assets\app.ico
 UninstallDisplayIcon={app}\WuwatappoNative.exe
 Compression=lzma2
@@ -33,9 +39,9 @@ SetupLogging=yes
 CloseApplications=yes
 CloseApplicationsFilter=WuwatappoNative.exe
 RestartApplications=no
-VersionInfoVersion={#MyVersion}.0
+VersionInfoVersion={#MyFileVersion}
 VersionInfoProductName={#MyAppName}
-VersionInfoProductVersion={#MyVersion}
+VersionInfoProductVersion={#MyFileVersion}
 VersionInfoDescription={#MyAppName} 安装包
 
 [Files]

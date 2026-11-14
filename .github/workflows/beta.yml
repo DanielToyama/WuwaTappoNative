@@ -1,0 +1,102 @@
+name: Beta build
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: beta-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  beta:
+    name: Build beta
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Resolve beta version
+        id: ver
+        shell: pwsh
+        run: |
+          $projectText = Get-Content -LiteralPath 'WuwatappoNative.csproj' -Raw
+          $match = [regex]::Match($projectText, '<Version>([^<]+)</Version>')
+          if (-not $match.Success) { throw "无法解析项目版本" }
+          $raw = $match.Groups[1].Value.Trim()
+          if ($raw -notmatch '^\d+\.\d+\.\d+') { throw "无法解析项目版本: $raw" }
+          $base = [version]$raw
+          $next = "$($base.Major).$($base.Minor).$($base.Build + 1)"
+          $display = "$next-beta.${{ github.run_number }}"
+          $numeric = "$next.${{ github.run_number }}"
+          "base=$next" >> $env:GITHUB_OUTPUT
+          "display=$display" >> $env:GITHUB_OUTPUT
+          "numeric=$numeric" >> $env:GITHUB_OUTPUT
+
+      - name: Install Inno Setup
+        run: choco install innosetup --no-progress -y
+
+      - name: Build beta installer + portable
+        shell: pwsh
+        run: ./installer/build.ps1 -Version ${{ steps.ver.outputs.numeric }} -DisplayVersion ${{ steps.ver.outputs.display }} -InformationalVersion ${{ steps.ver.outputs.display }}
+
+      - name: Upload beta artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WuwatappoNative-beta-${{ github.run_number }}
+          path: |
+            dist/WuwatappoNative-${{ steps.ver.outputs.display }}-Setup.exe
+            dist/WuwatappoNative-${{ steps.ver.outputs.display }}-portable.zip
+          if-no-files-found: error
+
+      - name: Publish beta prerelease
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: pwsh
+        run: |
+          $tag = "v${{ steps.ver.outputs.base }}-beta"
+          $version = "${{ steps.ver.outputs.display }}"
+          $setup = "dist/WuwatappoNative-$version-Setup.exe"
+          $portable = "dist/WuwatappoNative-$version-portable.zip"
+          $notes = Join-Path $env:RUNNER_TEMP "beta-notes.md"
+          $prev = git describe --tags --abbrev=0 "HEAD^" 2>$null
+          $range = if ($prev) { "$prev..HEAD" } else { "HEAD" }
+          $commits = @(git log --no-merges --pretty=format:'- %s (%h)' $range) -join "`n"
+          if (-not $commits) { $commits = '- 本次构建' }
+          $body = @"
+          ## 测试版说明
+
+          - 测试版本号：$version
+          - 这是自动构建的测试版，提供安装包与便携版，不保证稳定性。
+          - 反馈请附上测试版本号、复现步骤和相关日志；不要上传 token、账号凭据或含凭据的截图。
+          - 正式版请从 Releases 中的非 Pre-release 版本下载。
+
+          ### 本次提交
+
+          $commits
+          "@
+          [IO.File]::WriteAllText($notes, $body, [Text.UTF8Encoding]::new($false))
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -eq 0) {
+            $oldAssets = @(gh release view $tag --json assets --jq '.assets[].name')
+            foreach ($name in $oldAssets) {
+              if ($name -like 'WuwatappoNative-*-Setup.exe' -or $name -like 'WuwatappoNative-*-portable.zip') {
+                gh release delete-asset $tag $name --yes
+              }
+            }
+            gh release edit $tag --title "Wuwatappo Native $version（测试版）" --notes-file $notes --prerelease
+            gh release upload $tag $setup $portable --clobber
+          } else {
+            gh release create $tag --title "Wuwatappo Native $version（测试版）" --notes-file $notes --prerelease $setup $portable
+          }
